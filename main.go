@@ -7,8 +7,11 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -18,8 +21,10 @@ import (
 )
 
 const (
-	defaultListenAddr = "127.0.0.1:12890"
-	defaultOrigins    = "http://178.214.214.173:5173,https://dev.mmwx.imgamer.top"
+	defaultListenAddr        = "127.0.0.1:12890"
+	defaultOrigins           = "http://178.214.214.173:5173,https://dev.mmwx.imgamer.top"
+	defaultOfficialAPITarget = "https://mmwx.imgamer.top"
+	defaultFrontendDir       = "frontend/dist"
 )
 
 type systemMetrics struct {
@@ -77,6 +82,10 @@ type app struct {
 
 func main() {
 	listenAddr := getenv("MMWXC_API_LISTEN_ADDR", defaultListenAddr)
+	officialAPITarget, err := url.Parse(getenv("MMWX_API_TARGET", defaultOfficialAPITarget))
+	if err != nil {
+		log.Fatalf("[mmwx-custom-api] invalid MMWX_API_TARGET: %v", err)
+	}
 	api := &app{
 		allowedOrigins: parseOrigins(getenv("MMWXC_ALLOWED_ORIGINS", defaultOrigins)),
 		apiToken:       os.Getenv("MMWXC_API_TOKEN"),
@@ -92,6 +101,9 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", api.withCORS(api.healthz))
 	mux.HandleFunc("/api/dashboard/system", api.withCORS(api.system))
+	mux.HandleFunc("/api/custom/dashboard/system", api.withCORS(api.system))
+	mux.Handle("/api/", api.withCORSHandler(officialAPIProxy(officialAPITarget)))
+	mux.Handle("/", spaHandler(getenv("MMWXC_FRONTEND_DIR", defaultFrontendDir)))
 
 	server := &http.Server{
 		Addr:              listenAddr,
@@ -139,12 +151,56 @@ func (a *app) withCORS(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (a *app) withCORSHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a.withCORS(next.ServeHTTP)(w, r)
+	})
+}
+
 func (a *app) healthz(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"success": false, "message": "method not allowed"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "status": "ok"})
+}
+
+func officialAPIProxy(target *url.URL) http.Handler {
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	baseDirector := proxy.Director
+	proxy.Director = func(r *http.Request) {
+		baseDirector(r)
+		r.Host = target.Host
+	}
+	return proxy
+}
+
+func spaHandler(frontendDir string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"success": false, "message": "method not allowed"})
+			return
+		}
+		cleanPath := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/"))
+		if cleanPath == "." {
+			cleanPath = "index.html"
+		}
+		if cleanPath == ".." || strings.HasPrefix(cleanPath, "../") {
+			http.NotFound(w, r)
+			return
+		}
+		filePath := filepath.Join(frontendDir, cleanPath)
+		if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+			http.ServeFile(w, r, filePath)
+			return
+		}
+		indexPath := filepath.Join(frontendDir, "index.html")
+		if _, err := os.Stat(indexPath); err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "custom UI frontend is not built"})
+			return
+		}
+		http.ServeFile(w, r, indexPath)
+	})
 }
 
 func (a *app) system(w http.ResponseWriter, r *http.Request) {

@@ -1,12 +1,32 @@
-# mmwx-custom-api
+# mmwx-custom
 
-Standalone custom API service for 妙妙屋X Custom UI.
+Standalone Custom UI and Custom API project for 妙妙屋X.
 
-This service provides small, read-only custom APIs for Custom UI while keeping
-the official miaomiaowuX backend and business APIs decoupled.
+This repository contains the Custom UI and the small read-only Custom API used
+by that UI. The official miaomiaowuX fork remains responsible for the official
+backend and official embedded UI.
+
+## Structure
+
+```text
+frontend/       Custom UI
+main.go         Custom API and same-origin proxy service
+deploy/         Deployment examples
+docs/           Project notes
+```
+
+## Request Boundaries
+
+- Official UI -> official miaomiaowuX backend `/api/*`
+- Custom UI -> official miaomiaowuX backend `/api/*`
+- Custom UI -> this service `/api/custom/*`
+- Official backend must not call this Custom API
+- Official UI must not call `/api/custom/*`
 
 ## Features
 
+- Serves the built Custom UI from `frontend/dist`.
+- Proxies Custom UI `/api/*` requests to the official miaomiaowuX backend.
 - Provides host-level system metrics for Custom UI.
 - Does not connect to the miaomiaowuX database.
 - Does not depend on miaomiaowuX internal Go packages.
@@ -17,6 +37,8 @@ the official miaomiaowuX backend and business APIs decoupled.
 
 - `GET /healthz`
 - `GET /api/dashboard/system`
+- `GET /api/custom/dashboard/system`
+- `/api/*` proxied to the configured official miaomiaowuX backend
 
 ## Configuration
 
@@ -25,6 +47,8 @@ the official miaomiaowuX backend and business APIs decoupled.
 | `MMWXC_API_LISTEN_ADDR` | `127.0.0.1:12890` | HTTP listen address |
 | `MMWXC_API_TOKEN` | empty | Optional bearer token for `/api/dashboard/system` |
 | `MMWXC_ALLOWED_ORIGINS` | `http://178.214.214.173:5173,https://dev.mmwx.imgamer.top` | Comma-separated CORS allowlist |
+| `MMWXC_FRONTEND_DIR` | `frontend/dist` | Built Custom UI directory served by this service |
+| `MMWX_API_TARGET` | `https://mmwx.imgamer.top` | Official miaomiaowuX backend target for `/api/*` proxy |
 
 When `MMWXC_API_TOKEN` is set, requests to `/api/dashboard/system` must include:
 
@@ -38,14 +62,20 @@ keys, or `.env` files.
 ## Build
 
 ```bash
-go mod tidy
-go build -o mmwx-custom-api .
+./build.sh
 ```
 
 ## Run
 
 ```bash
-MMWXC_API_LISTEN_ADDR=127.0.0.1:12890 ./mmwx-custom-api
+MMWXC_API_LISTEN_ADDR=127.0.0.1:12890 ./build/mmwx-custom-api
+```
+
+## Frontend Development
+
+```bash
+cd frontend
+MMWX_API_TARGET=https://mmwx.imgamer.top MMWXC_API_TARGET=http://127.0.0.1:12890 npm run dev
 ```
 
 ## systemd Example
@@ -63,6 +93,8 @@ ExecStart=/usr/local/bin/mmwx-custom-api
 Restart=on-failure
 RestartSec=5
 Environment="MMWXC_API_LISTEN_ADDR=127.0.0.1:12890"
+Environment="MMWXC_FRONTEND_DIR=/opt/mmwx-custom/frontend/dist"
+Environment="MMWX_API_TARGET=https://mmwx.imgamer.top"
 Environment="MMWXC_ALLOWED_ORIGINS=http://178.214.214.173:5173,https://dev.mmwx.imgamer.top"
 
 NoNewPrivileges=true
@@ -75,33 +107,14 @@ WantedBy=multi-user.target
 If you configure `MMWXC_API_TOKEN`, keep it outside Git, for example in a
 root-owned environment file. Do not put `MMWXC_API_TOKEN` into frontend code.
 
-## Cloudflare Tunnel
-
-`mmwx-custom-api` does not need an independent public domain, and port `12890`
-should not be exposed directly to the internet.
-
-Recommended path:
+## Reverse Proxy
 
 ```text
 Cloudflare Tunnel
         |
-Custom UI: http://127.0.0.1:5173
+mmwx-custom: http://127.0.0.1:12890
         |
-/api/custom/*
-        |
-Custom API: http://127.0.0.1:12890
+Custom UI + /api/custom/* + /api/* proxy
 ```
 
-Recommended Cloudflare Tunnel origin:
-
-```text
-http://127.0.0.1:5173
-```
-
-Do not point Cloudflare Tunnel directly to:
-
-```text
-http://127.0.0.1:12890
-```
-
-Custom UI should proxy same-origin `/api/custom/*` requests to this service.
+See `deploy/nginx.example.conf` for a minimal nginx example.

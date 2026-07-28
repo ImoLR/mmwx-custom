@@ -1,4 +1,7 @@
 mmwx-custom-api
+build/
+frontend/dist/
+frontend/node_modules/
 *.exe
 *.log
 .env
