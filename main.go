@@ -76,7 +76,7 @@ type app struct {
 }
 
 func main() {
-	listenAddr := getenv("MMWXC_LISTEN_ADDR", defaultListenAddr)
+	listenAddr := getenv("MMWXC_API_LISTEN_ADDR", defaultListenAddr)
 	api := &app{
 		allowedOrigins: parseOrigins(getenv("MMWXC_ALLOWED_ORIGINS", defaultOrigins)),
 		apiToken:       os.Getenv("MMWXC_API_TOKEN"),

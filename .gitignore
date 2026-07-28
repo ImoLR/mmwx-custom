@@ -1,2 +1,7 @@
 mmwx-custom-api
 *.exe
+*.log
+.env
+.env.*
+!.env.example
+coverage.out
