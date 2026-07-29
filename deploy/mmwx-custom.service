@@ -1,0 +1,18 @@
+[Unit]
+Description=miaomiaowuX Custom UI and API
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/mmwx-custom
+EnvironmentFile=/etc/mmwx-custom/mmwx-custom.env
+ExecStart=/usr/local/bin/mmwx-custom
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

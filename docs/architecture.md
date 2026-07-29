@@ -1,6 +1,6 @@
 # Architecture
 
-`mmwx-custom` is intentionally separate from the official miaomidouX fork.
+`mmwx-custom` is intentionally separate from the official miaomiaowuX fork.
 
 The Custom UI runs from this repository and uses two same-origin API areas:
 

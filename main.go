@@ -84,7 +84,7 @@ func main() {
 	listenAddr := getenv("MMWXC_API_LISTEN_ADDR", defaultListenAddr)
 	officialAPITarget, err := url.Parse(getenv("MMWX_API_TARGET", defaultOfficialAPITarget))
 	if err != nil {
-		log.Fatalf("[mmwx-custom-api] invalid MMWX_API_TARGET: %v", err)
+		log.Fatalf("[mmwx-custom] invalid MMWX_API_TARGET: %v", err)
 	}
 	api := &app{
 		allowedOrigins: parseOrigins(getenv("MMWXC_ALLOWED_ORIGINS", defaultOrigins)),
@@ -95,7 +95,7 @@ func main() {
 		api.hasCPU = true
 	}
 	if api.apiToken == "" {
-		log.Printf("[mmwx-custom-api] warning: MMWXC_API_TOKEN is not set; system metrics endpoint is unauthenticated")
+		log.Printf("[mmwx-custom] warning: MMWXC_API_TOKEN is not set; system metrics endpoint is unauthenticated")
 	}
 
 	mux := http.NewServeMux()
@@ -118,9 +118,9 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Printf("[mmwx-custom-api] listening on %s", listenAddr)
+		log.Printf("[mmwx-custom] listening on %s", listenAddr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("[mmwx-custom-api] server failed: %v", err)
+			log.Fatalf("[mmwx-custom] server failed: %v", err)
 		}
 	}()
 
@@ -128,7 +128,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("[mmwx-custom-api] graceful shutdown failed: %v", err)
+		log.Printf("[mmwx-custom] graceful shutdown failed: %v", err)
 	}
 }
 

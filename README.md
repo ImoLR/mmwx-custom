@@ -1,120 +1,84 @@
 # mmwx-custom
 
-Standalone Custom UI and Custom API project for 妙妙屋X.
+`mmwx-custom` contains the Custom UI, the Custom API, and the small same-origin
+proxy that connects the UI to an official miaomiaowuX backend.
 
-This repository contains the Custom UI and the small read-only Custom API used
-by that UI. The official miaomiaowuX fork remains responsible for the official
-backend and official embedded UI.
+The official release at `mmwx.imgamer.top` remains an unmodified official
+miaomiaowuX UI and backend. The Custom stack is intended for the separate
+development environment, such as `mmwxc.imgamer.top`.
 
-## Structure
-
-```text
-frontend/       Custom UI
-main.go         Custom API and same-origin proxy service
-deploy/         Deployment examples
-docs/           Project notes
-```
-
-## Request Boundaries
+## Boundaries
 
 - Official UI -> official miaomiaowuX backend `/api/*`
-- Custom UI -> official miaomiaowuX backend `/api/*`
-- Custom UI -> this service `/api/custom/*`
-- Official backend must not call this Custom API
-- Official UI must not call `/api/custom/*`
+- Custom UI -> Fork or official miaomiaowuX backend `/api/*`
+- Custom UI -> this project `/api/custom/*`
+- The official backend and official UI do not import or call this project.
 
-## Features
+## Releases
 
-- Serves the built Custom UI from `frontend/dist`.
-- Proxies Custom UI `/api/*` requests to the official miaomiaowuX backend.
-- Provides host-level system metrics for Custom UI.
-- Does not connect to the miaomiaowuX database.
-- Does not depend on miaomiaowuX internal Go packages.
-- Does not modify official miaomiaowuX business APIs.
-- Listens on a local address by default.
-
-## Endpoints
-
-- `GET /healthz`
-- `GET /api/dashboard/system`
-- `GET /api/custom/dashboard/system`
-- `/api/*` proxied to the configured official miaomiaowuX backend
-
-## Configuration
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `MMWXC_API_LISTEN_ADDR` | `127.0.0.1:12890` | HTTP listen address |
-| `MMWXC_API_TOKEN` | empty | Optional bearer token for `/api/dashboard/system` |
-| `MMWXC_ALLOWED_ORIGINS` | `http://178.214.214.173:5173,https://dev.mmwx.imgamer.top` | Comma-separated CORS allowlist |
-| `MMWXC_FRONTEND_DIR` | `frontend/dist` | Built Custom UI directory served by this service |
-| `MMWX_API_TARGET` | `https://mmwx.imgamer.top` | Official miaomiaowuX backend target for `/api/*` proxy |
-
-When `MMWXC_API_TOKEN` is set, requests to `/api/dashboard/system` must include:
+Each `mmwx-custom` release contains Linux packages named:
 
 ```text
-Authorization: Bearer <token>
+mmwx-custom-linux-amd64.tar.gz
+mmwx-custom-linux-arm64.tar.gz
+checksums.txt
 ```
 
-Do not commit real tokens, passwords, Cloudflare credentials, cookies, private
-keys, or `.env` files.
+Each package includes the `mmwx-custom` executable and the matching built
+Custom UI in `frontend/dist`. Consumers download these Release assets; no
+generated `dist` directory is maintained in the Fork repository.
 
-## Build
+The paired installation, update, and uninstall commands live in the Fork
+repository: [ImoLR/miaomiaowuX](https://github.com/ImoLR/miaomiaowuX).
+
+## Local Build
 
 ```bash
 ./build.sh
 ```
 
-## Run
+This creates `build/mmwx-custom`. The frontend output remains
+`frontend/dist` and is included only in release packages.
 
-```bash
-MMWXC_API_LISTEN_ADDR=127.0.0.1:12890 ./build/mmwx-custom-api
-```
-
-## Frontend Development
+## Development
 
 ```bash
 cd frontend
-MMWX_API_TARGET=https://mmwx.imgamer.top MMWXC_API_TARGET=http://127.0.0.1:12890 npm run dev
+MMWX_API_TARGET=https://mmwx.imgamer.top \
+MMWXC_API_TARGET=http://127.0.0.1:12890 \
+npm run dev
 ```
 
-## systemd Example
+## Runtime Configuration
 
-```ini
-[Unit]
-Description=miaomiaowuX Custom UI API
-After=network.target
-Wants=network-online.target
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MMWXC_API_LISTEN_ADDR` | `127.0.0.1:12890` | HTTP listen address |
+| `MMWXC_API_TOKEN` | empty | Optional bearer token for `/api/dashboard/system` |
+| `MMWXC_ALLOWED_ORIGINS` | development origins | Comma-separated CORS allowlist |
+| `MMWXC_FRONTEND_DIR` | `frontend/dist` | Built Custom UI directory |
+| `MMWX_API_TARGET` | `https://mmwx.imgamer.top` | Backend target for `/api/*` proxy |
 
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/mmwx-custom-api
-Restart=on-failure
-RestartSec=5
-Environment="MMWXC_API_LISTEN_ADDR=127.0.0.1:12890"
-Environment="MMWXC_FRONTEND_DIR=/opt/mmwx-custom/frontend/dist"
-Environment="MMWX_API_TARGET=https://mmwx.imgamer.top"
-Environment="MMWXC_ALLOWED_ORIGINS=http://178.214.214.173:5173,https://dev.mmwx.imgamer.top"
+The following endpoints are available:
 
-NoNewPrivileges=true
-PrivateTmp=true
+- `GET /healthz`
+- `GET /api/dashboard/system`
+- `GET /api/custom/dashboard/system`
+- `/api/*` proxied to `MMWX_API_TARGET`
 
-[Install]
-WantedBy=multi-user.target
-```
+## systemd
 
-If you configure `MMWXC_API_TOKEN`, keep it outside Git, for example in a
-root-owned environment file. Do not put `MMWXC_API_TOKEN` into frontend code.
+The installed Custom service is named `mmwx-custom.service` and runs
+`/usr/local/bin/mmwx-custom`. A unit template is available at
+[`deploy/mmwx-custom.service`](deploy/mmwx-custom.service). The Fork
+installer writes the matching service together with
+`mmwx-custom-backend.service` for the development stack.
 
 ## Reverse Proxy
 
-```text
-Cloudflare Tunnel
-        |
-mmwx-custom: http://127.0.0.1:12890
-        |
-Custom UI + /api/custom/* + /api/* proxy
-```
+Point the development-domain reverse proxy to `127.0.0.1:12890`. This service
+serves the Custom UI, handles `/api/custom/*`, and proxies `/api/*` to the
+configured miaomiaowuX backend.
 
-See `deploy/nginx.example.conf` for a minimal nginx example.
+Do not commit tokens, passwords, Cloudflare credentials, cookies, private
+keys, or `.env` files.
