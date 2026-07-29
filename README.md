@@ -44,7 +44,7 @@ This creates `build/mmwx-custom`. The frontend output remains
 
 ```bash
 cd frontend
-MMWX_API_TARGET=https://mmwx.imgamer.top \
+MMWX_API_TARGET=http://127.0.0.1:12891 \
 MMWXC_API_TARGET=http://127.0.0.1:12890 \
 npm run dev
 ```
@@ -57,7 +57,7 @@ npm run dev
 | `MMWXC_API_TOKEN` | empty | Optional bearer token for `/api/dashboard/system` |
 | `MMWXC_ALLOWED_ORIGINS` | development origins | Comma-separated CORS allowlist |
 | `MMWXC_FRONTEND_DIR` | `frontend/dist` | Built Custom UI directory |
-| `MMWX_API_TARGET` | `http://127.0.0.1:12889` | Fork Backend target for `/api/*` proxy |
+| `MMWX_API_TARGET` | `http://127.0.0.1:12891` | Fork Backend target for `/api/*` proxy |
 
 The following endpoints are available:
 

@@ -23,7 +23,7 @@ import (
 const (
 	defaultListenAddr    = "127.0.0.1:12890"
 	defaultOrigins       = "http://178.214.214.173:5173,https://dev.mmwx.imgamer.top"
-	defaultMMWXAPITarget = "http://127.0.0.1:12889"
+	defaultMMWXAPITarget = "http://127.0.0.1:12891"
 	defaultFrontendDir   = "frontend/dist"
 )
 
