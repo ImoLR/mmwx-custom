@@ -30,6 +30,12 @@ if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v go >/dev/null 2>&1; then
+  if [ -x /usr/local/go/bin/go ]; then
+    export PATH="/usr/local/go/bin:$PATH"
+  fi
+fi
+
 for command in go npm tar sha256sum gh; do
   command -v "$command" >/dev/null || {
     echo "Missing required command: $command" >&2

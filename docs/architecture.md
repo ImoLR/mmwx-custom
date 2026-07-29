@@ -4,7 +4,7 @@
 
 The Custom UI runs from this repository and uses two same-origin API areas:
 
-- `/api/*` is proxied to the official miaomiaowuX backend.
+- `/api/*` is proxied to the configured Fork miaomiaowuX backend.
 - `/api/custom/*` is handled by this repository's Custom API.
 
 The official fork must not import this repository, proxy to it, embed its

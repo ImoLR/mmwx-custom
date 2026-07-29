@@ -1,7 +1,7 @@
 # mmwx-custom
 
 `mmwx-custom` contains the Custom UI, the Custom API, and the small same-origin
-proxy that connects the UI to an official miaomiaowuX backend.
+proxy that connects the UI to the configured miaomiaowuX backend.
 
 The official release at `mmwx.imgamer.top` remains an unmodified official
 miaomiaowuX UI and backend. The Custom stack is intended for the separate
@@ -10,7 +10,7 @@ development environment, such as `mmwxc.imgamer.top`.
 ## Boundaries
 
 - Official UI -> official miaomiaowuX backend `/api/*`
-- Custom UI -> Fork or official miaomiaowuX backend `/api/*`
+- Custom UI -> Fork miaomiaowuX backend `/api/*`
 - Custom UI -> this project `/api/custom/*`
 - The official backend and official UI do not import or call this project.
 
@@ -57,7 +57,7 @@ npm run dev
 | `MMWXC_API_TOKEN` | empty | Optional bearer token for `/api/dashboard/system` |
 | `MMWXC_ALLOWED_ORIGINS` | development origins | Comma-separated CORS allowlist |
 | `MMWXC_FRONTEND_DIR` | `frontend/dist` | Built Custom UI directory |
-| `MMWX_API_TARGET` | `https://mmwx.imgamer.top` | Backend target for `/api/*` proxy |
+| `MMWX_API_TARGET` | `http://127.0.0.1:12889` | Fork Backend target for `/api/*` proxy |
 
 The following endpoints are available:
 

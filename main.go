@@ -21,10 +21,10 @@ import (
 )
 
 const (
-	defaultListenAddr        = "127.0.0.1:12890"
-	defaultOrigins           = "http://178.214.214.173:5173,https://dev.mmwx.imgamer.top"
-	defaultOfficialAPITarget = "https://mmwx.imgamer.top"
-	defaultFrontendDir       = "frontend/dist"
+	defaultListenAddr    = "127.0.0.1:12890"
+	defaultOrigins       = "http://178.214.214.173:5173,https://dev.mmwx.imgamer.top"
+	defaultMMWXAPITarget = "http://127.0.0.1:12889"
+	defaultFrontendDir   = "frontend/dist"
 )
 
 type systemMetrics struct {
@@ -82,7 +82,7 @@ type app struct {
 
 func main() {
 	listenAddr := getenv("MMWXC_API_LISTEN_ADDR", defaultListenAddr)
-	officialAPITarget, err := url.Parse(getenv("MMWX_API_TARGET", defaultOfficialAPITarget))
+	mmwxAPITarget, err := url.Parse(getenv("MMWX_API_TARGET", defaultMMWXAPITarget))
 	if err != nil {
 		log.Fatalf("[mmwx-custom] invalid MMWX_API_TARGET: %v", err)
 	}
@@ -102,7 +102,7 @@ func main() {
 	mux.HandleFunc("/healthz", api.withCORS(api.healthz))
 	mux.HandleFunc("/api/dashboard/system", api.withCORS(api.system))
 	mux.HandleFunc("/api/custom/dashboard/system", api.withCORS(api.system))
-	mux.Handle("/api/", api.withCORSHandler(officialAPIProxy(officialAPITarget)))
+	mux.Handle("/api/", api.withCORSHandler(mmwxAPIProxy(mmwxAPITarget)))
 	mux.Handle("/", spaHandler(getenv("MMWXC_FRONTEND_DIR", defaultFrontendDir)))
 
 	server := &http.Server{
@@ -165,7 +165,7 @@ func (a *app) healthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "status": "ok"})
 }
 
-func officialAPIProxy(target *url.URL) http.Handler {
+func mmwxAPIProxy(target *url.URL) http.Handler {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	baseDirector := proxy.Director
 	proxy.Director = func(r *http.Request) {
