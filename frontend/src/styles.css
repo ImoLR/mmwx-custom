@@ -330,6 +330,7 @@ button {
 }
 
 .system-status-card {
+  --system-gauge-blue: #1677ff;
   padding: 18px 14px 16px;
 }
 
@@ -400,7 +401,11 @@ button {
 }
 
 .gauge-ring .gauge-value {
-  stroke: var(--primary);
+  stroke: var(--system-gauge-blue);
+}
+
+.gauge-ring:not(.orange):not(.neutral) .gauge-value {
+  stroke-opacity: 0.9;
 }
 
 .gauge-ring.orange .gauge-value {
