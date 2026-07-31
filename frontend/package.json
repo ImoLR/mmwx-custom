@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "visual": "node ../tests/visual/visual.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
@@ -20,6 +21,8 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.5.4",
+    "playwright": "^1.45.3",
+    "pngjs": "^7.0.0",
     "postcss": "^8.5.23",
     "tailwindcss": "^3.4.19",
     "typescript": "^5.7.2",
