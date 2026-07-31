@@ -1,27 +1,37 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  BarChart3,
   Boxes,
   ChevronDown,
+  Clock3,
+  Database,
+  Edit3,
   Gauge,
   Globe2,
   Home,
+  LayoutGrid,
+  List,
   LogIn,
   LogOut,
   Menu,
   Moon,
+  MoreHorizontal,
+  Network,
   Power,
+  Plus,
   RefreshCw,
   Route,
   RotateCw,
+  Search,
   Server,
+  Share2,
   Settings,
   Sun,
+  TerminalSquare,
   Tags,
+  Trash2,
   Wrench,
   X,
-  UserRound,
   Users,
 } from "lucide-react";
 import {
@@ -204,6 +214,9 @@ function Dashboard({
   const [menuOpen, setMenuOpen] = useState(false);
   const [selectedServerId, setSelectedServerId] = useState<number | null>(null);
   const [xrayActionBusy, setXrayActionBusy] = useState(false);
+  const [serviceViewMode, setServiceViewMode] = useState<"grid" | "list">("grid");
+  const [serviceMenuServer, setServiceMenuServer] = useState<RemoteServer | null>(null);
+  const [serviceDialog, setServiceDialog] = useState<{ kind: "add" | "access" | "edit" | "xray" | "agent"; server?: RemoteServer } | null>(null);
 
   const refreshUserSpeeds = useCallback(
     async (servers: RemoteServer[]) => {
@@ -337,7 +350,7 @@ function Dashboard({
         if (snapshot.servers) void refreshUserSpeeds(snapshot.servers);
         setState((current) => ({
           ...current,
-          servers: snapshot.servers ?? current.servers,
+          servers: snapshot.servers ? mergeServerSnapshots(current.servers, snapshot.servers) : current.servers,
           summary: snapshot.trafficSummary ?? current.summary,
           adminTraffic: snapshot.adminTraffic ?? current.adminTraffic,
           nodes: snapshot.nodeTotals?.items ?? current.nodes,
@@ -419,14 +432,14 @@ function Dashboard({
   }, [selectedServerId, state.servers]);
 
   const runXrayAction = useCallback(
-    async (action: "start" | "stop" | "restart") => {
-      if (!selectedServer || xrayActionBusy) return;
+    async (action: "start" | "stop" | "restart", targetServer = selectedServer) => {
+      if (!targetServer || xrayActionBusy) return;
       const label = action === "restart" ? "重启" : action === "stop" ? "停止" : "启动";
-      if (!window.confirm(`确认${label} ${selectedServer.name} 的 Xray？`)) return;
+      if (!window.confirm(`确认${label} ${targetServer.name} 的 Xray？`)) return;
       setXrayActionBusy(true);
       setError("");
       try {
-        await controlRemoteService(session.token, selectedServer.id, "xray", action);
+        await controlRemoteService(session.token, targetServer.id, "xray", action);
         await loadDashboard();
       } catch (err) {
         setError(err instanceof Error ? err.message : `${label} Xray 失败`);
@@ -439,13 +452,28 @@ function Dashboard({
 
   return (
     <main className="app-shell">
-      <header className="topbar compact">
-        <button className="round-button" type="button" onClick={() => setMenuOpen(true)} aria-label="打开菜单">
-          <Menu />
-        </button>
-      </header>
+      {activeTab !== "services" && (
+        <header className="topbar compact">
+          <button className="round-button" type="button" onClick={() => setMenuOpen(true)} aria-label="打开菜单">
+            <Menu />
+          </button>
+        </header>
+      )}
 
-      {menuOpen && <SideMenu session={session} dark={dark} onToggleTheme={onToggleTheme} onClose={() => setMenuOpen(false)} onLogout={onLogout} />}
+      {menuOpen && (
+        <SideMenu
+          session={session}
+          dark={dark}
+          activeTab={activeTab}
+          onSelectTab={(tab) => {
+            setActiveTab(tab);
+            setMenuOpen(false);
+          }}
+          onToggleTheme={onToggleTheme}
+          onClose={() => setMenuOpen(false)}
+          onLogout={onLogout}
+        />
+      )}
 
       {error && (
         <section className="notice-card">
@@ -456,7 +484,17 @@ function Dashboard({
         </section>
       )}
 
-      {activeTab !== "overview" ? (
+      {activeTab === "services" ? (
+        <ServiceManagementPage
+          servers={state.servers}
+          totals={totals}
+          viewMode={serviceViewMode}
+          onViewModeChange={setServiceViewMode}
+          onOpenGlobalMenu={() => setMenuOpen(true)}
+          onOpenMenu={setServiceMenuServer}
+          onOpenDialog={(kind, server) => setServiceDialog({ kind, server })}
+        />
+      ) : activeTab !== "overview" ? (
         <Placeholder title={tabTitle(activeTab)} />
       ) : (
         <div className="dashboard-content" aria-busy={loading}>
@@ -472,20 +510,31 @@ function Dashboard({
         </div>
       )}
 
-      <nav className="bottom-nav" aria-label="主导航">
-        {[
-          ["overview", Home, "概览"],
-          ["nodes", Boxes, "节点"],
-          ["users", Users, "用户"],
-          ["subscriptions", BarChart3, "订阅"],
-          ["settings", Settings, "设置"],
-        ].map(([key, Icon, label]) => (
-          <button className={activeTab === key ? "active" : ""} key={String(key)} type="button" onClick={() => setActiveTab(String(key))}>
-            <Icon />
-            <span>{label as string}</span>
-          </button>
-        ))}
-      </nav>
+      {serviceMenuServer && (
+        <ServerActionsLayer
+          server={serviceMenuServer}
+          onClose={() => setServiceMenuServer(null)}
+          onOpenDialog={(kind) => {
+            setServiceDialog({ kind, server: serviceMenuServer });
+            setServiceMenuServer(null);
+          }}
+          onXrayAction={(action) => {
+            setServiceMenuServer(null);
+            void runXrayAction(action, serviceMenuServer);
+          }}
+        />
+      )}
+
+      {serviceDialog && (
+        <ServiceDialog
+          dialog={serviceDialog}
+          onClose={() => setServiceDialog(null)}
+          onXrayAction={(action) => {
+            void runXrayAction(action, serviceDialog.server);
+          }}
+          xrayActionBusy={xrayActionBusy}
+        />
+      )}
     </main>
   );
 }
@@ -709,30 +758,374 @@ function ServerOverview({ server, upload, download }: { server?: RemoteServer; u
   );
 }
 
+function ServiceManagementPage({
+  servers,
+  totals,
+  viewMode,
+  onViewModeChange,
+  onOpenGlobalMenu,
+  onOpenMenu,
+  onOpenDialog,
+}: {
+  servers: RemoteServer[];
+  totals: { upload: number; download: number };
+  viewMode: "grid" | "list";
+  onViewModeChange: (mode: "grid" | "list") => void;
+  onOpenGlobalMenu: () => void;
+  onOpenMenu: (server: RemoteServer) => void;
+  onOpenDialog: (kind: "add" | "access" | "edit" | "xray" | "agent", server?: RemoteServer) => void;
+}) {
+  const online = servers.filter(isServerOnline).length;
+  const offline = Math.max(0, servers.length - online);
+
+  return (
+    <div className="service-page">
+      <header className="service-header">
+        <button className="round-button service-menu-button" type="button" onClick={onOpenGlobalMenu} aria-label="打开菜单">
+          <Menu />
+        </button>
+        <div className="service-title-block">
+          <h1>服务管理</h1>
+          <p>管理远程服务器、Agent 和 Xray 配置</p>
+        </div>
+        <div className="service-header-actions">
+          <div className="service-view-toggle" aria-label="视图切换">
+            <button className={viewMode === "grid" ? "active" : ""} type="button" onClick={() => onViewModeChange("grid")} aria-label="网格视图">
+              <LayoutGrid />
+            </button>
+            <button className={viewMode === "list" ? "active" : ""} type="button" onClick={() => onViewModeChange("list")} aria-label="列表视图">
+              <List />
+            </button>
+          </div>
+          <button className="service-primary-button" type="button" onClick={() => onOpenDialog("add")}>
+            <Plus />
+            <span>添加</span>
+          </button>
+          <button className="service-icon-button service-page-more" type="button" onClick={() => onOpenDialog("access")} aria-label="页面更多">
+            <MoreHorizontal />
+          </button>
+        </div>
+      </header>
+
+      <section className="service-summary-grid" aria-label="服务统计">
+        <ServiceSummaryItem icon={<span aria-hidden="true">●</span>} value={String(online)} tone="success" label="在线" />
+        <ServiceSummaryItem icon={<span aria-hidden="true">●</span>} value={String(offline)} tone="danger" label="离线" />
+        <ServiceSummaryItem icon={<span aria-hidden="true">↑</span>} value={formatSpeed(totals.upload)} tone="upload" label="上传" />
+        <ServiceSummaryItem icon={<span aria-hidden="true">↓</span>} value={formatSpeed(totals.download)} tone="download" label="下载" />
+      </section>
+
+      <section className={`service-server-list ${viewMode}`}>
+        {servers.length ? (
+          servers.map((server) => (
+            <ServiceServerCard
+              key={server.id}
+              server={server}
+              viewMode={viewMode}
+              onOpenMenu={() => onOpenMenu(server)}
+              onOpenDialog={(kind) => onOpenDialog(kind, server)}
+            />
+          ))
+        ) : (
+          <section className="panel-card">
+            <EmptyText>暂无服务器数据</EmptyText>
+          </section>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function ServiceSummaryItem({ icon, value, tone, label }: { icon: React.ReactNode; value: string; tone: "success" | "danger" | "upload" | "download"; label: string }) {
+  const [mainValue, ...unitParts] = value.split(" ");
+  const unit = unitParts.join(" ");
+
+  return (
+    <div className={`service-summary-item ${tone}`} aria-label={`${label} ${value}`} title={`${label} ${value}`}>
+      <span className="service-summary-icon">{icon}</span>
+      <span className="service-summary-value">
+        <strong>{mainValue}</strong>
+        {unit && <em>{unit}</em>}
+      </span>
+    </div>
+  );
+}
+
+function ServiceServerCard({
+  server,
+  viewMode,
+  onOpenMenu,
+  onOpenDialog,
+}: {
+  server: RemoteServer;
+  viewMode: "grid" | "list";
+  onOpenMenu: () => void;
+  onOpenDialog: (kind: "edit" | "xray" | "agent") => void;
+}) {
+  const address = displayServerAddress(server);
+
+  return (
+    <article className={`service-server-card ${viewMode}`}>
+      <div className="service-server-main">
+        <div className="service-server-head">
+          <span className={`service-status-dot ${serverStatusKind(server)}`} aria-label={isServerOnline(server) ? "服务器在线" : "服务器离线"} />
+          <div className="service-server-identity">
+            <div className="service-location">地区数据暂无</div>
+            <h2>{server.name}</h2>
+          </div>
+          <button className="service-card-more" type="button" onClick={onOpenMenu} aria-label={`${server.name} 更多操作`}>
+            <MoreHorizontal />
+          </button>
+        </div>
+
+        <div className="service-badges">
+          <span className="service-badge success">{formatXrayMode(server.xray_mode)}</span>
+          <span className="service-badge success">Agent {agentVersion(server)}</span>
+          {server.ddns_pending && <span className="service-badge warning">DDNS 待同步</span>}
+        </div>
+
+        <div className="service-v3-metrics">
+          <div className="service-v3-row service-v3-row-address">
+            <ServiceValue icon={<Globe2 />} value={address} title={address} />
+            <ServiceValue icon={<Network />} value="--" />
+          </div>
+          <div className="service-v3-row service-v3-row-stats">
+            <ServiceValue icon={<span aria-hidden="true">↑</span>} value={formatSpeed(server.current_upload_speed ?? 0)} />
+            <ServiceValue icon={<span aria-hidden="true">↓</span>} value={formatSpeed(server.current_download_speed ?? 0)} />
+            <ServiceValue icon={<Database />} value={formatBytes(server.traffic_used ?? 0)} />
+            <ServiceValue icon={<span aria-hidden="true">∞</span>} value={trafficLimitText(server)} title={trafficResetText(server)} />
+          </div>
+        </div>
+      </div>
+
+      <div className="service-card-actions">
+        <button type="button" onClick={() => onOpenDialog("xray")}>
+          <TerminalSquare />
+          <span>Xray 配置</span>
+        </button>
+        <button type="button" onClick={() => onOpenDialog("agent")}>
+          <Wrench />
+          <span>Agent 管理</span>
+        </button>
+        <button type="button" onClick={onOpenMenu}>
+          <MoreHorizontal />
+          <span>更多操作</span>
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function ServiceValue({ icon, value, title }: { icon: React.ReactNode; value: string; title?: string }) {
+  const [mainValue, ...unitParts] = value.split(" ");
+  const unit = unitParts.join(" ");
+
+  return (
+    <div className="service-v3-value" title={title || value}>
+      <span className="service-v3-icon">{icon}</span>
+      <span className="service-v3-text">
+        <strong>{mainValue}</strong>
+        {unit && <em>{unit}</em>}
+      </span>
+    </div>
+  );
+}
+
+function ServerActionsLayer({
+  server,
+  onClose,
+  onOpenDialog,
+  onXrayAction,
+}: {
+  server: RemoteServer;
+  onClose: () => void;
+  onOpenDialog: (kind: "edit" | "xray" | "agent") => void;
+  onXrayAction: (action: "start" | "stop" | "restart") => void;
+}) {
+  return (
+    <div className="service-action-layer" role="presentation" onClick={onClose}>
+      <div className="service-action-sheet" role="dialog" aria-label={`${server.name} 更多操作`} onClick={(event) => event.stopPropagation()}>
+        <div className="service-action-head">
+          <div>
+            <h3>{server.name}</h3>
+            <p>更多操作</p>
+          </div>
+          <button className="service-icon-button" type="button" onClick={onClose} aria-label="关闭">
+            <X />
+          </button>
+        </div>
+        <ActionGroup title="服务器">
+          <ActionButton icon={<Edit3 />} label="编辑服务器" onClick={() => onOpenDialog("edit")} />
+          <ActionButton icon={<Share2 />} label="分享 / 接入服务器" badge="PRO" disabled />
+          <ActionButton icon={<Search />} label="扫描远程服务" disabled />
+        </ActionGroup>
+        <ActionGroup title="节点同步">
+          <ActionButton icon={<RefreshCw />} label="同步节点" disabled />
+          <ActionButton icon={<Globe2 />} label="同步节点地址" disabled />
+          <ActionButton icon={<Clock3 />} label="配置历史" disabled />
+          <ActionButton icon={<Database />} label="下发默认配置" disabled />
+          <ActionButton icon={<Plus />} label="添加网站" disabled />
+        </ActionGroup>
+        <ActionGroup title="Xray 管理">
+          <ActionButton icon={<TerminalSquare />} label="配置 / 入站 / 出站 / 路由" onClick={() => onOpenDialog("xray")} />
+          <ActionButton icon={<Gauge />} label="指标 / 流量统计 / gRPC" onClick={() => onOpenDialog("xray")} />
+        </ActionGroup>
+        <ActionGroup title="Agent 管理">
+          <ActionButton icon={<Wrench />} label="Agent 管理" onClick={() => onOpenDialog("agent")} />
+          <ActionButton icon={<RefreshCw />} label="升级 Agent" danger disabled />
+        </ActionGroup>
+        <ActionGroup title="危险操作">
+          <ActionButton icon={<Power />} label={server.xray_running ? "停止 Xray" : "启动 Xray"} danger onClick={() => onXrayAction(server.xray_running ? "stop" : "start")} />
+          <ActionButton icon={<RotateCw />} label="重启 Xray" danger onClick={() => onXrayAction("restart")} />
+          <ActionButton icon={<Trash2 />} label="卸载 Agent" danger disabled />
+          <ActionButton icon={<Trash2 />} label="删除服务器" danger disabled />
+        </ActionGroup>
+      </div>
+    </div>
+  );
+}
+
+function ActionGroup({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="service-action-group">
+      <h4>{title}</h4>
+      <div>{children}</div>
+    </section>
+  );
+}
+
+function ActionButton({ icon, label, badge, danger, disabled, onClick }: { icon: React.ReactNode; label: string; badge?: string; danger?: boolean; disabled?: boolean; onClick?: () => void }) {
+  return (
+    <button className={`service-action-row${danger ? " danger" : ""}`} type="button" disabled={disabled} onClick={onClick}>
+      {icon}
+      <span>{label}</span>
+      {badge && <em>{badge}</em>}
+      {disabled && <small>暂未迁移</small>}
+    </button>
+  );
+}
+
+function ServiceDialog({
+  dialog,
+  onClose,
+  onXrayAction,
+  xrayActionBusy,
+}: {
+  dialog: { kind: "add" | "access" | "edit" | "xray" | "agent"; server?: RemoteServer };
+  onClose: () => void;
+  onXrayAction: (action: "start" | "stop" | "restart") => void;
+  xrayActionBusy: boolean;
+}) {
+  const server = dialog.server;
+  const title = {
+    add: "添加服务器",
+    access: "接入分享服务器",
+    edit: "编辑远程服务器",
+    xray: "Xray 管理",
+    agent: "Agent 管理",
+  }[dialog.kind];
+
+  return (
+    <div className="service-dialog-layer" role="presentation" onClick={onClose}>
+      <section className="service-dialog" role="dialog" aria-label={title} onClick={(event) => event.stopPropagation()}>
+        <div className="service-dialog-head">
+          <h3>{title}</h3>
+          <button className="service-icon-button" type="button" onClick={onClose} aria-label="关闭">
+            <X />
+          </button>
+        </div>
+
+        {dialog.kind === "xray" && server ? (
+          <div className="service-dialog-body">
+            <div className="service-tabs">
+              <button className="active">Config</button>
+              <button>Inbounds</button>
+              <button>Outbounds</button>
+              <button>Routing</button>
+            </div>
+            <div className="service-dialog-section">
+              <h4>Service Control</h4>
+              <div className="service-inline-actions">
+                <button type="button" disabled={xrayActionBusy} onClick={() => onXrayAction("start")}>Start</button>
+                <button type="button" disabled={xrayActionBusy} onClick={() => onXrayAction("stop")}>Stop</button>
+                <button type="button" disabled={xrayActionBusy} onClick={() => onXrayAction("restart")}>Restart</button>
+              </div>
+              <p>{xrayState(server).label}{server.xray_version ? ` (${server.xray_version})` : ""}</p>
+            </div>
+            <div className="service-dialog-section">
+              <h4>Metrics / Traffic Stats / gRPC</h4>
+              <p>入口已保留；具体配置编辑继续沿用官方接口迁移。</p>
+            </div>
+          </div>
+        ) : dialog.kind === "agent" && server ? (
+          <div className="service-dialog-body">
+            <div className="service-form-grid">
+              <InfoBlock label="Agent 版本" value={agentVersion(server)} />
+            </div>
+            <p className="service-dialog-note">Agent 升级、卸载等危险操作入口已在更多操作中保留，正式执行前必须继续走原确认流程。</p>
+          </div>
+        ) : (
+          <div className="service-dialog-body">
+            <div className="service-dialog-section">
+              <h4>{dialog.kind === "edit" ? "基本信息" : "功能入口"}</h4>
+              <p>本次重构仅迁移服务管理视觉和入口层级，不自动保存或执行配置变更。</p>
+            </div>
+            <div className="service-form-grid">
+              <label>
+                <span>服务器名称</span>
+                <input value={server?.name ?? ""} readOnly placeholder="服务器名称" />
+              </label>
+              <label>
+                <span>服务器地址</span>
+                <input value={displayServerAddress(server)} readOnly placeholder="服务器地址" />
+              </label>
+              <label>
+                <span>Agent 端口</span>
+                <input value={server?.listen_port ?? server?.pull_port ?? ""} readOnly placeholder="Agent 端口" />
+              </label>
+              <label>
+                <span>Xray Mode</span>
+                <input value={formatXrayMode(server?.xray_mode)} readOnly placeholder="Xray Mode" />
+              </label>
+            </div>
+          </div>
+        )}
+
+        <div className="service-dialog-actions">
+          <button type="button" onClick={onClose}>关闭</button>
+          {dialog.kind === "edit" && <button type="button" disabled>保存</button>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function SideMenu({
   session,
   dark,
+  activeTab,
+  onSelectTab,
   onToggleTheme,
   onClose,
   onLogout,
 }: {
   session: Session;
   dark: boolean;
+  activeTab: string;
+  onSelectTab: (tab: string) => void;
   onToggleTheme: () => void;
   onClose: () => void;
   onLogout: () => void;
 }) {
   const menuItems = [
-    { label: "系统状态", icon: Gauge, active: true },
-    { label: "入站", icon: LogIn },
-    { label: "客户端", icon: Users },
-    { label: "分组", icon: Tags },
-    { label: "节点", icon: Server },
-    { label: "主机", icon: Globe2 },
-    { label: "出站", icon: LogOut },
-    { label: "路由", icon: Route },
-    { label: "面板设置", icon: Settings, expandable: true },
-    { label: "Xray 配置", icon: Wrench, expandable: true },
+    { key: "overview", label: "概览", icon: Home },
+    { key: "nodes", label: "节点", icon: Boxes },
+    { key: "users", label: "用户", icon: Users },
+    { key: "services", label: "服务管理", icon: Server },
+    { key: "settings", label: "设置", icon: Settings },
+    { key: "inbounds", label: "入站", icon: LogIn },
+    { key: "outbounds", label: "出站", icon: LogOut },
+    { key: "routing", label: "路由", icon: Route },
+    { key: "xray", label: "Xray 配置", icon: Wrench, expandable: true },
   ];
 
   return (
@@ -757,8 +1150,8 @@ function SideMenu({
           <strong>{session.nickname || session.username}</strong>
           <span>{session.role}</span>
         </div>
-        {menuItems.map(({ label, icon: Icon, active, expandable }) => (
-          <button className={`menu-item${active ? " active" : ""}`} key={label} type="button">
+        {menuItems.map(({ key, label, icon: Icon, expandable }) => (
+          <button className={`menu-item${activeTab === key ? " active" : ""}`} key={key} type="button" onClick={() => onSelectTab(key)}>
             <Icon />
             <span>{label}</span>
             {expandable && <ChevronDown className="menu-item-chevron" />}
@@ -837,6 +1230,16 @@ function calculateTotals(servers: RemoteServer[]) {
   );
 }
 
+function mergeServerSnapshots(current: RemoteServer[], snapshot: RemoteServer[]) {
+  if (current.length === 0) return snapshot;
+  const merged = new Map<number, RemoteServer>();
+  current.forEach((server) => merged.set(server.id, server));
+  snapshot.forEach((server) => {
+    merged.set(server.id, { ...(merged.get(server.id) ?? {}), ...server });
+  });
+  return Array.from(merged.values());
+}
+
 function byTraffic(a: NodeTrafficItem, b: NodeTrafficItem) {
   return b.uplink + b.downlink - (a.uplink + a.downlink);
 }
@@ -854,6 +1257,73 @@ function aggregateUserSpeeds(results: PromiseSettledResult<Awaited<ReturnType<ty
     }
   }
   return speeds;
+}
+
+function isServerOnline(server: RemoteServer) {
+  return server.status === "connected" || server.ws_connected === true;
+}
+
+function isAgentOnline(server: RemoteServer) {
+  return isServerOnline(server);
+}
+
+function serverStatusKind(server: RemoteServer) {
+  if (isServerOnline(server)) return "online";
+  if (server.status === "connecting") return "pending";
+  return "offline";
+}
+
+function displayServerAddress(server?: RemoteServer) {
+  if (!server) return "";
+  return server.pull_address || server.domain || server.ip_address || server.ip_address_v6 || "--";
+}
+
+function formatXrayMode(mode?: string) {
+  if (!mode) return "--";
+  return mode === "embedded" ? "Embedded Xray" : mode === "external" ? "External Xray" : mode;
+}
+
+function formatXrayVersion(version: string) {
+  return version.startsWith("v") ? version : `v${version}`;
+}
+
+function agentVersion(server: RemoteServer) {
+  return server.agent_version ? formatXrayVersion(stripVersionPrefix(server.agent_version)) : "--";
+}
+
+function trafficLimitText(server: RemoteServer) {
+  if (!server.traffic_limit || server.traffic_limit <= 0) return "无限";
+  return formatBytes(server.traffic_limit);
+}
+
+function trafficResetText(server: RemoteServer) {
+  const parts: string[] = [];
+  if (server.traffic_reset_day) parts.push(`每月 ${server.traffic_reset_day} 日重置`);
+  if (server.last_traffic_reset_at) parts.push(`上次重置 ${formatDateTime(server.last_traffic_reset_at)}`);
+  return parts.join(" · ") || trafficLimitText(server);
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function formatRelativeTime(value?: string | null) {
+  if (!value) return "--";
+  const date = new Date(value);
+  const time = date.getTime();
+  if (Number.isNaN(time)) return value;
+  const seconds = Math.max(0, Math.floor((Date.now() - time) / 1000));
+  if (seconds < 10) return "刚刚";
+  if (seconds < 60) return `${seconds} 秒前`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  return `${days} 天前`;
 }
 
 function formatUserRealtime(connections?: number, speed?: number) {

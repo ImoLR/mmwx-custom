@@ -37,10 +37,32 @@ export type RemoteServer = {
   xray_boot_time?: string | null;
   xray_running?: boolean;
   xray_version?: string;
+  agent_version?: string;
   ip_address?: string;
+  ip_address_v6?: string;
   domain?: string;
-  traffic_source?: string;
+  pull_address?: string;
+  pull_port?: number;
+  listen_port?: number;
+  connection_mode?: string;
+  xray_mode?: string;
+  last_heartbeat?: string;
+  speed_updated_at?: string;
+  traffic_reset_day?: number;
+  last_traffic_reset_at?: string;
+  ipv6_enabled?: boolean;
   ws_connected?: boolean;
+  fallback_to_pull?: boolean;
+  ddns_enabled?: boolean;
+  ddns_pending?: boolean;
+  inbounds?: Array<{
+    tag?: string;
+    protocol?: string;
+    port?: number;
+    uplink?: number;
+    downlink?: number;
+  }>;
+  traffic_source?: string;
   sysmetrics?: SystemMetrics | null;
 };
 
