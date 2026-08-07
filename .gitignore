@@ -8,3 +8,5 @@ frontend/node_modules/
 .env.*
 !.env.example
 coverage.out
+helper-state.json
+helper-state.json.tmp

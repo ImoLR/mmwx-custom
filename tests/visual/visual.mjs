@@ -82,6 +82,10 @@ async function captureService(page, mode, width) {
   await page.waitForSelector(".service-page", { timeout: 15000 });
   await page.getByLabel(mode === "grid" ? "网格视图" : "列表视图").click();
   await page.waitForSelector(`.service-server-list.${mode}`, { timeout: 15000 });
+  await page.waitForFunction(() => {
+    const location = document.querySelector(".service-location");
+    return Boolean(location && !location.textContent?.includes("检测中"));
+  }, undefined, { timeout: 8000 }).catch(() => {});
   await stabilizeVisualState(page);
   await assertNoOverflow(page, `service-${mode}`, width);
 }
@@ -138,7 +142,17 @@ async function stabilizeVisualState(page) {
     setText(".xray-card .xray-version", ["v26.6.27"]);
     setText(".xray-card .xray-state span:last-child", ["运行中"]);
     setText(".service-server-identity h2", ["Boil HKT"]);
-    setText(".service-location", ["地区数据暂无"]);
+    document.querySelectorAll(".service-location").forEach((element) => {
+      element.classList.add("known");
+      element.replaceChildren();
+      const flag = document.createElement("span");
+      flag.className = "service-location-flag";
+      flag.setAttribute("aria-hidden", "true");
+      flag.textContent = "🇭🇰";
+      const label = document.createElement("span");
+      label.textContent = "香港";
+      element.append(flag, label);
+    });
 
     document.querySelectorAll(".service-server-card").forEach((element, index) => {
       element.style.display = index === 0 ? "" : "none";
@@ -147,8 +161,8 @@ async function stabilizeVisualState(page) {
       setSplitValue(element, ["2", "0", "2.53 KB/s", "1.21 KB/s"][index % 4]);
     });
     document.querySelectorAll(".service-v3-row-stats").forEach((row) => {
-      row.querySelectorAll(".service-v3-value").forEach((element, index) => {
-        setSplitValue(element, ["2.33 KB/s", "1.00 KB/s", "1.42 GB", "无限"][index % 4]);
+      row.querySelectorAll(".service-v3-inline-value").forEach((element, index) => {
+        element.textContent = ["2.33 KB/s", "1.00 KB/s", "1.42 GB / 无限", "--"][index % 4];
       });
     });
   });

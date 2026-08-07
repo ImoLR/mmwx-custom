@@ -57,12 +57,17 @@ for arch in amd64 arm64; do
   stage="$TEMP_DIR/mmwx-custom-linux-$arch"
   mkdir -p "$stage/frontend"
   GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o "$stage/mmwx-custom" "$ROOT_DIR"
+  GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o "$RELEASE_DIR/mmwxc-helper-linux-$arch" "$ROOT_DIR/cmd/mmwxc-helper"
   cp -R "$ROOT_DIR/frontend/dist" "$stage/frontend/dist"
   tar -C "$stage" -czf "$RELEASE_DIR/mmwx-custom-linux-$arch.tar.gz" mmwx-custom frontend
 done
 
 pushd "$RELEASE_DIR" >/dev/null
-sha256sum mmwx-custom-linux-amd64.tar.gz mmwx-custom-linux-arm64.tar.gz > checksums.txt
+sha256sum \
+  mmwx-custom-linux-amd64.tar.gz \
+  mmwx-custom-linux-arm64.tar.gz \
+  mmwxc-helper-linux-amd64 \
+  mmwxc-helper-linux-arm64 > checksums.txt
 popd >/dev/null
 
 gh release create "$TAG" \
@@ -71,4 +76,6 @@ gh release create "$TAG" \
   --generate-notes \
   "$RELEASE_DIR/mmwx-custom-linux-amd64.tar.gz" \
   "$RELEASE_DIR/mmwx-custom-linux-arm64.tar.gz" \
+  "$RELEASE_DIR/mmwxc-helper-linux-amd64" \
+  "$RELEASE_DIR/mmwxc-helper-linux-arm64" \
   "$RELEASE_DIR/checksums.txt"

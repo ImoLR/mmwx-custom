@@ -1,5 +1,8 @@
 import type {
   AdminTrafficResponse,
+  ConnectionMetricsResponse,
+  GeoLookupResponse,
+  HelperInstallTokenResponse,
   LoginResponse,
   SystemMetrics,
   NodeTotalsResponse,
@@ -115,6 +118,25 @@ export function fetchRemoteServers(token: string) {
 
 export function fetchLocalSystemMetrics(_token: string, signal?: AbortSignal) {
   return requestCustomApi<SystemMetrics>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/dashboard/system"), { signal });
+}
+
+export function fetchConnectionMetrics(signal?: AbortSignal) {
+  return requestCustomApi<ConnectionMetricsResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/agent/metrics"), { signal });
+}
+
+export function createHelperInstallToken(token: string, serverId: number) {
+  return requestCustomApi<HelperInstallTokenResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/helper/install-token"), {
+    method: "POST",
+    headers: {
+      "MM-Authorization": token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ server_id: serverId }),
+  });
+}
+
+export function fetchGeoLookup(host: string, signal?: AbortSignal) {
+  return requestCustomApi<GeoLookupResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/geo/lookup?host=${encodeURIComponent(host)}`), { signal });
 }
 
 export function fetchNodeTotals(token: string, date: string) {

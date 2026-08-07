@@ -38,6 +38,10 @@ export type RemoteServer = {
   xray_running?: boolean;
   xray_version?: string;
   agent_version?: string;
+  country_code?: string;
+  country?: string;
+  region?: string;
+  region_name?: string;
   ip_address?: string;
   ip_address_v6?: string;
   domain?: string;
@@ -64,6 +68,42 @@ export type RemoteServer = {
   }>;
   traffic_source?: string;
   sysmetrics?: SystemMetrics | null;
+};
+
+export type ConnectionMetric = {
+  server_id: string;
+  custom_server_uuid?: string;
+  tcp_count: number;
+  udp_count: number;
+  connection_count: number;
+  sampled_at?: string;
+  updated_at?: string;
+  helper_version?: string;
+  available: boolean;
+};
+
+export type ConnectionMetricsResponse = {
+  success: boolean;
+  stale_timeout_seconds?: number;
+  metrics?: Record<string, ConnectionMetric>;
+};
+
+export type HelperInstallTokenResponse = {
+  success: boolean;
+  server_id: string;
+  custom_server_uuid: string;
+  install_url: string;
+  expires_at: string;
+  command: string;
+};
+
+export type GeoLookupResponse = {
+  success?: boolean;
+  country_code?: string;
+  country?: string;
+  flag?: string;
+  message?: string;
+  cached?: boolean;
 };
 
 export type SystemMetrics = {

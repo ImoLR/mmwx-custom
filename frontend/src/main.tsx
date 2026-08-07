@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  ArrowDown,
+  ArrowUp,
   Boxes,
   ChevronDown,
   Clock3,
@@ -16,7 +18,6 @@ import {
   Menu,
   Moon,
   MoreHorizontal,
-  Network,
   Power,
   Plus,
   RefreshCw,
@@ -46,6 +47,8 @@ import {
 import {
   clearSession,
   controlRemoteService,
+  createHelperInstallToken,
+  fetchConnectionMetrics,
   fetchAdminTraffic,
   fetchLocalSystemMetrics,
   fetchNodeTotals,
@@ -59,8 +62,11 @@ import {
   saveSession,
 } from "./api";
 import { formatBytes, formatDurationSince, formatGB, formatSpeed, todayUTC } from "./format";
+import { loadingRegion, lookupServerRegion, serverRegionAddress, serverRegionFromFields, unknownRegion } from "./geo";
 import type {
   AdminTrafficResponse,
+  ConnectionMetric,
+  HelperInstallTokenResponse,
   NodeTrafficItem,
   RealtimeSnapshot,
   RemoteServer,
@@ -80,6 +86,7 @@ type DashboardState = {
   userConnections: Record<string, number>;
   userSpeeds: Record<string, number>;
   adminTraffic: AdminTrafficResponse | null;
+  connectionMetrics: Record<string, ConnectionMetric>;
 };
 
 const emptyState: DashboardState = {
@@ -91,6 +98,7 @@ const emptyState: DashboardState = {
   userConnections: {},
   userSpeeds: {},
   adminTraffic: null,
+  connectionMetrics: {},
 };
 
 const SYSTEM_METRICS_REFRESH_MS = 5000;
@@ -216,7 +224,7 @@ function Dashboard({
   const [xrayActionBusy, setXrayActionBusy] = useState(false);
   const [serviceViewMode, setServiceViewMode] = useState<"grid" | "list">("grid");
   const [serviceMenuServer, setServiceMenuServer] = useState<RemoteServer | null>(null);
-  const [serviceDialog, setServiceDialog] = useState<{ kind: "add" | "access" | "edit" | "xray" | "agent"; server?: RemoteServer } | null>(null);
+  const [serviceDialog, setServiceDialog] = useState<{ kind: "add" | "access" | "edit" | "xray" | "agent" | "helper"; server?: RemoteServer } | null>(null);
 
   const refreshUserSpeeds = useCallback(
     async (servers: RemoteServer[]) => {
@@ -237,13 +245,14 @@ function Dashboard({
     setError("");
     try {
       const date = todayUTC();
-      const [summary, remoteServers, nodeTotals, users, connections, adminTraffic] = await Promise.all([
+      const [summary, remoteServers, nodeTotals, users, connections, adminTraffic, helperConnections] = await Promise.all([
         fetchTrafficSummary(session.token),
         fetchRemoteServers(session.token),
         fetchNodeTotals(session.token, date),
         fetchUsers(session.token),
         fetchUserConnections(session.token),
         fetchAdminTraffic(session.token),
+        fetchConnectionMetrics(),
       ]);
 
       const servers = remoteServers.servers ?? [];
@@ -258,6 +267,7 @@ function Dashboard({
         userConnections: connections.connections ?? {},
         userSpeeds: aggregateUserSpeeds(speedResults),
         adminTraffic,
+        connectionMetrics: helperConnections.metrics ?? {},
       }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Dashboard 加载失败");
@@ -330,6 +340,67 @@ function Dashboard({
       document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [activeTab, session.token]);
+
+  useEffect(() => {
+    if (activeTab !== "services") return;
+
+    let stopped = false;
+    let timer: number | undefined;
+    let controller: AbortController | null = null;
+    let inFlight = false;
+
+    const clearTimer = () => {
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        timer = undefined;
+      }
+    };
+
+    const scheduleNext = () => {
+      clearTimer();
+      if (stopped || document.visibilityState !== "visible") return;
+      timer = window.setTimeout(() => {
+        void refreshConnections();
+      }, SYSTEM_METRICS_REFRESH_MS);
+    };
+
+    const refreshConnections = async () => {
+      if (stopped || inFlight || document.visibilityState !== "visible") return;
+      inFlight = true;
+      controller?.abort();
+      controller = new AbortController();
+      try {
+        const response = await fetchConnectionMetrics(controller.signal);
+        if (!stopped) {
+          setState((current) => ({ ...current, connectionMetrics: response.metrics ?? {} }));
+        }
+      } catch {
+        // Keep the last helper snapshot; stale entries render as unavailable on the next response.
+      } finally {
+        inFlight = false;
+        scheduleNext();
+      }
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void refreshConnections();
+      } else {
+        clearTimer();
+        controller?.abort();
+      }
+    };
+
+    void refreshConnections();
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      stopped = true;
+      clearTimer();
+      controller?.abort();
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [activeTab]);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -487,6 +558,7 @@ function Dashboard({
       {activeTab === "services" ? (
         <ServiceManagementPage
           servers={state.servers}
+          connectionMetrics={state.connectionMetrics}
           totals={totals}
           viewMode={serviceViewMode}
           onViewModeChange={setServiceViewMode}
@@ -522,6 +594,7 @@ function Dashboard({
             setServiceMenuServer(null);
             void runXrayAction(action, serviceMenuServer);
           }}
+          connectionMetric={state.connectionMetrics[String(serviceMenuServer.id)]}
         />
       )}
 
@@ -533,6 +606,8 @@ function Dashboard({
             void runXrayAction(action, serviceDialog.server);
           }}
           xrayActionBusy={xrayActionBusy}
+          sessionToken={session.token}
+          connectionMetric={serviceDialog.server ? state.connectionMetrics[String(serviceDialog.server.id)] : undefined}
         />
       )}
     </main>
@@ -760,6 +835,7 @@ function ServerOverview({ server, upload, download }: { server?: RemoteServer; u
 
 function ServiceManagementPage({
   servers,
+  connectionMetrics,
   totals,
   viewMode,
   onViewModeChange,
@@ -768,12 +844,13 @@ function ServiceManagementPage({
   onOpenDialog,
 }: {
   servers: RemoteServer[];
+  connectionMetrics: Record<string, ConnectionMetric>;
   totals: { upload: number; download: number };
   viewMode: "grid" | "list";
   onViewModeChange: (mode: "grid" | "list") => void;
   onOpenGlobalMenu: () => void;
   onOpenMenu: (server: RemoteServer) => void;
-  onOpenDialog: (kind: "add" | "access" | "edit" | "xray" | "agent", server?: RemoteServer) => void;
+  onOpenDialog: (kind: "add" | "access" | "edit" | "xray" | "agent" | "helper", server?: RemoteServer) => void;
 }) {
   const online = servers.filter(isServerOnline).length;
   const offline = Math.max(0, servers.length - online);
@@ -810,8 +887,8 @@ function ServiceManagementPage({
       <section className="service-summary-grid" aria-label="服务统计">
         <ServiceSummaryItem icon={<span aria-hidden="true">●</span>} value={String(online)} tone="success" label="在线" />
         <ServiceSummaryItem icon={<span aria-hidden="true">●</span>} value={String(offline)} tone="danger" label="离线" />
-        <ServiceSummaryItem icon={<span aria-hidden="true">↑</span>} value={formatSpeed(totals.upload)} tone="upload" label="上传" />
-        <ServiceSummaryItem icon={<span aria-hidden="true">↓</span>} value={formatSpeed(totals.download)} tone="download" label="下载" />
+        <ServiceSummaryItem icon={<ArrowUp />} value={formatSpeed(totals.upload)} tone="upload" label="上传" />
+        <ServiceSummaryItem icon={<ArrowDown />} value={formatSpeed(totals.download)} tone="download" label="下载" />
       </section>
 
       <section className={`service-server-list ${viewMode}`}>
@@ -820,6 +897,7 @@ function ServiceManagementPage({
             <ServiceServerCard
               key={server.id}
               server={server}
+              connectionMetric={connectionMetrics[String(server.id)]}
               viewMode={viewMode}
               onOpenMenu={() => onOpenMenu(server)}
               onOpenDialog={(kind) => onOpenDialog(kind, server)}
@@ -852,16 +930,54 @@ function ServiceSummaryItem({ icon, value, tone, label }: { icon: React.ReactNod
 
 function ServiceServerCard({
   server,
+  connectionMetric,
   viewMode,
   onOpenMenu,
   onOpenDialog,
 }: {
   server: RemoteServer;
+  connectionMetric?: ConnectionMetric;
   viewMode: "grid" | "list";
   onOpenMenu: () => void;
-  onOpenDialog: (kind: "edit" | "xray" | "agent") => void;
+  onOpenDialog: (kind: "edit" | "xray" | "agent" | "helper") => void;
 }) {
-  const address = displayServerAddress(server);
+  const address = serverRegionAddress(server);
+  const regionFieldKey = [server.country_code, server.country, server.region, server.region_name].join("|");
+  const [region, setRegion] = useState(() => serverRegionFromFields(server) ?? (address ? loadingRegion() : unknownRegion()));
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let mounted = true;
+    const fromFields = serverRegionFromFields(server);
+
+    if (fromFields) {
+      setRegion(fromFields);
+      return () => {
+        mounted = false;
+        controller.abort();
+      };
+    }
+
+    if (!address) {
+      setRegion(unknownRegion());
+      return () => {
+        mounted = false;
+        controller.abort();
+      };
+    }
+
+    setRegion(loadingRegion());
+    lookupServerRegion(server, controller.signal).then((nextRegion) => {
+      if (mounted && !controller.signal.aborted) {
+        setRegion(nextRegion);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      controller.abort();
+    };
+  }, [address, regionFieldKey]);
 
   return (
     <article className={`service-server-card ${viewMode}`}>
@@ -869,7 +985,10 @@ function ServiceServerCard({
         <div className="service-server-head">
           <span className={`service-status-dot ${serverStatusKind(server)}`} aria-label={isServerOnline(server) ? "服务器在线" : "服务器离线"} />
           <div className="service-server-identity">
-            <div className="service-location">地区数据暂无</div>
+            <div className={`service-location ${region.known ? "known" : ""}`}>
+              {region.flag && <span className="service-location-flag" aria-hidden="true">{region.flag}</span>}
+              <span>{region.label}</span>
+            </div>
             <h2>{server.name}</h2>
           </div>
           <button className="service-card-more" type="button" onClick={onOpenMenu} aria-label={`${server.name} 更多操作`}>
@@ -880,19 +999,31 @@ function ServiceServerCard({
         <div className="service-badges">
           <span className="service-badge success">{formatXrayMode(server.xray_mode)}</span>
           <span className="service-badge success">Agent {agentVersion(server)}</span>
+          <span className="service-badge success connection-tag" aria-label={`连接数 ${formatConnectionCount(connectionMetric)}`} title="连接数">
+            <span className="connection-tag-icon" aria-hidden="true">🔌</span>
+            <span className="connection-tag-value">{formatConnectionCount(connectionMetric)}</span>
+          </span>
           {server.ddns_pending && <span className="service-badge warning">DDNS 待同步</span>}
         </div>
 
         <div className="service-v3-metrics">
-          <div className="service-v3-row service-v3-row-address">
-            <ServiceValue icon={<Globe2 />} value={address} title={address} />
-            <ServiceValue icon={<Network />} value="--" />
-          </div>
           <div className="service-v3-row service-v3-row-stats">
-            <ServiceValue icon={<span aria-hidden="true">↑</span>} value={formatSpeed(server.current_upload_speed ?? 0)} />
-            <ServiceValue icon={<span aria-hidden="true">↓</span>} value={formatSpeed(server.current_download_speed ?? 0)} />
-            <ServiceValue icon={<Database />} value={formatBytes(server.traffic_used ?? 0)} />
-            <ServiceValue icon={<span aria-hidden="true">∞</span>} value={trafficLimitText(server)} title={trafficResetText(server)} />
+            <div className="service-v3-column service-v3-column-speeds">
+              <ServiceMetricLine icon={<ArrowUp />} label="上传速度" tone="upload">
+                {formatSpeed(server.current_upload_speed ?? 0)}
+              </ServiceMetricLine>
+              <ServiceMetricLine icon={<ArrowDown />} label="下载速度" tone="download">
+                {formatSpeed(server.current_download_speed ?? 0)}
+              </ServiceMetricLine>
+            </div>
+            <div className="service-v3-column service-v3-column-traffic">
+              <ServiceMetricLine label="已用流量 / 总流量" title={trafficResetText(server)}>
+                <span>{formatBytes(server.traffic_used ?? 0)}</span>
+                <span aria-hidden="true"> / </span>
+                <span>{trafficLimitText(server)}</span>
+              </ServiceMetricLine>
+              <TrafficRemainingBar server={server} />
+            </div>
           </div>
         </div>
       </div>
@@ -915,32 +1046,97 @@ function ServiceServerCard({
   );
 }
 
-function ServiceValue({ icon, value, title }: { icon: React.ReactNode; value: string; title?: string }) {
-  const [mainValue, ...unitParts] = value.split(" ");
-  const unit = unitParts.join(" ");
+function TrafficRemainingBar({ server }: { server: RemoteServer }) {
+  const remainingPercent = trafficRemainingPercent(server);
 
   return (
-    <div className="service-v3-value" title={title || value}>
-      <span className="service-v3-icon">{icon}</span>
-      <span className="service-v3-text">
-        <strong>{mainValue}</strong>
-        {unit && <em>{unit}</em>}
-      </span>
+    <div className="service-v3-traffic-bar" aria-hidden="true">
+      <span style={remainingPercent == null ? undefined : { width: `${remainingPercent}%` }} />
+    </div>
+  );
+}
+
+function ServiceMetricLine({
+  icon,
+  label,
+  title,
+  tone,
+  children,
+}: {
+  icon?: React.ReactNode;
+  label: string;
+  title?: string;
+  tone?: "upload" | "download";
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`service-v3-metric-line${tone ? ` ${tone}` : ""}`} aria-label={label} title={title || label}>
+      {icon && <span className="service-v3-icon">{icon}</span>}
+      <span className="service-v3-inline-value">{children}</span>
+    </div>
+  );
+}
+
+function HelperInstallDialog({ server, sessionToken, connectionMetric }: { server: RemoteServer; sessionToken: string; connectionMetric?: ConnectionMetric }) {
+  const [install, setInstall] = useState<HelperInstallTokenResponse | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const helper = helperStatus(connectionMetric);
+
+  const generate = useCallback(async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await createHelperInstallToken(sessionToken, server.id);
+      setInstall(response);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "生成安装命令失败");
+    } finally {
+      setBusy(false);
+    }
+  }, [server.id, sessionToken]);
+
+  return (
+    <div className="service-dialog-body">
+      <div className="helper-status-grid">
+        <InfoBlock label="状态" value={helper.label} />
+        <InfoBlock label="版本" value={helper.version || "--"} />
+        <InfoBlock label="最近上报" value={helper.updatedAt ? formatRelativeTime(helper.updatedAt) : "--"} />
+      </div>
+      <div className="service-dialog-section">
+        <h4>安装 Connections Helper</h4>
+        <p>该命令只绑定当前服务器：{server.name}。安装链接短期有效且只能使用一次，不会修改官方 mmw-agent。</p>
+        <button className="helper-generate-button" type="button" disabled={busy} onClick={() => void generate()}>
+          {busy ? "生成中..." : "生成安装命令"}
+        </button>
+        {error && <p className="helper-error">{error}</p>}
+        {install && (
+          <div className="helper-command-box">
+            <p>过期时间：{formatDateTime(install.expires_at)}</p>
+            <code>{install.command}</code>
+            <button type="button" onClick={() => void copyText(install.command)}>复制命令</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 function ServerActionsLayer({
   server,
+  connectionMetric,
   onClose,
   onOpenDialog,
   onXrayAction,
 }: {
   server: RemoteServer;
+  connectionMetric?: ConnectionMetric;
   onClose: () => void;
-  onOpenDialog: (kind: "edit" | "xray" | "agent") => void;
+  onOpenDialog: (kind: "edit" | "xray" | "agent" | "helper") => void;
   onXrayAction: (action: "start" | "stop" | "restart") => void;
 }) {
+  const helper = helperStatus(connectionMetric);
+
   return (
     <div className="service-action-layer" role="presentation" onClick={onClose}>
       <div className="service-action-sheet" role="dialog" aria-label={`${server.name} 更多操作`} onClick={(event) => event.stopPropagation()}>
@@ -972,6 +1168,15 @@ function ServerActionsLayer({
         <ActionGroup title="Agent 管理">
           <ActionButton icon={<Wrench />} label="Agent 管理" onClick={() => onOpenDialog("agent")} />
           <ActionButton icon={<RefreshCw />} label="升级 Agent" danger disabled />
+        </ActionGroup>
+        <ActionGroup title="Connections Helper">
+          <ActionButton
+            icon={<Gauge />}
+            label={`Helper ${helper.label}${helper.version ? ` ${helper.version}` : ""}`}
+            badge={helper.updatedAt ? formatRelativeTime(helper.updatedAt) : undefined}
+            onClick={() => onOpenDialog("helper")}
+          />
+          <ActionButton icon={<TerminalSquare />} label="生成安装命令" onClick={() => onOpenDialog("helper")} />
         </ActionGroup>
         <ActionGroup title="危险操作">
           <ActionButton icon={<Power />} label={server.xray_running ? "停止 Xray" : "启动 Xray"} danger onClick={() => onXrayAction(server.xray_running ? "stop" : "start")} />
@@ -1009,11 +1214,15 @@ function ServiceDialog({
   onClose,
   onXrayAction,
   xrayActionBusy,
+  sessionToken,
+  connectionMetric,
 }: {
-  dialog: { kind: "add" | "access" | "edit" | "xray" | "agent"; server?: RemoteServer };
+  dialog: { kind: "add" | "access" | "edit" | "xray" | "agent" | "helper"; server?: RemoteServer };
   onClose: () => void;
   onXrayAction: (action: "start" | "stop" | "restart") => void;
   xrayActionBusy: boolean;
+  sessionToken: string;
+  connectionMetric?: ConnectionMetric;
 }) {
   const server = dialog.server;
   const title = {
@@ -1022,6 +1231,7 @@ function ServiceDialog({
     edit: "编辑远程服务器",
     xray: "Xray 管理",
     agent: "Agent 管理",
+    helper: "Connections Helper",
   }[dialog.kind];
 
   return (
@@ -1063,6 +1273,8 @@ function ServiceDialog({
             </div>
             <p className="service-dialog-note">Agent 升级、卸载等危险操作入口已在更多操作中保留，正式执行前必须继续走原确认流程。</p>
           </div>
+        ) : dialog.kind === "helper" && server ? (
+          <HelperInstallDialog server={server} sessionToken={sessionToken} connectionMetric={connectionMetric} />
         ) : (
           <div className="service-dialog-body">
             <div className="service-dialog-section">
@@ -1291,9 +1503,53 @@ function agentVersion(server: RemoteServer) {
   return server.agent_version ? formatXrayVersion(stripVersionPrefix(server.agent_version)) : "--";
 }
 
+function formatConnectionCount(metric?: ConnectionMetric) {
+  return metric?.available && typeof metric.connection_count === "number" ? metric.connection_count.toLocaleString() : "--";
+}
+
+function helperStatus(metric?: ConnectionMetric) {
+  if (!metric) return { label: "未安装", version: "", updatedAt: "" };
+  if (!metric.available) {
+    return {
+      label: "离线 / 数据过期",
+      version: metric.helper_version || "",
+      updatedAt: metric.updated_at || "",
+    };
+  }
+  return {
+    label: "在线",
+    version: metric.helper_version || "",
+    updatedAt: metric.updated_at || "",
+  };
+}
+
+async function copyText(value: string) {
+  try {
+    await navigator.clipboard?.writeText(value);
+  } catch {
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+}
+
 function trafficLimitText(server: RemoteServer) {
   if (!server.traffic_limit || server.traffic_limit <= 0) return "无限";
   return formatBytes(server.traffic_limit);
+}
+
+function trafficRemainingPercent(server: RemoteServer) {
+  const total = server.traffic_limit ?? 0;
+  if (total <= 0) return null;
+  const used = Math.max(server.traffic_used ?? 0, 0);
+  const remaining = Math.max(total - used, 0);
+  return Math.max(0, Math.min(100, (remaining / total) * 100));
 }
 
 function trafficResetText(server: RemoteServer) {
