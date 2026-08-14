@@ -41,7 +41,17 @@ export type RemoteServer = {
   country_code?: string;
   country?: string;
   region?: string;
+  region_country?: string;
   region_name?: string;
+  region_city?: string;
+  location?: string;
+  geo_country?: string;
+  geo_country_code?: string;
+  service_location?: string;
+  displayLocation?: string;
+  display_location?: string;
+  countryName?: string;
+  flag?: string;
   ip_address?: string;
   ip_address_v6?: string;
   domain?: string;

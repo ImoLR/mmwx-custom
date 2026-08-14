@@ -942,7 +942,22 @@ function ServiceServerCard({
   onOpenDialog: (kind: "edit" | "xray" | "agent" | "helper") => void;
 }) {
   const address = serverRegionAddress(server);
-  const regionFieldKey = [server.country_code, server.country, server.region, server.region_name].join("|");
+  const regionFieldKey = [
+    server.country_code,
+    server.region_country,
+    server.geo_country_code,
+    server.country,
+    server.geo_country,
+    server.region,
+    server.region_name,
+    server.region_city,
+    server.location,
+    server.service_location,
+    server.displayLocation,
+    server.display_location,
+    server.countryName,
+    server.flag,
+  ].join("|");
   const [region, setRegion] = useState(() => serverRegionFromFields(server) ?? (address ? loadingRegion() : unknownRegion()));
 
   useEffect(() => {

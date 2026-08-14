@@ -69,19 +69,46 @@ const countryLabels: Record<string, string> = {
   KE: "肯尼亚",
 };
 
+const countryCodeAliases: Record<string, string> = {
+  "hong kong": "HK",
+  japan: "JP",
+  "united states": "US",
+  "united states of america": "US",
+  usa: "US",
+  taiwan: "TW",
+  singapore: "SG",
+  germany: "DE",
+};
+
 const regionCache = new Map<string, Promise<RegionDisplay>>();
 const maxConcurrentLookups = 4;
 let activeLookups = 0;
 const lookupQueue: Array<() => void> = [];
 
 export function serverRegionFromFields(server: RemoteServer): RegionDisplay | null {
-  const code = server.country_code?.trim().toUpperCase();
-  const label = server.region_name || server.region || server.country || (code ? countryLabels[code] : "");
+  const rawLabel = firstRegionValue(
+    server.country,
+    server.geo_country,
+    server.region_name,
+    server.service_location,
+    server.displayLocation,
+    server.display_location,
+    server.countryName,
+    server.location,
+    server.region,
+  );
+  const code = firstCountryCode(
+    server.country_code,
+    server.region_country,
+    server.geo_country_code,
+    rawLabel,
+  );
+  const label = (code ? countryLabels[code] : "") || rawLabel;
 
   if (!code && !label) return null;
   return {
     known: true,
-    flag: flagFromCountryCode(code),
+    flag: server.flag?.trim() || flagFromCountryCode(code),
     label: label || code || "地区未知",
   };
 }
@@ -157,14 +184,28 @@ function releaseLookupSlot() {
 }
 
 function regionFromLookupResponse(response: GeoLookupResponse): RegionDisplay {
-  const code = response.country_code?.trim().toUpperCase();
-  const label = response.country || (code ? countryLabels[code] : "");
+  const code = firstCountryCode(response.country_code, response.country);
+  const label = (code ? countryLabels[code] : "") || response.country?.trim() || "";
   if (!code && !label) return unknownRegion();
   return {
     known: true,
     flag: response.flag || flagFromCountryCode(code),
     label: label || code || "地区未知",
   };
+}
+
+function firstRegionValue(...values: Array<string | null | undefined>) {
+  return values.map((value) => value?.trim() ?? "").find(Boolean) ?? "";
+}
+
+function firstCountryCode(...values: Array<string | null | undefined>) {
+  for (const value of values) {
+    const normalized = value?.trim().toUpperCase() ?? "";
+    if (/^[A-Z]{2}$/.test(normalized)) return normalized;
+    const alias = countryCodeAliases[value?.trim().toLowerCase() ?? ""];
+    if (alias) return alias;
+  }
+  return "";
 }
 
 function flagFromCountryCode(code?: string | null) {
