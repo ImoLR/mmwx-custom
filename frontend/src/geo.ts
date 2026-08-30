@@ -101,6 +101,7 @@ export function serverRegionFromFields(server: RemoteServer): RegionDisplay | nu
     server.country_code,
     server.region_country,
     server.geo_country_code,
+    server.flag,
     rawLabel,
   );
   const label = (code ? countryLabels[code] : "") || rawLabel;
@@ -202,10 +203,25 @@ function firstCountryCode(...values: Array<string | null | undefined>) {
   for (const value of values) {
     const normalized = value?.trim().toUpperCase() ?? "";
     if (/^[A-Z]{2}$/.test(normalized)) return normalized;
+    const flagCode = countryCodeFromFlag(value);
+    if (flagCode) return flagCode;
     const alias = countryCodeAliases[value?.trim().toLowerCase() ?? ""];
     if (alias) return alias;
   }
   return "";
+}
+
+function countryCodeFromFlag(value?: string | null) {
+  const chars = [...(value?.trim() ?? "")];
+  if (chars.length !== 2) return "";
+  const code = chars
+    .map((char) => {
+      const point = char.codePointAt(0);
+      if (!point || point < 0x1f1e6 || point > 0x1f1ff) return "";
+      return String.fromCharCode(point - 0x1f1e6 + 65);
+    })
+    .join("");
+  return /^[A-Z]{2}$/.test(code) ? code : "";
 }
 
 function flagFromCountryCode(code?: string | null) {

@@ -50,13 +50,14 @@ function runBuild() {
 async function loginIfNeeded(page) {
   await page.goto(`${baseUrl}/?visual=${Date.now()}`, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.waitForLoadState("networkidle", { timeout: 45000 }).catch(() => {});
-  if (!(await page.locator('input[type="password"]').count())) return;
+  if (await page.locator(".system-status-card").count()) return;
   if (!username || !password) {
     throw new Error("MMWXC_USERNAME and MMWXC_PASSWORD are required when the visual target is not already authenticated.");
   }
+  await page.waitForSelector('input[type="password"]', { timeout: 45000 });
   await page.locator("input").nth(0).fill(username);
   await page.locator('input[type="password"]').first().fill(password);
-  await page.locator("button").last().click();
+  await page.locator('button[type="submit"]').first().click();
   await page.waitForLoadState("networkidle", { timeout: 45000 }).catch(() => {});
   await page.waitForSelector(".system-status-card", { timeout: 45000 });
 }

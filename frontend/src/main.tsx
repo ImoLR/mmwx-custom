@@ -1,16 +1,20 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   Boxes,
   ChevronDown,
   Clock3,
+  CheckCircle2,
+  Copy,
   Database,
   Edit3,
   Gauge,
   Globe2,
   Home,
+  KeyRound,
   LayoutGrid,
   List,
   LogIn,
@@ -27,10 +31,12 @@ import {
   Server,
   Share2,
   Settings,
+  ShieldCheck,
   Sun,
   TerminalSquare,
   Tags,
   Trash2,
+  UploadCloud,
   Wrench,
   X,
   Users,
@@ -46,35 +52,70 @@ import {
 } from "recharts";
 import {
   clearSession,
+  acceptXrayRecovery,
+  addRemoteWebsite,
+  addSharedRemoteServer,
+  applyXrayRecovery,
   controlRemoteService,
+  createRemoteServer,
   createHelperInstallToken,
+  deleteRemoteWebsite,
+  deployRemoteDefaultConfig,
+  expectXrayRecovery,
+  fetchAgentVersionInfo,
   fetchConnectionMetrics,
   fetchAdminTraffic,
+  fetchDNSProviders,
+  fetchMasterUrl,
   fetchLocalSystemMetrics,
-  fetchNodeTotals,
+  fetchNodeConnections,
   fetchRemoteServers,
+  fetchRemoteSystemInfo,
+  fetchRemoteWebsites,
+  fetchTrafficPeriod,
   fetchTrafficSummary,
   fetchUserConnections,
   fetchUserSpeeds,
-  fetchUsers,
+  fetchXrayRecoveryStatus,
+  fetchXrayServiceStatus,
+  fetchXraySnapshots,
+  fetchValidCertificates,
+  installRemoteNginx,
   loadSession,
   login,
+  revealRemoteServerToken,
+  restoreXraySnapshot,
   saveSession,
+  streamAgentAction,
+  syncRemoteNodeAddress,
+  syncRemoteNodes,
+  validateRemoteWebsite,
 } from "./api";
-import { formatBytes, formatDurationSince, formatGB, formatSpeed, todayUTC } from "./format";
+import { formatBytes, formatDurationSince, formatSpeed } from "./format";
 import { loadingRegion, lookupServerRegion, serverRegionAddress, serverRegionFromFields, unknownRegion } from "./geo";
 import type {
   AdminTrafficResponse,
   ConnectionMetric,
+  AgentVersionInfo,
   HelperInstallTokenResponse,
+  DNSProvider,
   NodeTrafficItem,
+  PeriodUserTrafficItem,
   RealtimeSnapshot,
   RemoteServer,
+  RemoteServerCreateRequest,
+  RemoteSystemInfo,
+  RemoteWebsitesResponse,
   Session,
   SystemMetrics as SystemMetricsData,
+  TrafficRange,
   TrafficSummary,
-  UserTrafficSummary,
+  ValidCertificate,
+  XrayRecoveryStatusResponse,
+  XrayServiceStatusResponse,
+  XraySnapshotItem,
 } from "./types";
+import { XrayManager } from "./xray-manager";
 import "./styles.css";
 
 type DashboardState = {
@@ -82,11 +123,21 @@ type DashboardState = {
   systemMetrics: SystemMetricsData | null;
   servers: RemoteServer[];
   nodes: NodeTrafficItem[];
-  users: UserTrafficSummary[];
+  users: PeriodUserTrafficItem[];
+  nodeConnections: Record<string, number>;
   userConnections: Record<string, number>;
   userSpeeds: Record<string, number>;
   adminTraffic: AdminTrafficResponse | null;
   connectionMetrics: Record<string, ConnectionMetric>;
+  period: PeriodMeta | null;
+};
+
+type PeriodMeta = {
+  range: TrafficRange;
+  start: string;
+  end: string;
+  timezone: string;
+  complete: boolean;
 };
 
 const emptyState: DashboardState = {
@@ -95,10 +146,12 @@ const emptyState: DashboardState = {
   servers: [],
   nodes: [],
   users: [],
+  nodeConnections: {},
   userConnections: {},
   userSpeeds: {},
   adminTraffic: null,
   connectionMetrics: {},
+  period: null,
 };
 
 const SYSTEM_METRICS_REFRESH_MS = 5000;
@@ -224,7 +277,11 @@ function Dashboard({
   const [xrayActionBusy, setXrayActionBusy] = useState(false);
   const [serviceViewMode, setServiceViewMode] = useState<"grid" | "list">("grid");
   const [serviceMenuServer, setServiceMenuServer] = useState<RemoteServer | null>(null);
-  const [serviceDialog, setServiceDialog] = useState<{ kind: "add" | "access" | "edit" | "xray" | "agent" | "helper"; server?: RemoteServer } | null>(null);
+  const [serviceDialog, setServiceDialog] = useState<{ kind: "add" | "access" | "edit" | "xray" | "agent" | "helper" | "batch-agent"; server?: RemoteServer } | null>(null);
+  const [trafficRange, setTrafficRange] = useState<TrafficRange>("today");
+  const [periodLoading, setPeriodLoading] = useState(true);
+  const [trafficDialog, setTrafficDialog] = useState<"nodes" | "users" | null>(null);
+  const periodRequestId = useRef(0);
 
   const refreshUserSpeeds = useCallback(
     async (servers: RemoteServer[]) => {
@@ -244,26 +301,30 @@ function Dashboard({
     setLoading(true);
     setError("");
     try {
-      const date = todayUTC();
-      const [summary, remoteServers, nodeTotals, users, connections, adminTraffic, helperConnections] = await Promise.all([
+      const [summary, remoteServers, connections, adminTraffic, helperConnections] = await Promise.all([
         fetchTrafficSummary(session.token),
         fetchRemoteServers(session.token),
-        fetchNodeTotals(session.token, date),
-        fetchUsers(session.token),
         fetchUserConnections(session.token),
         fetchAdminTraffic(session.token),
         fetchConnectionMetrics(),
       ]);
 
       const servers = remoteServers.servers ?? [];
-      const speedResults = await Promise.allSettled(servers.map((server) => fetchUserSpeeds(session.token, server.id)));
+      const [speedResults, agentVersionResults] = await Promise.all([
+        Promise.allSettled(servers.map((server) => fetchUserSpeeds(session.token, server.id))),
+        Promise.allSettled(servers.map((server) => fetchAgentVersionInfo(session.token, server.id))),
+      ]);
+      const serversWithAgentVersions = servers.map((server, index) => {
+        const result = agentVersionResults[index];
+        if (result?.status !== "fulfilled" || !result.value.current) return server;
+        return { ...server, agent_version: result.value.current };
+      });
 
       setState((current) => ({
+        ...current,
         summary,
         systemMetrics: current.systemMetrics,
-        servers,
-        nodes: nodeTotals.items ?? [],
-        users: users.users ?? [],
+        servers: serversWithAgentVersions,
         userConnections: connections.connections ?? {},
         userSpeeds: aggregateUserSpeeds(speedResults),
         adminTraffic,
@@ -276,9 +337,73 @@ function Dashboard({
     }
   }, [session.token]);
 
+  const loadPeriodData = useCallback(async (range: TrafficRange, showLoading = true) => {
+    const requestId = ++periodRequestId.current;
+    if (showLoading) {
+      setPeriodLoading(true);
+      setError("");
+    }
+    try {
+      const [nodes, users, nodeConnections] = await Promise.all([
+        fetchTrafficPeriod(session.token, range, "nodes"),
+        fetchTrafficPeriod(session.token, range, "users"),
+        fetchNodeConnections(session.token),
+      ]);
+      if (requestId !== periodRequestId.current) return;
+      setState((current) => ({
+        ...current,
+        nodes: nodes.items ?? [],
+        users: users.items ?? [],
+        nodeConnections: nodeConnections.connections ?? {},
+        period: {
+          range: nodes.range,
+          start: nodes.range_start,
+          end: nodes.range_end,
+          timezone: nodes.timezone,
+          complete: nodes.complete && users.complete,
+        },
+      }));
+    } catch (err) {
+      if (requestId === periodRequestId.current) {
+        setError(err instanceof Error ? err.message : "周期统计加载失败");
+      }
+    } finally {
+      if (requestId === periodRequestId.current) setPeriodLoading(false);
+    }
+  }, [session.token]);
+
+  const refreshNodeConnections = useCallback(async () => {
+    try {
+      const response = await fetchNodeConnections(session.token);
+      setState((current) => ({ ...current, nodeConnections: response.connections ?? {} }));
+    } catch {
+      // Preserve the last valid in-memory connection snapshot.
+    }
+  }, [session.token]);
+
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
+
+  useEffect(() => {
+    void loadPeriodData(trafficRange);
+  }, [loadPeriodData, trafficRange]);
+
+  useEffect(() => {
+    if (activeTab !== "overview") return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadPeriodData(trafficRange, false);
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [activeTab, loadPeriodData, trafficRange]);
+
+  useEffect(() => {
+    if (activeTab !== "overview") return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshNodeConnections();
+    }, SYSTEM_METRICS_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [activeTab, refreshNodeConnections]);
 
   useEffect(() => {
     if (activeTab !== "overview") return;
@@ -424,7 +549,6 @@ function Dashboard({
           servers: snapshot.servers ? mergeServerSnapshots(current.servers, snapshot.servers) : current.servers,
           summary: snapshot.trafficSummary ?? current.summary,
           adminTraffic: snapshot.adminTraffic ?? current.adminTraffic,
-          nodes: snapshot.nodeTotals?.items ?? current.nodes,
           userConnections: snapshot.userConnections ?? current.userConnections,
         }));
       } catch {
@@ -485,8 +609,8 @@ function Dashboard({
   }, [refreshUserSpeeds, session.token]);
 
   const totals = useMemo(() => calculateTotals(state.servers), [state.servers]);
-  const topNodes = useMemo(() => [...state.nodes].sort(byTraffic).slice(0, 5), [state.nodes]);
-  const topUsers = useMemo(() => [...state.users].sort(byUserTraffic).slice(0, 5), [state.users]);
+  const periodNodes = state.period?.range === trafficRange ? state.nodes : [];
+  const periodUsers = state.period?.range === trafficRange ? state.users : [];
   const selectedServer = useMemo(() => {
     if (state.servers.length === 0) return undefined;
     return state.servers.find((server) => server.id === selectedServerId) ?? state.servers[0];
@@ -549,7 +673,10 @@ function Dashboard({
       {error && (
         <section className="notice-card">
           <span>{error}</span>
-          <button type="button" onClick={() => void loadDashboard()}>
+          <button type="button" onClick={() => {
+            void loadDashboard();
+            void loadPeriodData(trafficRange);
+          }}>
             重试
           </button>
         </section>
@@ -576,10 +703,43 @@ function Dashboard({
           </section>
 
           <TrafficChart summary={state.summary} />
-          <NodeView nodes={topNodes} />
-          <UserView users={topUsers} connections={state.userConnections} speeds={state.userSpeeds} />
-          <ServerOverview server={selectedServer} upload={totals.upload} download={totals.download} />
+          <PeriodControl
+            range={trafficRange}
+            period={state.period}
+            loading={periodLoading}
+            onChange={setTrafficRange}
+            onRefresh={() => void loadPeriodData(trafficRange)}
+          />
+          <NodeView
+            nodes={periodNodes}
+            servers={state.servers}
+            connections={state.nodeConnections}
+            range={trafficRange}
+            onViewAll={() => setTrafficDialog("nodes")}
+          />
+          <UserView
+            users={periodUsers}
+            connections={state.userConnections}
+            speeds={state.userSpeeds}
+            range={trafficRange}
+            onViewAll={() => setTrafficDialog("users")}
+          />
+          <ServerOverview servers={state.servers} />
         </div>
+      )}
+
+      {trafficDialog && (
+        <TrafficListDialog
+          kind={trafficDialog}
+          range={trafficRange}
+          nodes={periodNodes}
+          users={periodUsers}
+          servers={state.servers}
+          nodeConnections={state.nodeConnections}
+          userConnections={state.userConnections}
+          userSpeeds={state.userSpeeds}
+          onClose={() => setTrafficDialog(null)}
+        />
       )}
 
       {serviceMenuServer && (
@@ -607,7 +767,10 @@ function Dashboard({
           }}
           xrayActionBusy={xrayActionBusy}
           sessionToken={session.token}
+          sessionUsername={session.username}
+          servers={state.servers}
           connectionMetric={serviceDialog.server ? state.connectionMetrics[String(serviceDialog.server.id)] : undefined}
+          onChanged={loadDashboard}
         />
       )}
     </main>
@@ -728,11 +891,6 @@ function TrafficChart({ summary }: { summary: TrafficSummary | null }) {
           <h2>每日流量趋势</h2>
           <p>最近记录的日度流量趋势</p>
         </div>
-        <div className="segmented">
-          <button>今天</button>
-          <button>本周</button>
-          <button className="active">本月</button>
-        </div>
       </div>
       <div className="chart-box">
         {data.length > 0 ? (
@@ -759,13 +917,73 @@ function TrafficChart({ summary }: { summary: TrafficSummary | null }) {
   );
 }
 
-function NodeView({ nodes }: { nodes: NodeTrafficItem[] }) {
+function PeriodControl({
+  range,
+  period,
+  loading,
+  onChange,
+  onRefresh,
+}: {
+  range: TrafficRange;
+  period: PeriodMeta | null;
+  loading: boolean;
+  onChange: (range: TrafficRange) => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <section className="panel-card period-control" aria-label="周期统计">
+      <div className="period-control-head">
+        <div className="period-control-title">
+          <Clock3 />
+          <div>
+            <h2>周期统计</h2>
+            <p>{formatPeriodStart(range, period?.start)}</p>
+          </div>
+        </div>
+        <button className="period-refresh" type="button" onClick={onRefresh} aria-label="刷新周期统计" title="刷新周期统计">
+          <RefreshCw className={loading ? "spinning" : ""} />
+        </button>
+      </div>
+      <div className="segmented period-segmented" aria-label="统计周期">
+        {(["today", "week", "month"] as const).map((value) => (
+          <button className={range === value ? "active" : ""} key={value} type="button" onClick={() => onChange(value)}>
+            {rangeLabel(value)}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function NodeView({
+  nodes,
+  servers,
+  connections,
+  range,
+  onViewAll,
+}: {
+  nodes: NodeTrafficItem[];
+  servers: RemoteServer[];
+  connections: Record<string, number>;
+  range: TrafficRange;
+  onViewAll: () => void;
+}) {
+  const serverByName = useMemo(() => serversByName(servers), [servers]);
+  const visible = nodes.slice(0, 5);
   return (
     <section className="panel-card">
-      <PanelTitle icon={<Server />} title="节点视图" subtitle="按流量排序" />
+      <PanelTitle icon={<Server />} title="节点视图" subtitle={`${rangeLabel(range)}流量排行`} />
       <div className="list-stack">
-        {nodes.length ? nodes.map((node) => <TrafficRow key={node.node_id} name={node.node_name} up={node.uplink} down={node.downlink} badge={node.server_name} />) : <EmptyText>暂无节点数据</EmptyText>}
+        {visible.length ? visible.map((node) => (
+          <NodeTrafficRow
+            key={node.node_id}
+            node={node}
+            server={serverByName.get(node.server_name.toLocaleLowerCase())}
+            connections={connections[String(node.node_id)]}
+          />
+        )) : <EmptyText>暂无节点数据</EmptyText>}
       </div>
+      <TrafficListFooter count={nodes.length} unit="节点" onViewAll={onViewAll} />
     </section>
   );
 }
@@ -774,22 +992,27 @@ function UserView({
   users,
   connections,
   speeds,
+  range,
+  onViewAll,
 }: {
-  users: UserTrafficSummary[];
+  users: PeriodUserTrafficItem[];
   connections: Record<string, number>;
   speeds: Record<string, number>;
+  range: TrafficRange;
+  onViewAll: () => void;
 }) {
+  const visible = users.slice(0, 5);
   return (
     <section className="panel-card">
-      <PanelTitle icon={<Users />} title="用户视图" subtitle="按流量排序" />
+      <PanelTitle icon={<Users />} title="用户视图" subtitle={`${rangeLabel(range)}流量排行`} />
       <div className="list-stack">
-        {users.length ? (
-          users.map((user) => (
+        {visible.length ? (
+          visible.map((user) => (
             <TrafficRow
               key={user.username}
               name={user.username}
-              up={user.cycle_uplink}
-              down={user.cycle_downlink}
+              up={user.uplink}
+              down={user.downlink}
               badge={formatUserRealtime(connections[user.username], speeds[user.username])}
             />
           ))
@@ -797,39 +1020,168 @@ function UserView({
           <EmptyText>暂无用户数据</EmptyText>
         )}
       </div>
+      <TrafficListFooter count={users.length} unit="用户" onViewAll={onViewAll} />
     </section>
   );
 }
 
-function ServerOverview({ server, upload, download }: { server?: RemoteServer; upload: number; download: number }) {
-  const usedGB = server?.traffic_used ? server.traffic_used / 1024 / 1024 / 1024 : 0;
-  const limitGB = server?.traffic_limit && server.traffic_limit > 0 ? server.traffic_limit / 1024 / 1024 / 1024 : null;
-  const remainingGB = limitGB == null ? null : Math.max(0, limitGB - usedGB);
-  const usage = limitGB ? (usedGB / limitGB) * 100 : null;
+function ServerOverview({ servers }: { servers: RemoteServer[] }) {
+  return (
+    <section className="panel-card dashboard-server-overview">
+      <PanelTitle icon={<Server />} title="服务器概览" subtitle={`共 ${servers.length} 台 Remote Server`} />
+      <div className="dashboard-server-list">
+        {servers.length ? servers.map((server) => <DashboardServerRow key={server.id} server={server} />) : <EmptyText>暂无服务器数据</EmptyText>}
+      </div>
+    </section>
+  );
+}
+
+function DashboardServerRow({ server }: { server: RemoteServer }) {
+  const region = useServerRegion(server);
+  const usage = trafficUsagePercent(server);
+  const remaining = trafficRemaining(server);
 
   return (
-    <section className="panel-card server-card">
-      <div className="panel-header compact">
-        <h2>服务器概览</h2>
-        <div className="speed-pair">
-          <span>↑ {formatSpeed(upload)}</span>
-          <span>↓ {formatSpeed(download)}</span>
-        </div>
-      </div>
-      {server ? (
-        <>
+    <article className="dashboard-server-row">
+      <div className="dashboard-server-head">
+        <span className={`service-status-dot ${serverStatusKind(server)}`} aria-label={isServerOnline(server) ? "服务器在线" : "服务器离线"} />
+        <div className="dashboard-server-identity">
+          <span className="dashboard-server-region">
+            {region.flag && <span aria-hidden="true">{region.flag}</span>}
+            {region.label}
+          </span>
           <h3>{server.name}</h3>
-          <div className="server-metrics">
-            <InfoBlock label="已用" value={formatGB(usedGB)} />
-            <InfoBlock label="总量" value={limitGB == null ? "无限" : formatGB(limitGB)} />
-            <InfoBlock label="剩余" value={remainingGB == null ? "--" : formatGB(remainingGB)} />
-            <InfoBlock label="使用率" value={usage == null ? "--" : formatPercent(usage)} />
-          </div>
-        </>
-      ) : (
-        <EmptyText>暂无服务器数据</EmptyText>
+        </div>
+        <span className="dashboard-server-cycle">{trafficCycleText(server)}</span>
+      </div>
+
+      <div className="dashboard-server-speeds">
+        <span><ArrowUp />{formatSpeed(server.current_upload_speed ?? 0)}</span>
+        <span><ArrowDown />{formatSpeed(server.current_download_speed ?? 0)}</span>
+      </div>
+
+      <div className="dashboard-server-traffic">
+        <DashboardServerMetric label="已用" value={formatBytes(server.traffic_used ?? 0)} />
+        <DashboardServerMetric label="总量" value={trafficLimitText(server)} />
+        {remaining != null && <DashboardServerMetric label="剩余" value={formatBytes(remaining)} />}
+        {usage != null && <DashboardServerMetric label="使用率" value={formatPercent(usage)} />}
+      </div>
+
+      {usage != null && (
+        <div className="dashboard-server-progress" role="progressbar" aria-label={`${server.name} 流量使用率`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(usage)}>
+          <span style={{ width: `${usage}%` }} />
+        </div>
       )}
-    </section>
+    </article>
+  );
+}
+
+function DashboardServerMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="dashboard-server-metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function NodeTrafficRow({ node, server, connections }: { node: NodeTrafficItem; server?: RemoteServer; connections?: number }) {
+  const region = useServerRegion(server);
+  const name = region.flag ? stripLeadingCountryFlag(node.node_name) : node.node_name;
+
+  return (
+    <TrafficRow
+      name={name}
+      up={node.uplink}
+      down={node.downlink}
+      badge={(
+        <>
+          <span>{node.server_name}</span>
+          {connections ? <span>🔌 {connections.toLocaleString()}</span> : null}
+        </>
+      )}
+      prefix={region.flag ? <span className="traffic-row-flag" aria-label={region.label}>{region.flag}</span> : undefined}
+    />
+  );
+}
+
+function TrafficListFooter({ count, unit, onViewAll }: { count: number; unit: "节点" | "用户"; onViewAll: () => void }) {
+  return (
+    <div className="traffic-list-footer">
+      <span>共 {count} 个{unit}</span>
+      <button type="button" onClick={onViewAll} disabled={count === 0}>查看全部</button>
+    </div>
+  );
+}
+
+function TrafficListDialog({
+  kind,
+  range,
+  nodes,
+  users,
+  servers,
+  nodeConnections,
+  userConnections,
+  userSpeeds,
+  onClose,
+}: {
+  kind: "nodes" | "users";
+  range: TrafficRange;
+  nodes: NodeTrafficItem[];
+  users: PeriodUserTrafficItem[];
+  servers: RemoteServer[];
+  nodeConnections: Record<string, number>;
+  userConnections: Record<string, number>;
+  userSpeeds: Record<string, number>;
+  onClose: () => void;
+}) {
+  const serverByName = useMemo(() => serversByName(servers), [servers]);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [onClose]);
+
+  return (
+    <div className="traffic-list-layer" role="presentation" onClick={onClose}>
+      <section className="traffic-list-sheet" role="dialog" aria-modal="true" aria-label={`全部${kind === "nodes" ? "节点" : "用户"}`} onClick={(event) => event.stopPropagation()}>
+        <header className="traffic-list-dialog-head">
+          <div>
+            <h2>{kind === "nodes" ? "全部节点" : "全部用户"}</h2>
+            <p>{rangeLabel(range)}流量排行 · 共 {kind === "nodes" ? nodes.length : users.length} 个</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭">
+            <X />
+          </button>
+        </header>
+        <div className="traffic-list-dialog-body list-stack">
+          {kind === "nodes" ? nodes.map((node) => (
+            <NodeTrafficRow
+              key={node.node_id}
+              node={node}
+              server={serverByName.get(node.server_name.toLocaleLowerCase())}
+              connections={nodeConnections[String(node.node_id)]}
+            />
+          )) : users.map((user) => (
+            <TrafficRow
+              key={user.username}
+              name={user.username}
+              up={user.uplink}
+              down={user.downlink}
+              badge={formatUserRealtime(userConnections[user.username], userSpeeds[user.username])}
+            />
+          ))}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -850,7 +1202,7 @@ function ServiceManagementPage({
   onViewModeChange: (mode: "grid" | "list") => void;
   onOpenGlobalMenu: () => void;
   onOpenMenu: (server: RemoteServer) => void;
-  onOpenDialog: (kind: "add" | "access" | "edit" | "xray" | "agent" | "helper", server?: RemoteServer) => void;
+  onOpenDialog: (kind: "add" | "access" | "edit" | "xray" | "agent" | "helper" | "batch-agent", server?: RemoteServer) => void;
 }) {
   const online = servers.filter(isServerOnline).length;
   const offline = Math.max(0, servers.length - online);
@@ -877,6 +1229,9 @@ function ServiceManagementPage({
           <button className="service-primary-button" type="button" onClick={() => onOpenDialog("add")}>
             <Plus />
             <span>添加</span>
+          </button>
+          <button className="service-icon-button service-page-more" type="button" onClick={() => onOpenDialog("batch-agent")} aria-label="批量升级 Agent">
+            <RefreshCw />
           </button>
           <button className="service-icon-button service-page-more" type="button" onClick={() => onOpenDialog("access")} aria-label="页面更多">
             <MoreHorizontal />
@@ -941,58 +1296,7 @@ function ServiceServerCard({
   onOpenMenu: () => void;
   onOpenDialog: (kind: "edit" | "xray" | "agent" | "helper") => void;
 }) {
-  const address = serverRegionAddress(server);
-  const regionFieldKey = [
-    server.country_code,
-    server.region_country,
-    server.geo_country_code,
-    server.country,
-    server.geo_country,
-    server.region,
-    server.region_name,
-    server.region_city,
-    server.location,
-    server.service_location,
-    server.displayLocation,
-    server.display_location,
-    server.countryName,
-    server.flag,
-  ].join("|");
-  const [region, setRegion] = useState(() => serverRegionFromFields(server) ?? (address ? loadingRegion() : unknownRegion()));
-
-  useEffect(() => {
-    const controller = new AbortController();
-    let mounted = true;
-    const fromFields = serverRegionFromFields(server);
-
-    if (fromFields) {
-      setRegion(fromFields);
-      return () => {
-        mounted = false;
-        controller.abort();
-      };
-    }
-
-    if (!address) {
-      setRegion(unknownRegion());
-      return () => {
-        mounted = false;
-        controller.abort();
-      };
-    }
-
-    setRegion(loadingRegion());
-    lookupServerRegion(server, controller.signal).then((nextRegion) => {
-      if (mounted && !controller.signal.aborted) {
-        setRegion(nextRegion);
-      }
-    });
-
-    return () => {
-      mounted = false;
-      controller.abort();
-    };
-  }, [address, regionFieldKey]);
+  const region = useServerRegion(server);
 
   return (
     <article className={`service-server-card ${viewMode}`}>
@@ -1037,7 +1341,7 @@ function ServiceServerCard({
                 <span aria-hidden="true"> / </span>
                 <span>{trafficLimitText(server)}</span>
               </ServiceMetricLine>
-              <TrafficRemainingBar server={server} />
+              <TrafficUsageDetails server={server} />
             </div>
           </div>
         </div>
@@ -1061,12 +1365,32 @@ function ServiceServerCard({
   );
 }
 
-function TrafficRemainingBar({ server }: { server: RemoteServer }) {
-  const remainingPercent = trafficRemainingPercent(server);
+function TrafficUsageDetails({ server }: { server: RemoteServer }) {
+  const usagePercent = trafficUsagePercent(server);
+  const remaining = trafficRemaining(server);
+  const resetRemainingText = trafficResetRemainingText(server);
+  const resetRemainingParts = resetRemainingText.match(/^剩余 (\d+) (天|小时|分钟)$/);
 
   return (
-    <div className="service-v3-traffic-bar" aria-hidden="true">
-      <span style={remainingPercent == null ? undefined : { width: `${remainingPercent}%` }} />
+    <div className="service-v3-traffic-details">
+      <span className="service-billing-remaining-badge" aria-label={resetRemainingText}>
+        {resetRemainingParts ? (
+          <span aria-hidden="true">
+            剩余 <strong>{resetRemainingParts[1]}</strong> {resetRemainingParts[2]}
+          </span>
+        ) : resetRemainingText}
+      </span>
+      {usagePercent != null && remaining != null && (
+        <>
+          <div className="service-v3-traffic-bar" role="progressbar" aria-label={`${server.name} 流量使用率`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(usagePercent)}>
+            <span style={{ width: `${usagePercent}%` }} />
+          </div>
+          <div className="service-v3-traffic-meta">
+            <span>剩余 {formatBytes(remaining)}</span>
+            <span>{formatPercent(usagePercent)}</span>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1137,6 +1461,467 @@ function HelperInstallDialog({ server, sessionToken, connectionMetric }: { serve
   );
 }
 
+type AgentNotice = { kind: "success" | "error" | "info"; text: string };
+type AgentPanel = "status" | "sync" | "config" | "website" | "maintenance";
+
+function AgentManager({ server, sessionToken }: { server: RemoteServer; sessionToken: string }) {
+  const [panel, setPanel] = useState<AgentPanel>("status");
+  const [versionInfo, setVersionInfo] = useState<AgentVersionInfo | null>(null);
+  const [systemInfo, setSystemInfo] = useState<RemoteSystemInfo | null>(null);
+  const [serviceStatus, setServiceStatus] = useState<XrayServiceStatusResponse | null>(null);
+  const [recovery, setRecovery] = useState<XrayRecoveryStatusResponse | null>(null);
+  const [snapshots, setSnapshots] = useState<XraySnapshotItem[]>([]);
+  const [selectedSnapshot, setSelectedSnapshot] = useState<XraySnapshotItem | null>(null);
+  const [websites, setWebsites] = useState<RemoteWebsitesResponse | null>(null);
+  const [syncHost, setSyncHost] = useState(displayServerAddress(server));
+  const [forceOverride, setForceOverride] = useState(false);
+  const [websiteMode, setWebsiteMode] = useState<"list" | "add">("list");
+  const [siteDomain, setSiteDomain] = useState("");
+  const [siteType, setSiteType] = useState<"static" | "proxy">("static");
+  const [siteValue, setSiteValue] = useState("");
+  const [entryMode, setEntryMode] = useState("auto");
+  const [validation, setValidation] = useState<AgentNotice | null>(null);
+  const [notice, setNotice] = useState<AgentNotice | null>(null);
+  const [busy, setBusy] = useState("");
+  const [streamLog, setStreamLog] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async (showLoading = false) => {
+    if (showLoading) setLoading(true);
+    const [version, system, services, recoveryStatus, history, siteInventory] = await Promise.allSettled([
+      fetchAgentVersionInfo(sessionToken, server.id),
+      fetchRemoteSystemInfo(sessionToken, server.id),
+      fetchXrayServiceStatus(sessionToken, server.id),
+      fetchXrayRecoveryStatus(sessionToken, server.id),
+      fetchXraySnapshots(sessionToken, server.id, { limit: 20 }),
+      fetchRemoteWebsites(sessionToken, server.id),
+    ]);
+    if (version.status === "fulfilled") setVersionInfo(version.value);
+    if (system.status === "fulfilled") setSystemInfo(system.value);
+    if (services.status === "fulfilled") setServiceStatus(services.value);
+    if (recoveryStatus.status === "fulfilled") setRecovery(recoveryStatus.value);
+    if (history.status === "fulfilled") setSnapshots(history.value.items ?? []);
+    if (siteInventory.status === "fulfilled") setWebsites(siteInventory.value);
+    if (showLoading) setLoading(false);
+  }, [server.id, sessionToken]);
+
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    refresh(false).finally(() => {
+      if (mounted) setLoading(false);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [refresh]);
+
+  const currentVersion = formatAgentVersion(versionInfo?.current || systemInfo?.agent_version || server.agent_version);
+  const latestVersion = formatAgentVersion(versionInfo?.latest);
+  const canMutate = !busy && server.status === "connected" && !server.is_federated;
+
+  async function run(name: string, task: () => Promise<{ message?: string; success?: boolean } | unknown>, successText: string) {
+    setBusy(name);
+    setNotice(null);
+    try {
+      const response = await task();
+      const message = isRecord(response) ? asString(response.message) : "";
+      setNotice({ kind: "success", text: message || successText });
+      await refresh(false);
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "操作失败" });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function openSnapshot(snapshot: XraySnapshotItem) {
+    setBusy(`snapshot-${snapshot.id}`);
+    setNotice(null);
+    try {
+      if (snapshot.config_json) {
+        setSelectedSnapshot(snapshot);
+        return;
+      }
+      const full = await fetchXraySnapshots(sessionToken, server.id, { limit: 30, withConfig: true });
+      const found = (full.items ?? []).find((item) => item.id === snapshot.id) ?? snapshot;
+      setSelectedSnapshot(found);
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "读取配置内容失败" });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function confirmAction(text: string) {
+    return window.confirm(`${server.name}\n${text}`);
+  }
+
+  async function runStream(action: "upgrade" | "uninstall") {
+    const label = action === "upgrade" ? "升级 Agent" : "卸载 Agent";
+    const detail = action === "upgrade"
+      ? "将调用远端 Agent 升级脚本，过程中 Agent 会重启并可能短暂断线。确认执行？"
+      : "将卸载远端 mmw-agent，Agent 会停止，主控可能无法继续管理该服务器。确认执行？";
+    if (!confirmAction(detail)) return;
+    setBusy(action);
+    setNotice(null);
+    setStreamLog("");
+    try {
+      await streamAgentAction(sessionToken, server.id, action, (event) => {
+        const type = asString(event.type);
+        if (type === "output") {
+          setStreamLog((value) => `${value}${stripAnsi(asString(event.data))}\n`);
+        } else if (type === "complete" || type === "result") {
+          const ok = event.success !== false;
+          setNotice({ kind: ok ? "success" : "error", text: asString(event.message) || `${label}${ok ? "完成" : "失败"}` });
+        } else if (type === "error") {
+          setNotice({ kind: "error", text: asString(event.message) || `${label}失败` });
+        }
+      });
+      await refresh(false);
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : `${label}失败` });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <div className="agent-manager">
+      <div className="agent-server-line">
+        <span>{server.name}</span>
+        <button type="button" disabled={Boolean(busy)} onClick={() => void refresh(true)} aria-label="刷新 Agent 状态">
+          <RefreshCw />
+        </button>
+      </div>
+
+      <div className="agent-tabs" role="tablist" aria-label="Agent 管理分类">
+        {([
+          ["status", "状态"],
+          ["sync", "同步"],
+          ["config", "配置"],
+          ["website", "网站"],
+          ["maintenance", "维护"],
+        ] as Array<[AgentPanel, string]>).map(([key, label]) => (
+          <button key={key} type="button" className={panel === key ? "active" : ""} onClick={() => setPanel(key)}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {notice && <div className={`agent-notice ${notice.kind}`}>{notice.text}</div>}
+      {loading && <div className="agent-loading"><RefreshCw /> 正在读取 Agent 状态...</div>}
+
+      {panel === "status" && (
+        <div className="agent-panel">
+          <div className="agent-info-grid">
+            <InfoBlock label="Agent 版本" value={currentVersion} />
+            <InfoBlock label="最新版本" value={latestVersion} />
+            <InfoBlock label="在线状态" value={isAgentOnline(server) ? "在线" : "离线"} />
+            <InfoBlock label="WS 状态" value={server.ws_connected ? "已连接" : "未连接"} />
+            <InfoBlock label="最后心跳" value={server.last_heartbeat ? formatDateTime(server.last_heartbeat) : "--"} />
+            <InfoBlock label="Agent 模式" value={formatConnectionMode(server.connection_mode)} />
+            <InfoBlock label="Xray 模式" value={formatXrayMode(server.xray_mode)} />
+            <InfoBlock label="Xray 状态" value={serviceStatus?.xray?.running ?? server.xray_running ? "运行中" : "停止"} />
+            <InfoBlock label="Xray 版本" value={formatAgentVersion(serviceStatus?.xray?.version || server.xray_version)} />
+            <InfoBlock label="Nginx 状态" value={serviceStatus?.nginx?.installed ? (serviceStatus.nginx.running ? "运行中" : "已安装未运行") : "未安装"} />
+            <InfoBlock label="主机名" value={systemInfo?.hostname || "--"} />
+            <InfoBlock label="系统负载" value={systemInfo?.loadavg || "--"} />
+          </div>
+          {versionInfo?.upgrade_available && <div className="agent-notice info">当前 Agent 低于最新版本，可在维护页升级。</div>}
+          {(versionInfo?.current_error || versionInfo?.latest_error) && (
+            <div className="agent-notice error">{versionInfo.current_error || versionInfo.latest_error}</div>
+          )}
+        </div>
+      )}
+
+      {panel === "sync" && (
+        <div className="agent-panel">
+          <section className="agent-card">
+            <div className="agent-card-head">
+              <div>
+                <h4>同步节点</h4>
+                <p>读取 Agent 当前入站，按正式规则生成或更新节点。</p>
+              </div>
+              <RefreshCw />
+            </div>
+            <label className="agent-field">
+              <span>节点地址</span>
+              <input value={syncHost} onChange={(event) => setSyncHost(event.target.value)} placeholder="留空时使用服务器地址" />
+            </label>
+            <label className="agent-check">
+              <input type="checkbox" checked={forceOverride} onChange={(event) => setForceOverride(event.target.checked)} />
+              <span>强制覆盖已有节点配置</span>
+            </label>
+            <button type="button" className="agent-primary" disabled={!canMutate || !syncHost.trim()} onClick={() => void run("sync", () => syncRemoteNodes(sessionToken, server.id, { server_host: syncHost.trim(), force_override: forceOverride }), "节点同步完成")}>
+              <RefreshCw /> {busy === "sync" ? "同步中..." : "同步节点"}
+            </button>
+          </section>
+
+          <section className="agent-card">
+            <div className="agent-card-head">
+              <div>
+                <h4>同步节点地址</h4>
+                <p>按当前服务器地址刷新已有节点的 server 字段。</p>
+              </div>
+              <Globe2 />
+            </div>
+            <button type="button" disabled={!canMutate} onClick={() => void run("sync-address", () => syncRemoteNodeAddress(sessionToken, server.id), "节点地址已同步")}>
+              <Globe2 /> {busy === "sync-address" ? "同步中..." : "同步节点地址"}
+            </button>
+          </section>
+        </div>
+      )}
+
+      {panel === "config" && (
+        <div className="agent-panel">
+          <section className="agent-card">
+            <div className="agent-card-head">
+              <div>
+                <h4>配置状态</h4>
+                <p>主控保存的 current/pending 快照，用于恢复或接受 Agent 现状。</p>
+              </div>
+              <Database />
+            </div>
+            <div className="agent-config-status">
+              <span>当前快照：{recovery?.has_current ? shortHash(recovery.current?.config_hash) : "无"}</span>
+              <span>待处理恢复：{recovery?.has_pending ? shortHash(recovery.pending?.config_hash) : "无"}</span>
+            </div>
+            <div className="agent-button-row">
+              <button type="button" disabled={!canMutate || !recovery?.has_current} onClick={() => confirmAction("确认把主控 current 配置覆盖到 Agent，并重启 Xray？") && void run("recovery-apply", () => applyXrayRecovery(sessionToken, server.id), "已应用主控配置")}>
+                <UploadCloud /> 应用主控配置
+              </button>
+              <button type="button" disabled={!canMutate || !recovery?.has_pending} onClick={() => confirmAction("确认接受 Agent 当前配置为新的主控 current？该操作不重启 Xray。") && void run("recovery-accept", () => acceptXrayRecovery(sessionToken, server.id), "已接受 Agent 当前配置")}>
+                <ShieldCheck /> 接受 Agent 现状
+              </button>
+              <button type="button" disabled={!canMutate} onClick={() => void run("expect-recovery", () => expectXrayRecovery(sessionToken, server.id), "已登记下次上线自动恢复")}>
+                <Clock3 /> 下次上线恢复
+              </button>
+              <button type="button" className="danger" disabled={!canMutate} onClick={() => confirmAction("确认下发默认配置？会覆盖 Agent 当前 Xray 配置并重启 Xray。") && void run("default-config", () => deployRemoteDefaultConfig(sessionToken, server.id), "默认配置已下发")}>
+                <Database /> 下发默认配置
+              </button>
+            </div>
+          </section>
+
+          <section className="agent-card">
+            <div className="agent-card-head">
+              <div>
+                <h4>配置历史</h4>
+                <p>可查看历史 JSON，也可恢复到 Agent；恢复前后端会做 Xray 测试。</p>
+              </div>
+              <Clock3 />
+            </div>
+            <div className="agent-history-list">
+              {snapshots.length === 0 ? (
+                <EmptyText>暂无配置历史</EmptyText>
+              ) : snapshots.map((snapshot) => (
+                <button key={snapshot.id} type="button" className={selectedSnapshot?.id === snapshot.id ? "selected" : ""} onClick={() => void openSnapshot(snapshot)}>
+                  <strong>{snapshot.status || "history"}</strong>
+                  <span>{formatDateTime(snapshot.created_at)}</span>
+                  <code>{shortHash(snapshot.config_hash)}</code>
+                  <em>{formatBytes(snapshot.size_bytes)}</em>
+                </button>
+              ))}
+            </div>
+            {selectedSnapshot && (
+              <div className="agent-snapshot-preview">
+                <div>
+                  <strong>{selectedSnapshot.status || "历史快照"} #{selectedSnapshot.id}</strong>
+                  <button type="button" className="danger" disabled={!canMutate || busy === `restore-${selectedSnapshot.id}`} onClick={() => confirmAction(`确认恢复快照 #${selectedSnapshot.id}？会覆盖 Agent 当前配置并重启 Xray。`) && void run(`restore-${selectedSnapshot.id}`, () => restoreXraySnapshot(sessionToken, selectedSnapshot.id), "历史配置已恢复")}>
+                    <UploadCloud /> 恢复
+                  </button>
+                </div>
+                <textarea readOnly value={formatJsonText(selectedSnapshot.config_json || "")} />
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {panel === "website" && (
+        <div className="agent-panel">
+          <section className="agent-card">
+            <div className="agent-card-head">
+              <div>
+                <h4>网站管理</h4>
+                <p>读取 Agent Nginx 网站清单，支持添加、验证和删除托管网站。</p>
+              </div>
+              <Globe2 />
+            </div>
+            <div className="agent-config-status">
+              <span>Nginx：{websites?.nginx?.installed ? (websites.nginx.running ? "运行中" : "已安装") : "未安装"}</span>
+              <span>管理方式：{websites?.nginx?.manager || "--"}</span>
+              <span>443：{websites?.ports?.["443"] || "空闲"}</span>
+            </div>
+            {websites?.nginx?.reason && <div className="agent-notice info">{websites.nginx.reason}</div>}
+            <div className="agent-button-row">
+              {(!websites?.nginx?.installed || !websites?.nginx?.can_manage) && (
+                <button type="button" disabled={!canMutate} onClick={() => confirmAction("确认安装或修复 Nginx 管理配置？可能改变远端 Nginx 配置。") && void run("nginx-install", () => installRemoteNginx(sessionToken, server.id), websites?.nginx?.installed ? "Nginx 管理配置已修复" : "Nginx 安装任务已启动")}>
+                  <Settings /> {websites?.nginx?.installed ? "修复管理配置" : "安装 Nginx"}
+                </button>
+              )}
+              <button type="button" onClick={() => void refresh(false)} disabled={Boolean(busy)}>
+                <RefreshCw /> 刷新
+              </button>
+            </div>
+          </section>
+          <div className="agent-subtabs">
+            <button type="button" className={websiteMode === "list" ? "active" : ""} onClick={() => setWebsiteMode("list")}>网站列表</button>
+            <button type="button" className={websiteMode === "add" ? "active" : ""} onClick={() => setWebsiteMode("add")}>添加网站</button>
+          </div>
+          {websiteMode === "list" ? (
+            <div className="agent-site-list">
+              {(websites?.websites ?? []).length === 0 ? <EmptyText>暂无网站配置</EmptyText> : (websites?.websites ?? []).map((site) => (
+                <article key={`${site.domain}-${site.path}`} className="agent-site-card">
+                  <div>
+                    <strong>{site.domain || "--"}</strong>
+                    <span>{site.type === "proxy" ? "反向代理" : site.type === "static" ? "静态网站" : "未知类型"}</span>
+                    <p>{site.value || site.path || "--"}</p>
+                    {site.reason && <p>{site.reason}</p>}
+                  </div>
+                  <button type="button" className="danger" disabled={!canMutate || !site.managed || site.protected || !site.domain} onClick={() => site.domain && confirmAction(`确认删除网站 ${site.domain}？关联的 Xray 网站路由也会清理。`) && void run(`delete-site-${site.domain}`, () => deleteRemoteWebsite(sessionToken, server.id, site.domain || ""), "网站已删除")}>
+                    <Trash2 /> 删除
+                  </button>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <section className="agent-card">
+              <label className="agent-field">
+                <span>网站域名</span>
+                <input value={siteDomain} onChange={(event) => setSiteDomain(event.target.value)} placeholder="example.com" />
+              </label>
+              <div className="agent-subtabs compact">
+                <button type="button" className={siteType === "static" ? "active" : ""} onClick={() => setSiteType("static")}>静态网站</button>
+                <button type="button" className={siteType === "proxy" ? "active" : ""} onClick={() => setSiteType("proxy")}>反向代理</button>
+              </div>
+              <label className="agent-field">
+                <span>{siteType === "static" ? "静态目录" : "反代地址"}</span>
+                <input value={siteValue} onChange={(event) => setSiteValue(event.target.value)} placeholder={siteType === "static" ? "/var/www/html" : "http://127.0.0.1:8080"} />
+              </label>
+              <label className="agent-field">
+                <span>入口模式</span>
+                <select value={entryMode} onChange={(event) => setEntryMode(event.target.value)}>
+                  <option value="auto">自动</option>
+                  <option value="direct">直接 Nginx</option>
+                  <option value="fallback">Xray fallback</option>
+                  <option value="tunnel">Xray tunnel</option>
+                </select>
+              </label>
+              {validation && <div className={`agent-notice ${validation.kind}`}>{validation.text}</div>}
+              <div className="agent-button-row">
+                <button type="button" disabled={!canMutate || !siteValue.trim()} onClick={() => void run("validate-site", () => validateRemoteWebsite(sessionToken, { server_id: server.id, site_type: siteType, site_value: siteValue.trim(), entry_mode: entryMode }).then((response) => { setValidation({ kind: response.success ? "success" : "error", text: response.message || (response.success ? "验证通过" : "验证失败") }); return response; }), "验证完成")}>
+                  <ShieldCheck /> 验证
+                </button>
+                <button type="button" className="agent-primary" disabled={!canMutate || !siteDomain.trim() || !siteValue.trim()} onClick={() => confirmAction(`确认添加网站 ${siteDomain.trim()}？会下发证书和 Nginx 配置，fallback/tunnel 模式还会修改 Xray 并重启。`) && void run("add-site", () => addRemoteWebsite(sessionToken, { server_id: server.id, domain: siteDomain.trim(), site_type: siteType, site_value: siteValue.trim(), entry_mode: entryMode }), "网站已添加")}>
+                  <Plus /> 添加网站
+                </button>
+              </div>
+            </section>
+          )}
+        </div>
+      )}
+
+      {panel === "maintenance" && (
+        <div className="agent-panel">
+          <section className="agent-card">
+            <div className="agent-card-head">
+              <div>
+                <h4>维护</h4>
+                <p>升级和卸载会直接作用远端 Agent，执行前必须确认。</p>
+              </div>
+              <Wrench />
+            </div>
+            <div className="agent-info-grid two">
+              <InfoBlock label="当前版本" value={currentVersion} />
+              <InfoBlock label="最新版本" value={latestVersion} />
+            </div>
+            <div className="agent-button-row">
+              <button type="button" className="danger" disabled={!canMutate || busy === "upgrade"} onClick={() => void runStream("upgrade")}>
+                <RefreshCw /> {busy === "upgrade" ? "升级中..." : "升级 Agent"}
+              </button>
+              <button type="button" className="danger" disabled={!canMutate || busy === "uninstall"} onClick={() => void runStream("uninstall")}>
+                <Trash2 /> {busy === "uninstall" ? "卸载中..." : "卸载 Agent"}
+              </button>
+            </div>
+            <p className="agent-note">联邦服务器、离线服务器或正在执行其它操作时，维护按钮会禁用。</p>
+            {streamLog && <pre className="agent-stream-log">{streamLog}</pre>}
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BatchAgentUpgradeDialog({ servers, sessionToken }: { servers: RemoteServer[]; sessionToken: string }) {
+  const targets = useMemo(() => servers.filter((server) => server.status === "connected" && !server.is_federated), [servers]);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<AgentNotice | null>(null);
+  const [logs, setLogs] = useState<Record<number, string>>({});
+
+  async function runAll() {
+    if (!window.confirm(`确认升级 ${targets.length} 台在线 Agent？\n每台 Agent 会依次重启，可能短暂断线；即使已经是最新版本，也会重新下载并替换同版本二进制。`)) return;
+    setBusy(true);
+    setNotice(null);
+    let failed = 0;
+    for (const server of targets) {
+      setLogs((current) => ({ ...current, [server.id]: `${server.name}\n` }));
+      try {
+        await streamAgentAction(sessionToken, server.id, "upgrade", (event) => {
+          const type = asString(event.type);
+          if (type === "output") {
+            setLogs((current) => ({ ...current, [server.id]: `${current[server.id] || ""}${stripAnsi(asString(event.data))}\n` }));
+          } else if (type === "complete" || type === "result") {
+            setLogs((current) => ({ ...current, [server.id]: `${current[server.id] || ""}${asString(event.message) || "完成"}\n` }));
+            if (event.success === false) failed += 1;
+          } else if (type === "error") {
+            failed += 1;
+            setLogs((current) => ({ ...current, [server.id]: `${current[server.id] || ""}${asString(event.message) || "失败"}\n` }));
+          }
+        });
+      } catch (error) {
+        failed += 1;
+        setLogs((current) => ({ ...current, [server.id]: `${current[server.id] || ""}${error instanceof Error ? error.message : "升级失败"}\n` }));
+      }
+    }
+    setNotice(failed ? { kind: "error", text: `批量升级完成，失败 ${failed} 台` } : { kind: "success", text: `批量升级完成，共 ${targets.length} 台` });
+    setBusy(false);
+  }
+
+  return (
+    <div className="agent-manager">
+      <div className="agent-server-line">
+        <span>批量升级 Agent</span>
+      </div>
+      {notice && <div className={`agent-notice ${notice.kind}`}>{notice.text}</div>}
+      <section className="agent-card">
+        <div className="agent-card-head">
+          <div>
+            <h4>在线 Agent</h4>
+            <p>正式版顶部的 Upgrade All Agents 能力；Custom 会按服务器顺序逐台调用升级 SSE。</p>
+          </div>
+          <RefreshCw />
+        </div>
+        <div className="agent-site-list">
+          {targets.length === 0 ? <EmptyText>暂无可升级的在线 Agent</EmptyText> : targets.map((server) => (
+            <article className="agent-site-card" key={server.id}>
+              <div>
+                <strong>{server.name}</strong>
+                <span>{agentVersion(server)}</span>
+                <p>{server.ws_connected ? "WS 已连接" : formatConnectionMode(server.connection_mode)}</p>
+              </div>
+            </article>
+          ))}
+        </div>
+        <button type="button" className="agent-primary" disabled={busy || targets.length === 0} onClick={() => void runAll()}>
+          <RefreshCw /> {busy ? "批量升级中..." : "升级全部在线 Agent"}
+        </button>
+        {Object.entries(logs).map(([id, log]) => <pre className="agent-stream-log" key={id}>{log}</pre>)}
+      </section>
+    </div>
+  );
+}
+
 function ServerActionsLayer({
   server,
   connectionMetric,
@@ -1170,11 +1955,11 @@ function ServerActionsLayer({
           <ActionButton icon={<Search />} label="扫描远程服务" disabled />
         </ActionGroup>
         <ActionGroup title="节点同步">
-          <ActionButton icon={<RefreshCw />} label="同步节点" disabled />
-          <ActionButton icon={<Globe2 />} label="同步节点地址" disabled />
-          <ActionButton icon={<Clock3 />} label="配置历史" disabled />
-          <ActionButton icon={<Database />} label="下发默认配置" disabled />
-          <ActionButton icon={<Plus />} label="添加网站" disabled />
+          <ActionButton icon={<RefreshCw />} label="同步节点" onClick={() => onOpenDialog("agent")} />
+          <ActionButton icon={<Globe2 />} label="同步节点地址" onClick={() => onOpenDialog("agent")} />
+          <ActionButton icon={<Clock3 />} label="配置历史" onClick={() => onOpenDialog("agent")} />
+          <ActionButton icon={<Database />} label="下发默认配置" onClick={() => onOpenDialog("agent")} />
+          <ActionButton icon={<Plus />} label="添加网站" onClick={() => onOpenDialog("agent")} />
         </ActionGroup>
         <ActionGroup title="Xray 管理">
           <ActionButton icon={<TerminalSquare />} label="配置 / 入站 / 出站 / 路由" onClick={() => onOpenDialog("xray")} />
@@ -1182,7 +1967,7 @@ function ServerActionsLayer({
         </ActionGroup>
         <ActionGroup title="Agent 管理">
           <ActionButton icon={<Wrench />} label="Agent 管理" onClick={() => onOpenDialog("agent")} />
-          <ActionButton icon={<RefreshCw />} label="升级 Agent" danger disabled />
+          <ActionButton icon={<RefreshCw />} label="升级 Agent" danger onClick={() => onOpenDialog("agent")} />
         </ActionGroup>
         <ActionGroup title="Connections Helper">
           <ActionButton
@@ -1196,7 +1981,7 @@ function ServerActionsLayer({
         <ActionGroup title="危险操作">
           <ActionButton icon={<Power />} label={server.xray_running ? "停止 Xray" : "启动 Xray"} danger onClick={() => onXrayAction(server.xray_running ? "stop" : "start")} />
           <ActionButton icon={<RotateCw />} label="重启 Xray" danger onClick={() => onXrayAction("restart")} />
-          <ActionButton icon={<Trash2 />} label="卸载 Agent" danger disabled />
+          <ActionButton icon={<Trash2 />} label="卸载 Agent" danger onClick={() => onOpenDialog("agent")} />
           <ActionButton icon={<Trash2 />} label="删除服务器" danger disabled />
         </ActionGroup>
       </div>
@@ -1230,14 +2015,20 @@ function ServiceDialog({
   onXrayAction,
   xrayActionBusy,
   sessionToken,
+  sessionUsername,
+  servers,
   connectionMetric,
+  onChanged,
 }: {
-  dialog: { kind: "add" | "access" | "edit" | "xray" | "agent" | "helper"; server?: RemoteServer };
+  dialog: { kind: "add" | "access" | "edit" | "xray" | "agent" | "helper" | "batch-agent"; server?: RemoteServer };
   onClose: () => void;
   onXrayAction: (action: "start" | "stop" | "restart") => void;
   xrayActionBusy: boolean;
   sessionToken: string;
+  sessionUsername: string;
+  servers: RemoteServer[];
   connectionMetric?: ConnectionMetric;
+  onChanged: () => Promise<void>;
 }) {
   const server = dialog.server;
   const title = {
@@ -1247,6 +2038,7 @@ function ServiceDialog({
     xray: "Xray 管理",
     agent: "Agent 管理",
     helper: "Connections Helper",
+    "batch-agent": "批量升级 Agent",
   }[dialog.kind];
 
   return (
@@ -1259,34 +2051,21 @@ function ServiceDialog({
           </button>
         </div>
 
-        {dialog.kind === "xray" && server ? (
+        {dialog.kind === "add" ? (
+          <AddRemoteServerDialog sessionToken={sessionToken} servers={servers} onChanged={onChanged} onClose={onClose} />
+        ) : dialog.kind === "access" ? (
+          <AddSharedServerDialog sessionToken={sessionToken} servers={servers} onChanged={onChanged} onClose={onClose} />
+        ) : dialog.kind === "xray" && server ? (
           <div className="service-dialog-body">
-            <div className="service-tabs">
-              <button className="active">Config</button>
-              <button>Inbounds</button>
-              <button>Outbounds</button>
-              <button>Routing</button>
-            </div>
-            <div className="service-dialog-section">
-              <h4>Service Control</h4>
-              <div className="service-inline-actions">
-                <button type="button" disabled={xrayActionBusy} onClick={() => onXrayAction("start")}>Start</button>
-                <button type="button" disabled={xrayActionBusy} onClick={() => onXrayAction("stop")}>Stop</button>
-                <button type="button" disabled={xrayActionBusy} onClick={() => onXrayAction("restart")}>Restart</button>
-              </div>
-              <p>{xrayState(server).label}{server.xray_version ? ` (${server.xray_version})` : ""}</p>
-            </div>
-            <div className="service-dialog-section">
-              <h4>Metrics / Traffic Stats / gRPC</h4>
-              <p>入口已保留；具体配置编辑继续沿用官方接口迁移。</p>
-            </div>
+            <XrayManager server={server} token={sessionToken} username={sessionUsername} />
           </div>
         ) : dialog.kind === "agent" && server ? (
           <div className="service-dialog-body">
-            <div className="service-form-grid">
-              <InfoBlock label="Agent 版本" value={agentVersion(server)} />
-            </div>
-            <p className="service-dialog-note">Agent 升级、卸载等危险操作入口已在更多操作中保留，正式执行前必须继续走原确认流程。</p>
+            <AgentManager server={server} sessionToken={sessionToken} />
+          </div>
+        ) : dialog.kind === "batch-agent" ? (
+          <div className="service-dialog-body">
+            <BatchAgentUpgradeDialog servers={servers} sessionToken={sessionToken} />
           </div>
         ) : dialog.kind === "helper" && server ? (
           <HelperInstallDialog server={server} sessionToken={sessionToken} connectionMetric={connectionMetric} />
@@ -1317,13 +2096,593 @@ function ServiceDialog({
           </div>
         )}
 
-        <div className="service-dialog-actions">
-          <button type="button" onClick={onClose}>关闭</button>
-          {dialog.kind === "edit" && <button type="button" disabled>保存</button>}
-        </div>
+        {dialog.kind !== "add" && dialog.kind !== "access" && (
+          <div className="service-dialog-actions">
+            <button type="button" onClick={onClose}>关闭</button>
+            {dialog.kind === "edit" && <button type="button" disabled>保存</button>}
+          </div>
+        )}
       </section>
     </div>
   );
+}
+
+type AddServerFormState = {
+  name: string;
+  pullAddress: string;
+  pullAddressV6: string;
+  agentPort: string;
+  agentToken: string;
+  trafficLimitGb: string;
+  trafficUsedGb: string;
+  resetDay: string;
+  ipv6Enabled: boolean;
+  xrayMode: "external" | "embedded";
+  trafficStatsMode: "both" | "upload" | "download" | "max";
+  trafficSource: "xray" | "system";
+  ddnsEnabled: boolean;
+  ddnsProviderId: number;
+  stealSelf: boolean;
+  frontService: "xray" | "nginx";
+  stealMode: "tunnel" | "fallback";
+  use443: boolean;
+  domain: string;
+  siteType: "static" | "proxy";
+  siteValue: string;
+};
+
+const addServerInitialState: AddServerFormState = {
+  name: "",
+  pullAddress: "",
+  pullAddressV6: "",
+  agentPort: "23889",
+  agentToken: "",
+  trafficLimitGb: "",
+  trafficUsedGb: "",
+  resetDay: "1",
+  ipv6Enabled: true,
+  xrayMode: "external",
+  trafficStatsMode: "both",
+  trafficSource: "system",
+  ddnsEnabled: false,
+  ddnsProviderId: 0,
+  stealSelf: false,
+  frontService: "xray",
+  stealMode: "tunnel",
+  use443: false,
+  domain: "",
+  siteType: "static",
+  siteValue: "",
+};
+
+function AddRemoteServerDialog({
+  sessionToken,
+  servers,
+  onChanged,
+  onClose,
+}: {
+  sessionToken: string;
+  servers: RemoteServer[];
+  onChanged: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [form, setForm] = useState<AddServerFormState>(addServerInitialState);
+  const [masterUrl, setMasterUrl] = useState("");
+  const [dnsProviders, setDnsProviders] = useState<DNSProvider[]>([]);
+  const [certificates, setCertificates] = useState<ValidCertificate[]>([]);
+  const [loadingMeta, setLoadingMeta] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [notice, setNotice] = useState<{ kind: "success" | "error" | "info"; text: string } | null>(null);
+  const [createdServer, setCreatedServer] = useState<RemoteServer | null>(null);
+  const [installCommand, setInstallCommand] = useState("");
+  const [copied, setCopied] = useState("");
+
+  useEffect(() => {
+    let stopped = false;
+    async function loadMeta() {
+      setLoadingMeta(true);
+      try {
+        const [master, providers, certs] = await Promise.allSettled([
+          fetchMasterUrl(sessionToken),
+          fetchDNSProviders(sessionToken),
+          fetchValidCertificates(sessionToken),
+        ]);
+        if (stopped) return;
+        if (master.status === "fulfilled") setMasterUrl(master.value.master_url ?? "");
+        if (providers.status === "fulfilled") setDnsProviders(providers.value.providers ?? []);
+        if (certs.status === "fulfilled") setCertificates((certs.value.certificates ?? []) as ValidCertificate[]);
+      } catch {
+        if (!stopped) setNotice({ kind: "error", text: "读取添加服务器元数据失败" });
+      } finally {
+        if (!stopped) setLoadingMeta(false);
+      }
+    }
+    void loadMeta();
+    return () => {
+      stopped = true;
+    };
+  }, [sessionToken]);
+
+  useEffect(() => {
+    if (!form.ddnsEnabled || form.ddnsProviderId !== 0) return;
+    const cert = findCertificateForDomain(certificates, form.pullAddress);
+    if (cert?.dns_provider_id) {
+      setForm((current) => ({ ...current, ddnsProviderId: cert.dns_provider_id ?? 0 }));
+    }
+  }, [certificates, form.ddnsEnabled, form.ddnsProviderId, form.pullAddress]);
+
+  const ddnsCertificate = useMemo(() => findCertificateForDomain(certificates, form.pullAddress), [certificates, form.pullAddress]);
+  const canSubmit = form.name.trim().length > 0 && !submitting && !createdServer;
+
+  function update<K extends keyof AddServerFormState>(key: K, value: AddServerFormState[K]) {
+    setForm((current) => ({ ...current, [key]: value }));
+    setNotice(null);
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!form.name.trim()) {
+      setNotice({ kind: "error", text: "服务器名称不能为空" });
+      return;
+    }
+    if (form.use443 && !form.domain.trim()) {
+      setNotice({ kind: "error", text: "启用 443 部署时必须填写域名" });
+      return;
+    }
+    if (form.ddnsEnabled && (!form.pullAddress.trim() || isIPAddress(form.pullAddress))) {
+      setNotice({ kind: "error", text: "DDNS 开启时，服务器地址必须填写域名" });
+      return;
+    }
+
+    const port = parseOptionalInt(form.agentPort);
+    if (port != null && port !== 0 && (port < 1024 || port > 65535)) {
+      setNotice({ kind: "error", text: "Agent 端口应为 1024-65535，或留空使用默认 23889" });
+      return;
+    }
+    const resetDay = parseOptionalInt(form.resetDay);
+    if (resetDay != null && resetDay !== 0 && (resetDay < 1 || resetDay > 31)) {
+      setNotice({ kind: "error", text: "重置日应为 1-31，或留空表示不自动重置" });
+      return;
+    }
+
+    const trafficLimit = gbToBytes(form.trafficLimitGb);
+    const trafficUsed = gbToBytes(form.trafficUsedGb);
+    if (trafficLimit == null || trafficUsed == null) {
+      setNotice({ kind: "error", text: "流量字段必须是非负数字" });
+      return;
+    }
+
+    const payload: RemoteServerCreateRequest = {
+      name: form.name.trim(),
+      traffic_limit: trafficLimit,
+      traffic_used_offset: trafficUsed,
+      traffic_reset_day: resetDay ?? 0,
+      connection_mode: "auto",
+      pull_address: form.pullAddress.trim() || undefined,
+      pull_address_v6: form.ddnsEnabled ? form.pullAddressV6.trim() || undefined : undefined,
+      pull_port: port ?? undefined,
+      listen_port: port ?? undefined,
+      pull_token: form.agentToken.trim() || undefined,
+      steal_self: form.stealSelf,
+      front_service: form.frontService,
+      domain: form.domain.trim() || undefined,
+      use_443: form.use443 || undefined,
+      steal_mode: form.stealSelf ? form.stealMode : undefined,
+      site_type: form.stealSelf ? form.siteType : undefined,
+      site_value: form.stealSelf ? form.siteValue.trim() || undefined : undefined,
+      xray_mode: form.xrayMode,
+      traffic_stats_mode: form.trafficStatsMode,
+      traffic_source: form.trafficSource,
+      ddns_enabled: form.ddnsEnabled,
+      ddns_provider_id: form.ddnsProviderId,
+      ipv6_enabled: form.ipv6Enabled,
+    };
+
+    setSubmitting(true);
+    setNotice(null);
+    try {
+      const response = await createRemoteServer(sessionToken, payload);
+      if (!response.success) throw new Error(response.message || "创建服务器失败");
+      setCreatedServer(response.server ?? null);
+      setInstallCommand(response.install_command ?? "");
+      setNotice({ kind: "success", text: response.message || "服务器创建成功，已重新读取服务器列表" });
+      await onChanged();
+    } catch (err) {
+      setNotice({ kind: "error", text: err instanceof Error ? err.message : "创建服务器失败" });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function copyText(value: string, label: string) {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(label);
+      window.setTimeout(() => setCopied((current) => (current === label ? "" : current)), 1800);
+    } catch {
+      setNotice({ kind: "error", text: "复制失败，请手动选择文本复制" });
+    }
+  }
+
+  async function copyServerToken() {
+    if (!createdServer?.id) return;
+    try {
+      const response = await revealRemoteServerToken(sessionToken, createdServer.id);
+      await copyText(response.token ?? "", "server-token");
+    } catch (err) {
+      setNotice({ kind: "error", text: err instanceof Error ? err.message : "读取 Token 失败" });
+    }
+  }
+
+  return (
+    <>
+      <form id="add-remote-server-form" className="service-dialog-body add-server-form" onSubmit={submit}>
+        {notice && (
+          <div className={`add-server-notice ${notice.kind}`} role="status">
+            {notice.kind === "success" ? <CheckCircle2 /> : notice.kind === "error" ? <AlertTriangle /> : <ShieldCheck />}
+            <span>{notice.text}</span>
+          </div>
+        )}
+
+        {createdServer && installCommand && (
+          <section className="add-server-result">
+            <div>
+              <strong>安装命令</strong>
+              <p>在远程服务器 SSH 中执行。Agent 连上后，服务器列表会自动刷新。</p>
+            </div>
+            <textarea value={installCommand} readOnly spellCheck={false} />
+            <div className="add-server-copy-row">
+              <button type="button" onClick={() => void copyText(installCommand, "install")}>
+                <Copy /> {copied === "install" ? "已复制" : "复制安装命令"}
+              </button>
+              <button type="button" onClick={() => void copyServerToken()}>
+                <KeyRound /> {copied === "server-token" ? "已复制" : "复制 Server Token"}
+              </button>
+            </div>
+          </section>
+        )}
+
+        <section className="add-server-section">
+          <h4>基本信息</h4>
+          <div className="service-form-grid">
+            <label>
+              <span>服务器名称 *</span>
+              <input value={form.name} onChange={(event) => update("name", event.target.value)} placeholder="例如：US Node 1" disabled={Boolean(createdServer)} />
+            </label>
+            <label>
+              <span>服务器地址</span>
+              <input value={form.pullAddress} onChange={(event) => update("pullAddress", event.target.value)} placeholder="例如：example.com" disabled={Boolean(createdServer)} onBlur={(event) => {
+                if (form.stealSelf && !form.domain.trim() && looksLikeDomain(event.target.value)) update("domain", event.target.value.trim());
+              }} />
+            </label>
+            <label>
+              <span>Agent 端口</span>
+              <input type="number" value={form.agentPort} onChange={(event) => update("agentPort", event.target.value)} placeholder="23889" disabled={Boolean(createdServer)} />
+            </label>
+            <label>
+              <span>Agent Auth Token（可选）</span>
+              <input value={form.agentToken} onChange={(event) => update("agentToken", event.target.value)} placeholder="留空自动生成" disabled={Boolean(createdServer)} />
+            </label>
+          </div>
+        </section>
+
+        <section className="add-server-section">
+          <h4>DDNS 与 IPv6</h4>
+          <ToggleLine title="DDNS" desc="开启后 Agent 上报 IP 漂移时会同步 A/AAAA 记录，服务器地址必须是域名。" checked={form.ddnsEnabled} disabled={Boolean(createdServer)} onChange={(checked) => update("ddnsEnabled", checked)} />
+          {form.ddnsEnabled && (
+            <div className="service-form-grid">
+              <label>
+                <span>DDNS 服务商</span>
+                <select value={form.ddnsProviderId} onChange={(event) => update("ddnsProviderId", Number(event.target.value))} disabled={Boolean(createdServer)}>
+                  <option value={0}>自动（按证书和 DNS 服务商）</option>
+                  {dnsProviders.map((provider) => {
+                    const id = provider.id ?? provider.ID ?? 0;
+                    return <option key={id} value={id}>{provider.name ?? provider.Name ?? `Provider ${id}`}</option>;
+                  })}
+                </select>
+                {!loadingMeta && form.ddnsProviderId === 0 && form.pullAddress && !ddnsCertificate && (
+                  <small>未找到匹配该域名的通配符证书，正式后端会继续按 DNS 服务商兜底校验。</small>
+                )}
+              </label>
+              <label>
+                <span>IPv6 域名（AAAA）</span>
+                <input value={form.pullAddressV6} onChange={(event) => update("pullAddressV6", event.target.value)} placeholder="留空则与服务器地址相同" disabled={Boolean(createdServer)} />
+              </label>
+            </div>
+          )}
+          <ToggleLine title="启用 IPv6" desc="关闭后，服务管理不显示该服务器 v6，添加节点不可选 v6。" checked={form.ipv6Enabled} disabled={Boolean(createdServer)} onChange={(checked) => update("ipv6Enabled", checked)} />
+        </section>
+
+        <section className="add-server-section">
+          <h4>流量与账期</h4>
+          <div className="service-form-grid">
+            <label>
+              <span>流量额度（GB）</span>
+              <input type="number" step="0.01" value={form.trafficLimitGb} onChange={(event) => update("trafficLimitGb", event.target.value)} placeholder="留空为无限流量" disabled={Boolean(createdServer)} />
+            </label>
+            <label>
+              <span>已用流量（GB）</span>
+              <input type="number" step="0.01" value={form.trafficUsedGb} onChange={(event) => update("trafficUsedGb", event.target.value)} placeholder="用于迁移/校准" disabled={Boolean(createdServer)} />
+            </label>
+            <label>
+              <span>每月重置日</span>
+              <input type="number" min={1} max={31} value={form.resetDay} onChange={(event) => update("resetDay", event.target.value)} placeholder="1-31，留空不重置" disabled={Boolean(createdServer)} />
+            </label>
+          </div>
+        </section>
+
+        <section className="add-server-section">
+          <h4>运行模式</h4>
+          <RadioGroup label="Xray 模式" value={form.xrayMode} disabled={Boolean(createdServer)} options={[
+            { value: "external", label: "External Xray", desc: "独立 Xray 进程，Agent 通过 gRPC 管理。" },
+            { value: "embedded", label: "Embedded Xray", desc: "Agent 内嵌 Xray-core，支持自动限速、设备限制及更多节点类型。" },
+          ]} onChange={(value) => update("xrayMode", value as AddServerFormState["xrayMode"])} />
+          <RadioGroup label="流量统计规则" value={form.trafficStatsMode} disabled={Boolean(createdServer)} options={[
+            { value: "both", label: "上行 + 下行" },
+            { value: "upload", label: "仅上行" },
+            { value: "download", label: "仅下行" },
+            { value: "max", label: "取最大（上/下行）" },
+          ]} onChange={(value) => update("trafficStatsMode", value as AddServerFormState["trafficStatsMode"])} />
+          <RadioGroup label="服务器流量数据源" value={form.trafficSource} disabled={Boolean(createdServer)} options={[
+            { value: "xray", label: "Xray 协议流量", desc: "聚合该服务器节点流量，只包含走 Xray 协议的流量。" },
+            { value: "system", label: "系统网卡流量", desc: "走 Agent /proc/net/dev 的物理网卡 RX+TX 累计，更接近 VPS 服务商口径。" },
+          ]} onChange={(value) => update("trafficSource", value as AddServerFormState["trafficSource"])} />
+        </section>
+
+        <section className="add-server-section">
+          <h4>Steal Self / 443 部署</h4>
+          <ToggleLine title="Steal Self" desc="开启后，安装 Agent 后会自动安装 Xray + Nginx，并可自动部署 443 配置。" checked={form.stealSelf} disabled={Boolean(createdServer)} onChange={(checked) => {
+            setForm((current) => ({ ...current, stealSelf: checked, use443: checked ? true : false, domain: checked && !current.domain && looksLikeDomain(current.pullAddress) ? current.pullAddress : current.domain }));
+          }} />
+          {form.stealSelf && (
+            <>
+              <RadioGroup label="前置服务" value={form.frontService} disabled={Boolean(createdServer)} options={[
+                { value: "xray", label: "Xray" },
+                { value: "nginx", label: "Nginx（暂未支持）", disabled: true },
+              ]} onChange={(value) => update("frontService", value as AddServerFormState["frontService"])} />
+              <RadioGroup label="部署模式" value={form.stealMode} disabled={Boolean(createdServer)} options={[
+                { value: "tunnel", label: "Tunnel Mode", desc: "Xray 监听 443，通过 tunnel 转发到 Nginx。" },
+                { value: "fallback", label: "Fallback Mode", desc: "Xray fallback 到 Nginx。" },
+              ]} onChange={(value) => update("stealMode", value as AddServerFormState["stealMode"])} />
+              <ToggleLine title="部署在 443 端口" desc="开启后必须填写域名；Agent 连接后会部署证书、Nginx 与 Xray 443 配置。" checked={form.use443} disabled={Boolean(createdServer) || form.stealSelf} onChange={(checked) => update("use443", checked)} />
+              <div className="service-form-grid">
+                <label>
+                  <span>域名 *</span>
+                  <input value={form.domain} onChange={(event) => update("domain", event.target.value)} placeholder="例如：us1.example.com" disabled={Boolean(createdServer)} />
+                </label>
+                <label>
+                  <span>站点类型</span>
+                  <select value={form.siteType} onChange={(event) => update("siteType", event.target.value as AddServerFormState["siteType"])} disabled={Boolean(createdServer)}>
+                    <option value="static">静态页面</option>
+                    <option value="proxy">反向代理</option>
+                  </select>
+                </label>
+                <label className="wide">
+                  <span>{form.siteType === "static" ? "静态页面路径" : "反向代理地址"}</span>
+                  <input value={form.siteValue} onChange={(event) => update("siteValue", event.target.value)} placeholder={form.siteType === "static" ? "例如：/var/www/html" : "例如：http://127.0.0.1:8080"} disabled={Boolean(createdServer)} />
+                </label>
+              </div>
+            </>
+          )}
+        </section>
+
+        <section className="add-server-section compact">
+          <h4>提交摘要</h4>
+          <dl className="add-server-summary">
+            <div><dt>正式 API</dt><dd>POST /api/admin/remote-servers/create</dd></div>
+            <div><dt>Master URL</dt><dd>{masterUrl || "未配置，后端会回退到请求 Host"}</dd></div>
+            <div><dt>服务器数量</dt><dd>{servers.length} 台</dd></div>
+            <div><dt>创建副作用</dt><dd>写 Remote Server 记录，生成 Token，返回安装命令；不直接安装 Agent/Xray。</dd></div>
+          </dl>
+        </section>
+      </form>
+
+      <div className="service-dialog-actions">
+        <button type="button" onClick={onClose}>{createdServer ? "完成" : "取消"}</button>
+        <button type="submit" className="primary" form="add-remote-server-form" disabled={!canSubmit}>
+          {submitting ? "生成中..." : "生成 Token"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function AddSharedServerDialog({
+  sessionToken,
+  servers,
+  onChanged,
+  onClose,
+}: {
+  sessionToken: string;
+  servers: RemoteServer[];
+  onChanged: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [ownerUrl, setOwnerUrl] = useState("");
+  const [shareToken, setShareToken] = useState("");
+  const [name, setName] = useState("");
+  const [prefix, setPrefix] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [notice, setNotice] = useState<{ kind: "success" | "error" | "info"; text: string } | null>(null);
+  const [created, setCreated] = useState<{ id: number; name: string; status?: string } | null>(null);
+
+  const canSubmit = ownerUrl.trim().length > 0 && shareToken.trim().length > 0 && !submitting && !created;
+
+  function update(setter: (value: string) => void, value: string) {
+    setter(value);
+    setNotice(null);
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!ownerUrl.trim() || !shareToken.trim()) {
+      setNotice({ kind: "error", text: "拥有方地址和分享令牌必填" });
+      return;
+    }
+
+    setSubmitting(true);
+    setNotice(null);
+    try {
+      const response = await addSharedRemoteServer(sessionToken, {
+        owner_url: ownerUrl.trim(),
+        share_token: shareToken.trim(),
+        name: name.trim() || undefined,
+        prefix: prefix.trim() || undefined,
+      });
+      if (response.success === false) throw new Error(response.message || "接入分享服务器失败");
+      setCreated({ id: response.id, name: response.name, status: response.status });
+      setNotice({ kind: "success", text: `已接入 ${response.name || "共享服务器"}，服务器列表已重新读取` });
+      await onChanged();
+    } catch (err) {
+      setNotice({ kind: "error", text: err instanceof Error ? err.message : "接入分享服务器失败" });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <>
+      <form id="add-shared-server-form" className="service-dialog-body add-server-form shared-server-form" onSubmit={submit}>
+        {notice && (
+          <div className={`add-server-notice ${notice.kind}`} role="status">
+            {notice.kind === "success" ? <CheckCircle2 /> : notice.kind === "error" ? <AlertTriangle /> : <Share2 />}
+            <span>{notice.text}</span>
+          </div>
+        )}
+
+        <section className="add-server-section">
+          <h4>接入分享服务器</h4>
+          <p className="add-server-section-desc">
+            填入拥有方提供的拥有方地址与分享令牌即可接入。接入后可像自己的服务器一样管理，添加节点时建议使用入站前缀区分。
+          </p>
+          <div className="service-form-grid">
+            <label>
+              <span>拥有方地址 *</span>
+              <input
+                value={ownerUrl}
+                onChange={(event) => update(setOwnerUrl, event.target.value)}
+                placeholder="https://owner.example.com"
+                disabled={Boolean(created)}
+                inputMode="url"
+              />
+            </label>
+            <label>
+              <span>分享令牌 *</span>
+              <input
+                value={shareToken}
+                onChange={(event) => update(setShareToken, event.target.value)}
+                placeholder="拥有方生成的令牌"
+                disabled={Boolean(created)}
+                autoComplete="off"
+              />
+            </label>
+            <label>
+              <span>服务器名称（可选）</span>
+              <input value={name} onChange={(event) => update(setName, event.target.value)} placeholder="留空则使用拥有方的名称" disabled={Boolean(created)} />
+            </label>
+            <label>
+              <span>入站前缀</span>
+              <input value={prefix} onChange={(event) => update(setPrefix, event.target.value)} placeholder="如 myx-" disabled={Boolean(created)} />
+              <small>在该分享服务器上新增入站时，标签会自动加上此前缀，避免与拥有方已有入站冲突。设置后固定复用。</small>
+            </label>
+          </div>
+        </section>
+
+        <section className="add-server-section compact">
+          <h4>提交摘要</h4>
+          <dl className="add-server-summary">
+            <div><dt>正式 API</dt><dd>POST /api/admin/remote-servers/add-shared</dd></div>
+            <div><dt>必填字段</dt><dd>拥有方地址、分享令牌</dd></div>
+            <div><dt>可选字段</dt><dd>服务器名称、入站前缀</dd></div>
+            <div><dt>当前服务器数量</dt><dd>{servers.length} 台</dd></div>
+            <div><dt>接入副作用</dt><dd>校验拥有方联邦接口，写入本地主控 Remote Server 和分享服务器标记；不会安装 Agent，也不会修改拥有方配置。</dd></div>
+            {created && <div><dt>接入结果</dt><dd>#{created.id} · {created.name}{created.status ? ` · ${created.status}` : ""}</dd></div>}
+          </dl>
+        </section>
+      </form>
+
+      <div className="service-dialog-actions">
+        <button type="button" onClick={onClose}>{created ? "完成" : "取消"}</button>
+        <button type="submit" className="primary" form="add-shared-server-form" disabled={!canSubmit}>
+          {submitting ? "接入中..." : "接入"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function ToggleLine({ title, desc, checked, disabled, onChange }: { title: string; desc?: string; checked: boolean; disabled?: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="add-server-toggle">
+      <span>
+        <strong>{title}</strong>
+        {desc && <small>{desc}</small>}
+      </span>
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
+      <i />
+    </label>
+  );
+}
+
+function RadioGroup({ label, value, options, disabled, onChange }: { label: string; value: string; options: Array<{ value: string; label: string; desc?: string; disabled?: boolean }>; disabled?: boolean; onChange: (value: string) => void }) {
+  return (
+    <fieldset className="add-server-radio-group">
+      <legend>{label}</legend>
+      <div>
+        {options.map((option) => (
+          <label key={option.value} className={option.disabled ? "disabled" : ""}>
+            <input type="radio" name={label} value={option.value} checked={value === option.value} disabled={disabled || option.disabled} onChange={() => onChange(option.value)} />
+            <span>
+              <strong>{option.label}</strong>
+              {option.desc && <small>{option.desc}</small>}
+            </span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function parseOptionalInt(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) return undefined;
+  return Math.trunc(parsed);
+}
+
+function gbToBytes(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return 0;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return Math.round(parsed * 1024 * 1024 * 1024);
+}
+
+function isIPAddress(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(trimmed) || /^[0-9a-f:]+$/i.test(trimmed);
+}
+
+function looksLikeDomain(value: string) {
+  const trimmed = value.trim().toLowerCase();
+  return Boolean(trimmed && trimmed.includes(".") && /^[a-z0-9.-]+$/.test(trimmed) && !isIPAddress(trimmed));
+}
+
+function findCertificateForDomain(certificates: ValidCertificate[], domain: string) {
+  const normalized = domain.trim().toLowerCase();
+  if (!looksLikeDomain(normalized)) return undefined;
+  const exact = certificates.find((certificate) => certificate.domain?.toLowerCase() === normalized && Number(certificate.dns_provider_id) > 0);
+  if (exact) return exact;
+  const parts = normalized.split(".");
+  for (let index = 1; index < parts.length - 1; index += 1) {
+    const wildcard = `*.${parts.slice(index).join(".")}`;
+    const match = certificates.find((certificate) => certificate.domain?.toLowerCase() === wildcard && Number(certificate.dns_provider_id) > 0);
+    if (match) return match;
+  }
+  return undefined;
 }
 
 function SideMenu({
@@ -1403,19 +2762,19 @@ function PanelTitle({ icon, title, subtitle }: { icon: React.ReactNode; title: s
         </h2>
         <p>{subtitle}</p>
       </div>
-      <button className="more-button" type="button">
-        更多
-      </button>
     </div>
   );
 }
 
-function TrafficRow({ name, up, down, badge }: { name: string; up: number; down: number; badge?: string }) {
+function TrafficRow({ name, up, down, badge, prefix }: { name: string; up: number; down: number; badge?: React.ReactNode; prefix?: React.ReactNode }) {
   return (
     <div className="traffic-row">
       <div>
-        <strong>{name}</strong>
-        {badge && <span>{badge}</span>}
+        <div className="traffic-row-title">
+          {prefix}
+          <strong>{name}</strong>
+        </div>
+        {badge && <div className="traffic-row-detail">{badge}</div>}
       </div>
       <div className="traffic-values">
         <span>↑ {formatBytes(up)}</span>
@@ -1467,12 +2826,80 @@ function mergeServerSnapshots(current: RemoteServer[], snapshot: RemoteServer[])
   return Array.from(merged.values());
 }
 
-function byTraffic(a: NodeTrafficItem, b: NodeTrafficItem) {
-  return b.uplink + b.downlink - (a.uplink + a.downlink);
+function serversByName(servers: RemoteServer[]) {
+  return new Map(servers.map((server) => [server.name.toLocaleLowerCase(), server]));
 }
 
-function byUserTraffic(a: UserTrafficSummary, b: UserTrafficSummary) {
-  return b.cycle_uplink + b.cycle_downlink - (a.cycle_uplink + a.cycle_downlink);
+function stripLeadingCountryFlag(value: string) {
+  return value.replace(/^[\u{1F1E6}-\u{1F1FF}]{2}\s*/u, "");
+}
+
+function rangeLabel(range: TrafficRange) {
+  return range === "today" ? "今天" : range === "week" ? "本周" : "本月";
+}
+
+function formatPeriodStart(range: TrafficRange, value?: string) {
+  const [, , month, day] = value?.match(/^(\d{4})-(\d{2})-(\d{2})$/) ?? [];
+  if (!month || !day) return `${rangeLabel(range)}起始日 00:00 起`;
+  if (range === "today") return `今天 · ${Number(month)} 月 ${Number(day)} 日 00:00 起`;
+  if (range === "month") return `本月 ${Number(day)} 日 00:00 起`;
+  return `${Number(month)} 月 ${Number(day)} 日 00:00 起`;
+}
+
+function useServerRegion(server?: RemoteServer) {
+  const address = server ? serverRegionAddress(server) : "";
+  const fieldKey = server ? serverRegionFieldKey(server) : "";
+  const [region, setRegion] = useState(() => server ? serverRegionFromFields(server) ?? (address ? loadingRegion() : unknownRegion()) : unknownRegion());
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let mounted = true;
+
+    if (!server) {
+      setRegion(unknownRegion());
+      return () => controller.abort();
+    }
+
+    const fromFields = serverRegionFromFields(server);
+    if (fromFields) {
+      setRegion(fromFields);
+      return () => controller.abort();
+    }
+    if (!address) {
+      setRegion(unknownRegion());
+      return () => controller.abort();
+    }
+
+    setRegion(loadingRegion());
+    lookupServerRegion(server, controller.signal).then((nextRegion) => {
+      if (mounted && !controller.signal.aborted) setRegion(nextRegion);
+    });
+    return () => {
+      mounted = false;
+      controller.abort();
+    };
+  }, [address, fieldKey, server?.id]);
+
+  return region;
+}
+
+function serverRegionFieldKey(server: RemoteServer) {
+  return [
+    server.country_code,
+    server.region_country,
+    server.geo_country_code,
+    server.country,
+    server.geo_country,
+    server.region,
+    server.region_name,
+    server.region_city,
+    server.location,
+    server.service_location,
+    server.displayLocation,
+    server.display_location,
+    server.countryName,
+    server.flag,
+  ].join("|");
 }
 
 function aggregateUserSpeeds(results: PromiseSettledResult<Awaited<ReturnType<typeof fetchUserSpeeds>>>[]) {
@@ -1505,12 +2932,23 @@ function displayServerAddress(server?: RemoteServer) {
   return server.pull_address || server.domain || server.ip_address || server.ip_address_v6 || "--";
 }
 
+function formatConnectionMode(mode?: string) {
+  if (!mode) return "--";
+  return mode === "ws" ? "WebSocket" : mode === "pull" ? "Pull" : mode === "push" ? "Push" : mode;
+}
+
 function formatXrayMode(mode?: string) {
   if (!mode) return "--";
   return mode === "embedded" ? "Embedded Xray" : mode === "external" ? "External Xray" : mode;
 }
 
+function formatAgentVersion(version?: string) {
+  if (!version) return "--";
+  return formatXrayVersion(stripVersionPrefix(version));
+}
+
 function formatXrayVersion(version: string) {
+  if (/^xray\b/i.test(version)) return version;
   return version.startsWith("v") ? version : `v${version}`;
 }
 
@@ -1559,12 +2997,77 @@ function trafficLimitText(server: RemoteServer) {
   return formatBytes(server.traffic_limit);
 }
 
-function trafficRemainingPercent(server: RemoteServer) {
+function trafficUsagePercent(server: RemoteServer) {
   const total = server.traffic_limit ?? 0;
   if (total <= 0) return null;
   const used = Math.max(server.traffic_used ?? 0, 0);
-  const remaining = Math.max(total - used, 0);
-  return Math.max(0, Math.min(100, (remaining / total) * 100));
+  return Math.max(0, Math.min(100, (used / total) * 100));
+}
+
+function trafficRemaining(server: RemoteServer) {
+  const total = server.traffic_limit ?? 0;
+  if (total <= 0) return null;
+  return Math.max(total - Math.max(server.traffic_used ?? 0, 0), 0);
+}
+
+function trafficCycleText(server: RemoteServer) {
+  const resetDay = server.traffic_reset_day ?? 0;
+  if (resetDay < 1 || resetDay > 31) return "账期未设置";
+  const start = currentTrafficCycleStart(server);
+  return start ? `账期 ${start.getMonth() + 1}月${start.getDate()}日 00:00 起` : `每月 ${resetDay} 日重置`;
+}
+
+function currentTrafficCycleStart(server: RemoteServer) {
+  if (server.last_traffic_reset_at) {
+    const reset = new Date(server.last_traffic_reset_at);
+    if (!Number.isNaN(reset.getTime())) return reset;
+  }
+  const resetDay = server.traffic_reset_day ?? 0;
+  if (resetDay < 1 || resetDay > 31) return null;
+  const now = new Date();
+  const candidate = trafficResetDate(now.getFullYear(), now.getMonth(), resetDay);
+  return candidate.getTime() <= now.getTime() ? candidate : trafficResetDate(now.getFullYear(), now.getMonth() - 1, resetDay);
+}
+
+function trafficResetDate(year: number, month: number, resetDay: number) {
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  return new Date(year, month, Math.min(resetDay, lastDay), 0, 0, 0, 0);
+}
+
+function trafficResetRemainingText(server: RemoteServer, now = new Date()) {
+  const nextReset = nextTrafficResetAt(server, now);
+  if (!nextReset) return "账期未知";
+
+  const remainingMs = nextReset.getTime() - now.getTime();
+  if (remainingMs <= 0) return "今日重置";
+
+  const remainingMinutes = Math.max(1, Math.floor(remainingMs / 60_000));
+  if (remainingMinutes < 60) return `剩余 ${remainingMinutes} 分钟`;
+
+  const remainingHours = Math.floor(remainingMs / 3_600_000);
+  if (remainingHours < 24) return `剩余 ${remainingHours} 小时`;
+
+  return `剩余 ${Math.floor(remainingMs / 86_400_000)} 天`;
+}
+
+function nextTrafficResetAt(server: RemoteServer, now: Date) {
+  const resetDay = server.traffic_reset_day ?? 0;
+  if (resetDay < 1 || resetDay > 31 || Number.isNaN(now.getTime())) return null;
+
+  const thisMonth = trafficResetDateUTC(now.getUTCFullYear(), now.getUTCMonth(), resetDay);
+  if (now.getTime() < thisMonth.getTime()) return thisMonth;
+
+  const lastReset = server.last_traffic_reset_at ? new Date(server.last_traffic_reset_at) : null;
+  if (!lastReset || Number.isNaN(lastReset.getTime()) || lastReset.getTime() < thisMonth.getTime()) {
+    return thisMonth;
+  }
+
+  return trafficResetDateUTC(now.getUTCFullYear(), now.getUTCMonth() + 1, resetDay);
+}
+
+function trafficResetDateUTC(year: number, month: number, resetDay: number) {
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(year, month, Math.min(resetDay, lastDay)));
 }
 
 function trafficResetText(server: RemoteServer) {
@@ -1572,6 +3075,32 @@ function trafficResetText(server: RemoteServer) {
   if (server.traffic_reset_day) parts.push(`每月 ${server.traffic_reset_day} 日重置`);
   if (server.last_traffic_reset_at) parts.push(`上次重置 ${formatDateTime(server.last_traffic_reset_at)}`);
   return parts.join(" · ") || trafficLimitText(server);
+}
+
+function asString(value: unknown) {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function shortHash(value?: string) {
+  if (!value) return "--";
+  return value.length > 12 ? `${value.slice(0, 12)}...` : value;
+}
+
+function stripAnsi(value: string) {
+  return value.replace(/\u001b\[[0-9;]*[a-zA-Z]/g, "");
+}
+
+function formatJsonText(value: string) {
+  if (!value) return "";
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
 }
 
 function formatDateTime(value?: string | null) {
