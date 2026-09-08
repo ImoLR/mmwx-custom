@@ -55,3 +55,34 @@ other tables or sysctls.
 Mux remains outside this feature. With mux enabled, a physical outbound socket
 may carry multiple logical streams, so the physical socket counters must not be
 described as logical user connection counts.
+
+## Custom Agent Management
+
+The existing five-second Helper report is also the transport for controller
+commands and results. It remains outbound-only from the managed VPS. The Helper
+authenticates each report with its existing bearer token; commands and results
+are additionally HMAC-SHA256 signed with a key derived from that token. Commands
+have unique IDs, a ten-minute expiry, and a persisted replay window.
+
+The operator API uses the independent `MMWXC_API_TOKEN`; it does not depend on
+the official miaomiaowuX Secure Channel. Its action allowlist is fixed in both
+the controller and Helper. Lifecycle code can only touch the following owned
+resources:
+
+```text
+/usr/local/bin/mmwxc-helper
+/etc/mmwxc-helper.env
+mmwxc-helper.service
+/opt/mmwxc/core/xray
+/etc/mmwxc/core/config.json
+mmwxc-core.service
+/var/lib/mmwxc/staging
+/var/lib/mmwxc/rollback
+```
+
+Helper and Core binaries are downloaded into staging, size-limited, checked by
+SHA256, ELF architecture, and version output, then atomically renamed. An active
+Custom Core is restarted and health checked after update; an inactive Core is
+never started by installation. Core configuration is validated with Xray's
+`run -test` before activation. At most two rollback files are retained for each
+component.

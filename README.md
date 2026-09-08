@@ -33,10 +33,15 @@ Connections Helper release assets are also published for direct installation:
 ```text
 mmwxc-helper-linux-amd64
 mmwxc-helper-linux-arm64
+mmwxc-core-linux-amd64
+mmwxc-core-linux-arm64
+install-helper.sh
+core-build-info.txt
 ```
 
-The paired installation, update, and uninstall commands live in the Fork
-repository: [ImoLR/miaomiaowuX](https://github.com/ImoLR/miaomiaowuX).
+`install-helper.sh` is the single idempotent installer for both a first install
+and an in-place upgrade. Release checksums cover the installer, Helper, Custom
+Core, packages, and Core build metadata.
 
 ## Local Build
 
@@ -61,7 +66,7 @@ npm run dev
 | Variable | Default | Description |
 | --- | --- | --- |
 | `MMWXC_API_LISTEN_ADDR` | `127.0.0.1:12890` | HTTP listen address |
-| `MMWXC_API_TOKEN` | empty | Optional bearer token for `/api/dashboard/system` |
+| `MMWXC_API_TOKEN` | empty | Bearer token for operator-only Custom Agent management; management is disabled while empty |
 | `MMWXC_ALLOWED_ORIGINS` | development origins | Comma-separated CORS allowlist |
 | `MMWXC_FRONTEND_DIR` | `frontend/dist` | Built Custom UI directory |
 | `MMWX_API_TARGET` | `http://127.0.0.1:12891` | Fork Backend target for `/api/*` proxy |
@@ -75,11 +80,13 @@ The following endpoints are available:
 - `GET /api/custom/agent/metrics`
 - `POST /api/custom/helper/install-token`
 - `GET /api/custom/helper/install/<install-token>`
+- `GET /api/custom/servers/:id/agent`
+- `POST /api/custom/servers/:id/agent`
 - `/api/*` proxied to `MMWX_API_TARGET`
 
 ## Connections Helper
 
-Connections Helper is a Custom-only component. It is completely independent
+`mmwxc-helper v0.3.0` is the Custom Agent. It is completely independent
 from the official `mmw-agent`: it does not modify or replace the official
 Agent, and the official Agent can continue to follow upstream upgrades.
 
@@ -108,6 +115,33 @@ Create Remote Server
 
 The server page generates a short-lived one-time install URL. Long-lived helper
 tokens are not shown in the frontend or release notes.
+
+The generated command runs the same installer on new and existing machines:
+
+```bash
+curl -fsSL 'https://mmwxc.imgamer.top/api/custom/helper/install/<one-time-token>' | bash
+```
+
+On an existing installation, `/etc/mmwxc-helper.env` and
+`/var/lib/mmwxc-helper/state.json` are preserved byte-for-byte. This retains the
+server identity, controller binding, token, interval, and connection-control
+settings. The installer stages and verifies both binaries, keeps at most two
+rollback binaries per component, and only starts the Helper. It prepares
+`mmwxc-core.service`, but does not enable or start an inactive Custom Core until
+an explicit configuration/cutover command is issued.
+
+After registration, the controller can enqueue only these signed actions:
+
+```text
+helper.status helper.version helper.update
+core.status core.version core.install core.update core.restart core.rollback core.config.apply
+connection.status connection.settings
+```
+
+There is no remote shell, arbitrary command, arbitrary file path, upload, or
+general systemd interface. Artifact URLs are HTTPS allowlisted and every binary
+must pass SHA256, ELF architecture, and component version checks before atomic
+replacement.
 
 ## systemd
 
