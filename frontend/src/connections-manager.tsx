@@ -62,7 +62,7 @@ export function ConnectionsManager({ server, token }: Props) {
   const snapshot = data?.record?.snapshot;
   const settingsByIdentity = useMemo(() => new Map(settings.users.map((item) => [identityKey(item), item])), [settings.users]);
   const proxyUsers = useMemo(() => {
-    if (snapshot?.proxy_users.length) return snapshot.proxy_users;
+    if (snapshot?.proxy_users?.length) return snapshot.proxy_users;
     return settings.users.map((item) => ({
       identity: item.identity,
       inbound_tag: item.identity.inbound_tag,
@@ -116,7 +116,7 @@ export function ConnectionsManager({ server, token }: Props) {
           <h4>入站与在线 IP</h4>
           <span className="connection-source">系统端口统计</span>
         </div>
-        {snapshot?.inbounds.length ? snapshot.inbounds.map((inbound) => (
+        {snapshot?.inbounds?.length ? snapshot.inbounds.map((inbound) => (
           <article className="connection-inbound" key={`${inbound.inbound_tag}-${inbound.port}`}>
             <div className="connection-card-title">
               <div><strong>{inbound.inbound_tag || `端口 ${inbound.port}`}</strong><span>{inbound.protocol || "协议未知"} · {inbound.port}</span></div>
@@ -128,9 +128,9 @@ export function ConnectionsManager({ server, token }: Props) {
               <span>CLOSE_WAIT <strong>{inbound.close_wait}</strong></span>
             </div>
             <span className="connection-attribution">{inbound.attribution === "single_user_inbound" ? `单用户入站：${inbound.user}` : "仅可归属到入站端口，不能精确归属用户"}</span>
-            {inbound.online_ips.length > 0 && (
+            {inbound.online_ips?.length > 0 && (
               <div className="connection-ip-list">
-                {inbound.online_ips.map((item) => <div key={item.ip}><code>{item.ip}</code><strong>{item.connections}</strong></div>)}
+                {(inbound.online_ips ?? []).map((item) => <div key={item.ip}><code>{item.ip}</code><strong>{item.connections}</strong></div>)}
               </div>
             )}
           </article>

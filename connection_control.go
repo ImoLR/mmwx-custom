@@ -185,6 +185,7 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
 		return
 	}
+	request.Snapshot = normalizeDetailedSnapshot(request.Snapshot)
 	if request.TCPCount < 0 || request.UDPCount < 0 || request.ConnectionCount < 0 || request.TCPCount+request.UDPCount != request.ConnectionCount {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid aggregate metrics"})
 		return
@@ -224,6 +225,21 @@ func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
 		return errors.New("too many connection records")
 	}
 	return nil
+}
+
+func normalizeDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) serverDetailedConnectionSnapshot {
+	if snapshot.Inbounds == nil {
+		snapshot.Inbounds = []serverInboundConnections{}
+	}
+	if snapshot.ProxyUsers == nil {
+		snapshot.ProxyUsers = []serverProxyUserConnections{}
+	}
+	for index := range snapshot.Inbounds {
+		if snapshot.Inbounds[index].OnlineIPs == nil {
+			snapshot.Inbounds[index].OnlineIPs = []serverOnlineIP{}
+		}
+	}
+	return snapshot
 }
 
 func (a *app) serverConnectionsHandler(w http.ResponseWriter, r *http.Request) {
@@ -269,6 +285,7 @@ func (a *app) writeServerConnections(w http.ResponseWriter, serverID string) {
 	a.connectionMu.Lock()
 	record, exists := a.detailedConnections[serverID]
 	a.connectionMu.Unlock()
+	record.Snapshot = normalizeDetailedSnapshot(record.Snapshot)
 	available := exists && time.Since(record.UpdatedAt) <= helperStaleTimeout
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true, "available": available, "stale_timeout_seconds": int(helperStaleTimeout.Seconds()),

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func intPointer(value int) *int       { return &value }
@@ -63,6 +66,24 @@ func TestParseServerConnectionsPath(t *testing.T) {
 	for _, path := range []string{"/api/custom/servers/x/connections", "/api/custom/servers/0/connections", "/api/custom/servers/-1/connections", "/api/custom/servers/42/other", "/api/custom/servers/42/a/connections"} {
 		if _, ok := parseServerConnectionsPath(path); ok {
 			t.Fatalf("invalid path accepted: %s", path)
+		}
+	}
+}
+
+func TestWriteServerConnectionsUsesEmptyArrays(t *testing.T) {
+	state, err := openHelperState(filepath.Join(t.TempDir(), "helper-state.json"), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &app{helperState: state, detailedConnections: make(map[string]serverDetailedConnectionRecord)}
+	response := httptest.NewRecorder()
+	app.writeServerConnections(response, "6")
+	if response.Code != 200 {
+		t.Fatalf("unexpected status %d", response.Code)
+	}
+	for _, expected := range [][]byte{[]byte(`"inbounds":[]`), []byte(`"proxy_users":[]`)} {
+		if !bytes.Contains(response.Body.Bytes(), expected) {
+			t.Fatalf("response does not contain %s: %s", expected, response.Body.String())
 		}
 	}
 }
