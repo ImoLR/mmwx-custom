@@ -1,5 +1,5 @@
 [Unit]
-Description=MMWXC Helper
+Description=MMWXC Custom Agent
 After=network-online.target
 Wants=network-online.target
 
@@ -7,7 +7,6 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=/etc/mmwxc-helper.env
 ExecStart=/usr/local/bin/mmwxc-helper
-RuntimeDirectory=mmwxc
 StateDirectory=mmwxc-helper
 Restart=on-failure
 RestartSec=3
