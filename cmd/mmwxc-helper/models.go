@@ -124,11 +124,13 @@ type detailedMetricsPayload struct {
 	UDPCount        int64                      `json:"udp_count"`
 	ConnectionCount int64                      `json:"connection_count"`
 	Snapshot        detailedConnectionSnapshot `json:"snapshot"`
+	Management      *managementReport          `json:"management,omitempty"`
 }
 
 type detailedMetricsResponse struct {
 	Success  bool               `json:"success"`
 	Settings connectionSettings `json:"settings"`
+	Command  *managementCommand `json:"command,omitempty"`
 }
 
 func defaultConnectionSettings() connectionSettings {

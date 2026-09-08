@@ -100,6 +100,7 @@ type helperDetailedMetricsRequest struct {
 	UDPCount        int64                            `json:"udp_count"`
 	ConnectionCount int64                            `json:"connection_count"`
 	Snapshot        serverDetailedConnectionSnapshot `json:"snapshot"`
+	Management      *managementReport                `json:"management,omitempty"`
 }
 
 type serverDetailedConnectionRecord struct {
@@ -204,7 +205,12 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 		ConnectionCount: request.ConnectionCount, SampledAt: request.Snapshot.SampledAt, UpdatedAt: now, HelperVersion: strings.TrimSpace(request.HelperVersion),
 	}
 	a.connectionMu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "settings": sortedConnectionSettings(a.helperState.connectionSettings(officialID))})
+	command, err := a.helperState.acceptManagementReport(officialID, request.Management)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "settings": sortedConnectionSettings(a.helperState.connectionSettings(officialID)), "command": command})
 }
 
 func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
@@ -221,6 +227,10 @@ func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
 }
 
 func (a *app) serverConnectionsHandler(w http.ResponseWriter, r *http.Request) {
+	if serverID, ok := parseAgentManagementPath(r.URL.Path); ok {
+		a.agentManagementHandler(w, r, serverID)
+		return
+	}
 	serverID, ok := parseServerConnectionsPath(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)

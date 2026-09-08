@@ -23,7 +23,7 @@ const (
 	detailedEndpoint  = "/api/custom/agent/connections"
 	defaultCoreSocket = "/run/mmwxc/core-control.sock"
 	defaultStatePath  = "/var/lib/mmwxc-helper/state.json"
-	helperVersion     = "v0.2.0"
+	helperVersion     = "v0.3.0"
 )
 
 type config struct {
@@ -57,10 +57,25 @@ func main() {
 	once := flag.Bool("once", false, "collect once, upload once, then exit")
 	printOnly := flag.Bool("print", false, "collect once and print JSON without uploading")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	managedHelperUpdate := flag.Bool("managed-helper-update", false, "run the internal managed update worker")
+	updateURL := flag.String("update-url", "", "managed update artifact URL")
+	updateSHA256 := flag.String("update-sha256", "", "managed update artifact SHA256")
+	updateVersion := flag.String("update-version", "", "managed update artifact version")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Printf("mmwxc-helper %s\n", helperVersion)
+		return
+	}
+	if *managedHelperUpdate {
+		defer cleanupManagedUpdateWorker()
+		time.Sleep(2 * time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		artifact := managementArtifact{URL: *updateURL, SHA256: *updateSHA256, Version: *updateVersion}
+		if err := runManagedHelperUpdate(ctx, artifact, *configPath); err != nil {
+			log.Fatalf("[mmwxc-helper] managed update failed: %v", err)
+		}
 		return
 	}
 
@@ -77,6 +92,8 @@ func main() {
 	}
 	onlineTracker := newOnlineIPTracker()
 	nftables := newNftablesManager(cfg.EnableNft)
+	lifecycle := newLifecycleManager(core)
+	executor := &commandExecutor{lifecycle: lifecycle, core: core, state: &state}
 	if *printOnly {
 		snapshot := collectDetailedSnapshot(context.Background(), core, onlineTracker, state.Settings)
 		_ = json.NewEncoder(os.Stdout).Encode(snapshot)
@@ -93,12 +110,31 @@ func main() {
 		if snapshot.Core.Available {
 			applyNftables(nftables, snapshot, state.Settings)
 		}
-		settings, err := uploadDetailedMetrics(context.Background(), client, cfg, snapshot)
+		state.HeartbeatAt = time.Now().UTC()
+		state.HelperVersion = helperVersion
+		if err := saveLocalState(cfg.StatePath, state); err != nil {
+			log.Printf("[mmwxc-helper] save heartbeat failed: %v", err)
+		}
+		report := &managementReport{Status: executor.status(context.Background()), Result: state.PendingResult}
+		response, err := uploadDetailedMetrics(context.Background(), client, cfg, snapshot, report)
 		if err != nil {
 			log.Printf("[mmwxc-helper] upload failed: %v", err)
 			return
 		}
-		state.Settings = settings
+		if state.PendingResult != nil {
+			state.PendingResult = nil
+		}
+		state.ControllerConnectedAt = time.Now().UTC()
+		state.Settings = response.Settings
+		if response.Command != nil && !completedCommand(state.CompletedCommandIDs, response.Command.ID) {
+			commandCtx, cancelCommand := context.WithTimeout(context.Background(), 5*time.Minute)
+			result := executor.execute(commandCtx, *response.Command, cfg.Token)
+			cancelCommand()
+			result.Message = sanitizeManagementMessage(result.Message)
+			state.PendingResult = &result
+			state.LastOperation = &result
+			rememberCompletedCommand(&state, response.Command.ID)
+		}
 		if err := saveLocalState(cfg.StatePath, state); err != nil {
 			log.Printf("[mmwxc-helper] save state failed: %v", err)
 		}
@@ -291,40 +327,40 @@ func uploadMetrics(ctx context.Context, client *http.Client, cfg config, snapsho
 	return nil
 }
 
-func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config, snapshot detailedConnectionSnapshot) (connectionSettings, error) {
+func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config, snapshot detailedConnectionSnapshot, management *managementReport) (detailedMetricsResponse, error) {
 	legacy, err := readConnections()
 	if err != nil {
 		legacy = connectionSnapshot{TCPCount: snapshot.System.Total, ConnectionCount: snapshot.System.Total, SampledAt: snapshot.SampledAt}
 	}
 	payload := detailedMetricsPayload{
 		ServerID: cfg.ServerID, HelperVersion: helperVersion, TCPCount: legacy.TCPCount, UDPCount: legacy.UDPCount,
-		ConnectionCount: legacy.ConnectionCount, Snapshot: snapshot,
+		ConnectionCount: legacy.ConnectionCount, Snapshot: snapshot, Management: management,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return connectionSettings{}, err
+		return detailedMetricsResponse{}, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.CustomAPIURL+detailedEndpoint, bytes.NewReader(body))
 	if err != nil {
-		return connectionSettings{}, err
+		return detailedMetricsResponse{}, err
 	}
 	request.Header.Set("Authorization", "Bearer "+cfg.Token)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := client.Do(request)
 	if err != nil {
-		return connectionSettings{}, err
+		return detailedMetricsResponse{}, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
-		return connectionSettings{}, fmt.Errorf("HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(data)))
+		return detailedMetricsResponse{}, fmt.Errorf("HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(data)))
 	}
 	var decoded detailedMetricsResponse
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&decoded); err != nil {
-		return connectionSettings{}, fmt.Errorf("decode controller response: %w", err)
+		return detailedMetricsResponse{}, fmt.Errorf("decode controller response: %w", err)
 	}
 	if !decoded.Success {
-		return connectionSettings{}, errors.New("controller rejected detailed metrics")
+		return detailedMetricsResponse{}, errors.New("controller rejected detailed metrics")
 	}
 	if decoded.Settings.OnlineIPGracePeriodSeconds <= 0 {
 		decoded.Settings.OnlineIPGracePeriodSeconds = 30
@@ -332,5 +368,5 @@ func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config,
 	if decoded.Settings.Users == nil {
 		decoded.Settings.Users = []userConnectionSettings{}
 	}
-	return decoded.Settings, nil
+	return decoded, nil
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -40,6 +41,9 @@ type helperStateData struct {
 	Servers            map[string]helperServerIdentity     `json:"servers"`
 	InstallTokens      map[string]helperInstallToken       `json:"install_tokens"`
 	ConnectionSettings map[string]serverConnectionSettings `json:"connection_settings,omitempty"`
+	ManagementCommands map[string][]managementCommand      `json:"management_commands,omitempty"`
+	ManagementResults  map[string][]managementResult       `json:"management_results,omitempty"`
+	AgentStatuses      map[string]agentStatus              `json:"agent_statuses,omitempty"`
 }
 
 type helperServerIdentity struct {
@@ -60,6 +64,7 @@ type helperInstallToken struct {
 	HelperTokenHash  string    `json:"helper_token_hash"`
 	CreatedAt        time.Time `json:"created_at"`
 	ExpiresAt        time.Time `json:"expires_at"`
+	PreserveExisting bool      `json:"preserve_existing,omitempty"`
 }
 
 type helperInstallTokenRequest struct {
@@ -87,6 +92,9 @@ func openHelperState(statePath string, ttl time.Duration) (*helperState, error) 
 	store.data.Servers = make(map[string]helperServerIdentity)
 	store.data.InstallTokens = make(map[string]helperInstallToken)
 	store.data.ConnectionSettings = make(map[string]serverConnectionSettings)
+	store.data.ManagementCommands = make(map[string][]managementCommand)
+	store.data.ManagementResults = make(map[string][]managementResult)
+	store.data.AgentStatuses = make(map[string]agentStatus)
 	if err := store.load(); err != nil {
 		return nil, err
 	}
@@ -115,6 +123,15 @@ func (s *helperState) load() error {
 	}
 	if s.data.ConnectionSettings == nil {
 		s.data.ConnectionSettings = make(map[string]serverConnectionSettings)
+	}
+	if s.data.ManagementCommands == nil {
+		s.data.ManagementCommands = make(map[string][]managementCommand)
+	}
+	if s.data.ManagementResults == nil {
+		s.data.ManagementResults = make(map[string][]managementResult)
+	}
+	if s.data.AgentStatuses == nil {
+		s.data.AgentStatuses = make(map[string]agentStatus)
 	}
 	return nil
 }
@@ -153,9 +170,14 @@ func (s *helperState) createInstallToken(officialServerID string) (helperInstall
 		}
 	}
 
-	helperToken, err := randomSecret(32)
-	if err != nil {
-		return helperInstallToken{}, "", err
+	helperToken := ""
+	preserveExisting := ok && identity.HelperTokenHash != ""
+	if !preserveExisting {
+		var err error
+		helperToken, err = randomSecret(32)
+		if err != nil {
+			return helperInstallToken{}, "", err
+		}
 	}
 	identity.UpdatedAt = now
 	s.data.Servers[officialServerID] = identity
@@ -169,9 +191,13 @@ func (s *helperState) createInstallToken(officialServerID string) (helperInstall
 		OfficialServerID: officialServerID,
 		CustomServerUUID: identity.CustomServerUUID,
 		HelperToken:      helperToken,
-		HelperTokenHash:  hashSecret(helperToken),
+		HelperTokenHash:  identity.HelperTokenHash,
 		CreatedAt:        now,
 		ExpiresAt:        now.Add(s.ttl),
+		PreserveExisting: preserveExisting,
+	}
+	if !preserveExisting {
+		record.HelperTokenHash = hashSecret(helperToken)
 	}
 	s.data.InstallTokens[record.TokenHash] = record
 	if err := s.saveLocked(); err != nil {
@@ -187,7 +213,7 @@ func (s *helperState) consumeInstallToken(rawToken string) (helperInstallToken, 
 	defer s.mu.Unlock()
 	s.pruneExpiredLocked(now)
 	record, ok := s.data.InstallTokens[tokenHash]
-	if !ok || now.After(record.ExpiresAt) || record.HelperToken == "" {
+	if !ok || now.After(record.ExpiresAt) || (!record.PreserveExisting && record.HelperToken == "") {
 		if ok {
 			delete(s.data.InstallTokens, tokenHash)
 			_ = s.saveLocked()
@@ -200,7 +226,9 @@ func (s *helperState) consumeInstallToken(rawToken string) (helperInstallToken, 
 	if identity.CreatedAt.IsZero() {
 		identity.CreatedAt = record.CreatedAt
 	}
-	identity.HelperTokenHash = record.HelperTokenHash
+	if !record.PreserveExisting {
+		identity.HelperTokenHash = record.HelperTokenHash
+	}
 	identity.UpdatedAt = now
 	s.data.Servers[record.OfficialServerID] = identity
 	delete(s.data.InstallTokens, tokenHash)
@@ -231,7 +259,7 @@ func (s *helperState) authorizeReporter(reportedID, token, version string) (stri
 	return "", "", false
 }
 
-func (s *helperState) recordLegacyReporter(officialServerID, version string) string {
+func (s *helperState) recordLegacyReporter(officialServerID, token, version string) string {
 	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -249,6 +277,7 @@ func (s *helperState) recordLegacyReporter(officialServerID, version string) str
 	}
 	identity.LastSeenAt = now
 	identity.LastHelperVersion = strings.TrimSpace(version)
+	identity.HelperTokenHash = hashSecret(token)
 	identity.UpdatedAt = now
 	s.data.Servers[officialServerID] = identity
 	_ = s.saveLocked()
@@ -296,8 +325,9 @@ func (a *app) createHelperInstallTokenHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 	adminToken := strings.TrimSpace(r.Header.Get("MM-Authorization"))
-	if adminToken == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "missing admin token"})
+	customAuthorized := a.apiToken != "" && a.authorized(r)
+	if adminToken == "" && !customAuthorized {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "missing operator authorization"})
 		return
 	}
 	var req helperInstallTokenRequest
@@ -310,15 +340,17 @@ func (a *app) createHelperInstallTokenHandler(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid server_id"})
 		return
 	}
-	if err := a.validateRemoteServer(r.Context(), adminToken, serverID); err != nil {
-		status := http.StatusBadGateway
-		if errors.Is(err, errRemoteServerUnauthorized) {
-			status = http.StatusUnauthorized
-		} else if errors.Is(err, errRemoteServerNotFound) {
-			status = http.StatusNotFound
+	if !customAuthorized {
+		if err := a.validateRemoteServer(r.Context(), adminToken, serverID); err != nil {
+			status := http.StatusBadGateway
+			if errors.Is(err, errRemoteServerUnauthorized) {
+				status = http.StatusUnauthorized
+			} else if errors.Is(err, errRemoteServerNotFound) {
+				status = http.StatusNotFound
+			}
+			writeJSON(w, status, map[string]any{"success": false, "message": err.Error()})
+			return
 		}
-		writeJSON(w, status, map[string]any{"success": false, "message": err.Error()})
-		return
 	}
 	record, installToken, err := a.helperState.createInstallToken(serverID)
 	if err != nil {
@@ -423,87 +455,12 @@ func (a *app) externalBaseURL(r *http.Request) string {
 	return strings.TrimRight(proto+"://"+host, "/")
 }
 
+//go:embed scripts/install-helper.sh
+var helperInstallerScript string
+
 func renderHelperInstaller(apiURL, serverUUID, helperToken string) string {
-	return fmt.Sprintf(`#!/usr/bin/env bash
-set -euo pipefail
-
-REPO="${MMWXC_HELPER_REPO:-ImoLR/mmwx-custom}"
-API_URL=%q
-SERVER_ID=%q
-TOKEN=%q
-INTERVAL="${MMWXC_HELPER_INTERVAL:-5s}"
-
-if [[ "$(uname -s)" != "Linux" ]]; then
-  echo "mmwxc-helper only supports Linux" >&2
-  exit 1
-fi
-if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-  echo "please run as root" >&2
-  exit 1
-fi
-
-case "$(uname -m)" in
-  x86_64|amd64) ARCH="amd64" ;;
-  aarch64|arm64) ARCH="arm64" ;;
-  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
-esac
-
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-url="https://github.com/${REPO}/releases/latest/download/mmwxc-helper-linux-${ARCH}"
-echo "Downloading mmwxc-helper (${ARCH})..."
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL --connect-timeout 10 --max-time 180 -o "$tmp/mmwxc-helper" "$url"
-elif command -v wget >/dev/null 2>&1; then
-  wget -q --connect-timeout=10 --read-timeout=180 -O "$tmp/mmwxc-helper" "$url"
-else
-  echo "curl or wget is required" >&2
-  exit 1
-fi
-chmod 755 "$tmp/mmwxc-helper"
-"$tmp/mmwxc-helper" --version >/dev/null
-install -m 0755 "$tmp/mmwxc-helper" /usr/local/bin/mmwxc-helper
-
-umask 077
-cat >/etc/mmwxc-helper.env <<EOF
-MMWXC_HELPER_API_URL=${API_URL}
-MMWXC_HELPER_SERVER_ID=${SERVER_ID}
-MMWXC_HELPER_TOKEN=${TOKEN}
-MMWXC_HELPER_INTERVAL=${INTERVAL}
-MMWXC_HELPER_CORE_SOCKET=/run/mmwxc/core-control.sock
-MMWXC_HELPER_STATE_FILE=/var/lib/mmwxc-helper/state.json
-MMWXC_HELPER_ENABLE_NFTABLES=false
-EOF
-chmod 600 /etc/mmwxc-helper.env
-
-cat >/etc/systemd/system/mmwxc-helper.service <<'EOF'
-[Unit]
-Description=MMWXC Helper
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-EnvironmentFile=/etc/mmwxc-helper.env
-ExecStart=/usr/local/bin/mmwxc-helper
-RuntimeDirectory=mmwxc
-StateDirectory=mmwxc-helper
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now mmwxc-helper.service
-systemctl is-active --quiet mmwxc-helper.service
-
-echo "MMWXC Helper installed successfully"
-echo "Service: $(systemctl is-active mmwxc-helper.service)"
-echo "API: ${API_URL}"
-echo "Version: $(/usr/local/bin/mmwxc-helper --version | awk '{print $2}')"
-`, apiURL, serverUUID, helperToken)
+	prefix := fmt.Sprintf("#!/usr/bin/env bash\nexport MMWXC_HELPER_API_URL=%q\nexport MMWXC_HELPER_SERVER_ID=%q\nexport MMWXC_HELPER_TOKEN=%q\n", apiURL, serverUUID, helperToken)
+	return prefix + strings.TrimPrefix(helperInstallerScript, "#!/usr/bin/env bash\n")
 }
 
 func randomSecret(size int) (string, error) {

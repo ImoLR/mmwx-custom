@@ -1,0 +1,105 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func signedTestCommand(t *testing.T, token, action string, payload json.RawMessage) managementCommand {
+	t.Helper()
+	now := time.Now().UTC()
+	command := managementCommand{ID: "command-1", Action: action, Payload: payload, CreatedAt: now, ExpiresAt: now.Add(time.Minute)}
+	signature, err := managementMAC(helperTokenHash(token), commandSigningBytes(command))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command.Signature = signature
+	return command
+}
+
+func TestVerifyManagementCommand(t *testing.T) {
+	command := signedTestCommand(t, "token", "core.status", nil)
+	if err := verifyManagementCommand(command, "token", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	tampered := command
+	tampered.Action = "core.restart"
+	if err := verifyManagementCommand(tampered, "token", time.Now()); err == nil {
+		t.Fatal("tampered action was accepted")
+	}
+	if err := verifyManagementCommand(command, "wrong-token", time.Now()); err == nil {
+		t.Fatal("wrong token was accepted")
+	}
+	expired := signedTestCommand(t, "token", "core.status", nil)
+	expired.CreatedAt = time.Now().Add(-2 * time.Hour)
+	expired.ExpiresAt = time.Now().Add(-time.Hour)
+	expired.Signature, _ = managementMAC(helperTokenHash("token"), commandSigningBytes(expired))
+	if err := verifyManagementCommand(expired, "token", time.Now()); err == nil {
+		t.Fatal("expired command was accepted")
+	}
+}
+
+func TestCompletedCommandReplayWindow(t *testing.T) {
+	state := localState{}
+	for index := 0; index < completedCommandMax+5; index++ {
+		rememberCompletedCommand(&state, string(rune('a'+index)))
+	}
+	if len(state.CompletedCommandIDs) != completedCommandMax {
+		t.Fatalf("unexpected replay window size: %d", len(state.CompletedCommandIDs))
+	}
+	last := state.CompletedCommandIDs[len(state.CompletedCommandIDs)-1]
+	rememberCompletedCommand(&state, last)
+	if len(state.CompletedCommandIDs) != completedCommandMax {
+		t.Fatal("duplicate command id changed the replay window")
+	}
+}
+
+func TestArtifactValidationAndRollbackPruning(t *testing.T) {
+	valid := managementArtifact{URL: "https://github.com/ImoLR/mmwx-custom/releases/download/v1.2.0/core", SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	if err := validateArtifact(valid); err != nil {
+		t.Fatal(err)
+	}
+	valid.URL = "http://github.com/ImoLR/mmwx-custom/core"
+	if err := validateArtifact(valid); err == nil {
+		t.Fatal("non-HTTPS artifact was accepted")
+	}
+	valid.URL = "https://github.com/another/project/releases/download/v1/core"
+	if err := validateArtifact(valid); err == nil {
+		t.Fatal("artifact from another repository was accepted")
+	}
+	manager := newLifecycleManager(nil)
+	request, _ := http.NewRequest(http.MethodGet, "https://example.com/redirected-core", nil)
+	if err := manager.httpClient.CheckRedirect(request, nil); err == nil {
+		t.Fatal("redirect to an unapproved host was accepted")
+	}
+	directory := t.TempDir()
+	for _, name := range []string{"01", "02", "03"} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pruneRollback(directory, 2); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0].Name() != "02" || entries[1].Name() != "03" {
+		t.Fatalf("unexpected rollback files: %#v", entries)
+	}
+}
+
+func TestCurrentTestBinaryMatchesELFArchitecture(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateELFArchitecture(executable); err != nil {
+		t.Fatal(err)
+	}
+}

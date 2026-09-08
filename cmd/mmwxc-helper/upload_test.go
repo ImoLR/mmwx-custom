@@ -20,16 +20,16 @@ func TestUploadDetailedMetricsProtocol(t *testing.T) {
 	}))
 	defer server.Close()
 
-	settings, err := uploadDetailedMetrics(context.Background(), server.Client(), config{
+	response, err := uploadDetailedMetrics(context.Background(), server.Client(), config{
 		CustomAPIURL: server.URL,
 		ServerID:     "7",
 		Token:        "secret",
-	}, detailedConnectionSnapshot{})
+	}, detailedConnectionSnapshot{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.OnlineIPGracePeriodSeconds != 30 || settings.Users == nil {
-		t.Fatalf("unexpected settings: %#v", settings)
+	if response.Settings.OnlineIPGracePeriodSeconds != 30 || response.Settings.Users == nil {
+		t.Fatalf("unexpected settings: %#v", response.Settings)
 	}
 }
 
@@ -43,7 +43,7 @@ func TestUploadDetailedMetricsRejectsMalformedControllerResponse(t *testing.T) {
 		CustomAPIURL: server.URL,
 		ServerID:     "7",
 		Token:        "secret",
-	}, detailedConnectionSnapshot{})
+	}, detailedConnectionSnapshot{}, nil)
 	if err == nil {
 		t.Fatal("malformed controller response was accepted")
 	}

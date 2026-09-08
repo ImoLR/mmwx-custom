@@ -208,7 +208,7 @@ func (a *app) authorizedHelper(r *http.Request, serverID, version string) (strin
 	if subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
 		customUUID := ""
 		if a.helperState != nil {
-			customUUID = a.helperState.recordLegacyReporter(serverID, version)
+			customUUID = a.helperState.recordLegacyReporter(serverID, got, version)
 		}
 		return serverID, customUUID, true
 	}

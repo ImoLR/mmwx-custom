@@ -6,10 +6,17 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type localState struct {
-	Settings connectionSettings `json:"settings"`
+	Settings              connectionSettings `json:"settings"`
+	PendingResult         *managementResult  `json:"pending_result,omitempty"`
+	CompletedCommandIDs   []string           `json:"completed_command_ids,omitempty"`
+	LastOperation         *managementResult  `json:"last_operation,omitempty"`
+	HeartbeatAt           time.Time          `json:"heartbeat_at,omitempty"`
+	ControllerConnectedAt time.Time          `json:"controller_connected_at,omitempty"`
+	HelperVersion         string             `json:"helper_version,omitempty"`
 }
 
 func loadLocalState(path string) (localState, error) {

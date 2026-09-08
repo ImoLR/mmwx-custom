@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -155,7 +156,7 @@ func main() {
 		api.hasCPU = true
 	}
 	if api.apiToken == "" {
-		log.Printf("[mmwx-custom] warning: MMWXC_API_TOKEN is not set; system metrics endpoint is unauthenticated")
+		log.Printf("[mmwx-custom] warning: MMWXC_API_TOKEN is not set; system metrics is unauthenticated and Custom Agent management is disabled")
 	}
 	if len(api.helperTokens) == 0 {
 		log.Printf("[mmwx-custom] warning: MMWXC_HELPER_TOKENS is not set; helper metrics POST endpoint is disabled")
@@ -512,7 +513,11 @@ func (a *app) authorized(r *http.Request) bool {
 	}
 	const prefix = "Bearer "
 	value := r.Header.Get("Authorization")
-	return strings.HasPrefix(value, prefix) && strings.TrimSpace(strings.TrimPrefix(value, prefix)) == a.apiToken
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	got := strings.TrimSpace(strings.TrimPrefix(value, prefix))
+	return subtle.ConstantTimeCompare([]byte(got), []byte(a.apiToken)) == 1
 }
 
 func (a *app) snapshot() (systemMetrics, error) {
