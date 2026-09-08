@@ -64,8 +64,11 @@ authenticates each report with its existing bearer token; commands and results
 are additionally HMAC-SHA256 signed with a key derived from that token. Commands
 have unique IDs, a ten-minute expiry, and a persisted replay window.
 
-The operator API uses the independent `MMWXC_API_TOKEN`; it does not depend on
-the official miaomiaowuX Secure Channel. Its action allowlist is fixed in both
+The operator API accepts the independent `MMWXC_API_TOKEN` for server-to-server
+automation. Browser requests are authorized by checking the active admin
+session directly in the local PostgreSQL database identified by
+`MMWXC_ADMIN_DB_CONFIG`; the controller never forwards that session to the
+official miaomiaowuX Secure Channel API. Its action allowlist is fixed in both
 the controller and Helper. Lifecycle code can only touch the following owned
 resources:
 

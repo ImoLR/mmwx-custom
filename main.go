@@ -106,6 +106,7 @@ type geoInflightCall struct {
 type app struct {
 	allowedOrigins map[string]struct{}
 	apiToken       string
+	adminStore     adminSessionStore
 	geoIPToken     string
 	helperTokens   map[string]string
 	helperState    *helperState
@@ -147,6 +148,16 @@ func main() {
 		geoInflight:         make(map[string]*geoInflightCall),
 		geoSlots:            make(chan struct{}, 4),
 	}
+	adminStore, err := openPostgresAdminSessionStore(getenv("MMWXC_ADMIN_DB_CONFIG", defaultAdminDatabaseConfigPath))
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Fatalf("[mmwx-custom] admin session store failed: %v", err)
+		}
+		log.Printf("[mmwx-custom] warning: admin database config is unavailable; browser Custom API access is disabled")
+	} else {
+		api.adminStore = adminStore
+		defer adminStore.Close()
+	}
 	api.helperState, err = openHelperState(getenv("MMWXC_HELPER_STATE_FILE", defaultHelperStatePath), helperInstallTokenTTLFromEnv())
 	if err != nil {
 		log.Fatalf("[mmwx-custom] helper state failed: %v", err)
@@ -156,7 +167,7 @@ func main() {
 		api.hasCPU = true
 	}
 	if api.apiToken == "" {
-		log.Printf("[mmwx-custom] warning: MMWXC_API_TOKEN is not set; system metrics is unauthenticated and Custom Agent management is disabled")
+		log.Printf("[mmwx-custom] warning: MMWXC_API_TOKEN is not set; server-to-server Custom Agent management is disabled")
 	}
 	if len(api.helperTokens) == 0 {
 		log.Printf("[mmwx-custom] warning: MMWXC_HELPER_TOKENS is not set; helper metrics POST endpoint is disabled")
@@ -279,8 +290,8 @@ func (a *app) system(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"success": false, "message": "method not allowed"})
 		return
 	}
-	if !a.authorized(r) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "unauthorized"})
+	if err := a.authorizeOperatorRequest(r); err != nil {
+		writeOperatorAuthorizationError(w, err)
 		return
 	}
 	metrics, err := a.snapshot()

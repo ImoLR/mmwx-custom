@@ -236,19 +236,8 @@ func (a *app) serverConnectionsHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	adminToken := strings.TrimSpace(r.Header.Get("MM-Authorization"))
-	if adminToken == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "missing admin token"})
-		return
-	}
-	if err := a.validateRemoteServer(r.Context(), adminToken, serverID); err != nil {
-		status := http.StatusBadGateway
-		if errors.Is(err, errRemoteServerUnauthorized) {
-			status = http.StatusUnauthorized
-		} else if errors.Is(err, errRemoteServerNotFound) {
-			status = http.StatusNotFound
-		}
-		writeJSON(w, status, map[string]any{"success": false, "message": err.Error()})
+	if err := a.authorizeOperatorServerRequest(r, serverID); err != nil {
+		writeOperatorAuthorizationError(w, err)
 		return
 	}
 	switch r.Method {

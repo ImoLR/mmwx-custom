@@ -67,6 +67,7 @@ npm run dev
 | --- | --- | --- |
 | `MMWXC_API_LISTEN_ADDR` | `127.0.0.1:12890` | HTTP listen address |
 | `MMWXC_API_TOKEN` | empty | Bearer token for operator-only Custom Agent management; management is disabled while empty |
+| `MMWXC_ADMIN_DB_CONFIG` | `/etc/mmwx/data/database.json` | Read-only source for validating active admin sessions without calling the official Secure Channel API |
 | `MMWXC_ALLOWED_ORIGINS` | development origins | Comma-separated CORS allowlist |
 | `MMWXC_FRONTEND_DIR` | `frontend/dist` | Built Custom UI directory |
 | `MMWX_API_TARGET` | `http://127.0.0.1:12891` | Fork Backend target for `/api/*` proxy |
@@ -86,7 +87,7 @@ The following endpoints are available:
 
 ## Connections Helper
 
-`mmwxc-helper v0.3.0` is the Custom Agent. It is completely independent
+`mmwxc-helper v0.3.1` is the Custom Agent. It is completely independent
 from the official `mmw-agent`: it does not modify or replace the official
 Agent, and the official Agent can continue to follow upstream upgrades.
 
@@ -119,8 +120,12 @@ tokens are not shown in the frontend or release notes.
 The generated command runs the same installer on new and existing machines:
 
 ```bash
-curl -fsSL 'https://mmwxc.imgamer.top/api/custom/helper/install/<one-time-token>' | bash
+(install_script="$(mktemp)" && trap 'rm -f "$install_script"' EXIT && curl --fail --show-error --silent --location --retry 3 --output "$install_script" 'https://mmwxc.imgamer.top/api/custom/helper/install/<one-time-token>' && test -s "$install_script" && bash "$install_script")
 ```
+
+The installer is downloaded completely before execution. A download failure,
+empty response, checksum failure, or installer failure therefore returns a
+non-zero status instead of being hidden by a `curl | bash` pipeline.
 
 On an existing installation, `/etc/mmwxc-helper.env` and
 `/var/lib/mmwxc-helper/state.json` are preserved byte-for-byte. This retains the

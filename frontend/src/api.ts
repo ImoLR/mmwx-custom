@@ -632,12 +632,18 @@ export function resolveDNSHostname(token: string, hostname: string) {
   return request<{ ips?: string[] }>(joinUrl(MMWX_API_BASE_URL, `/api/dns/resolve?hostname=${encodeURIComponent(hostname)}`), token);
 }
 
-export function fetchLocalSystemMetrics(_token: string, signal?: AbortSignal) {
-  return requestCustomApi<SystemMetrics>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/dashboard/system"), { signal });
+export function fetchLocalSystemMetrics(token: string, signal?: AbortSignal) {
+  return requestCustomApi<SystemMetrics>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/dashboard/system"), {
+    signal,
+    headers: { "MM-Authorization": token },
+  });
 }
 
-export function fetchConnectionMetrics(signal?: AbortSignal) {
-  return requestCustomApi<ConnectionMetricsResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/agent/metrics"), { signal });
+export function fetchConnectionMetrics(token: string, signal?: AbortSignal) {
+  return requestCustomApi<ConnectionMetricsResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/agent/metrics"), {
+    signal,
+    headers: { "MM-Authorization": token },
+  });
 }
 
 export function fetchDetailedConnections(token: string, serverId: number, signal?: AbortSignal) {

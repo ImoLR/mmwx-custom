@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -146,5 +147,14 @@ func TestInstallTokenCanUseIndependentOperatorAuthorization(t *testing.T) {
 	}
 	if body.ServerID != "7" || body.ServerUUID == "" || body.Command == "" {
 		t.Fatalf("unexpected install response: %#v", body)
+	}
+	if strings.Contains(body.Command, "| bash") || !strings.Contains(body.Command, `--output "$install_script"`) {
+		t.Fatalf("install command does not download atomically before execution: %q", body.Command)
+	}
+}
+
+func TestShellSingleQuote(t *testing.T) {
+	if got, want := shellSingleQuote("https://controller.invalid/a'b"), `'https://controller.invalid/a'"'"'b'`; got != want {
+		t.Fatalf("shellSingleQuote() = %q, want %q", got, want)
 	}
 }

@@ -249,12 +249,8 @@ func allowedArtifactSource(parsed *url.URL) bool {
 }
 
 func (a *app) agentManagementHandler(w http.ResponseWriter, r *http.Request, serverID string) {
-	if a.apiToken == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "message": "custom management API token is not configured"})
-		return
-	}
-	if !a.authorized(r) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "unauthorized"})
+	if err := a.authorizeOperatorServerRequest(r, serverID); err != nil {
+		writeOperatorAuthorizationError(w, err)
 		return
 	}
 	switch r.Method {

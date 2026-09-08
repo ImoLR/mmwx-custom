@@ -12,6 +12,12 @@ ROOT_PREFIX="${MMWXC_INSTALL_ROOT:-}"
 SYSTEMCTL="${MMWXC_SYSTEMCTL:-systemctl}"
 INSTALL_STARTED_AT="$(date +%s)"
 
+log_step() {
+  printf '[mmwxc] %s\n' "$1"
+}
+
+log_step "Custom Agent installer started"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -42,6 +48,7 @@ case "$(uname -m)" in
   aarch64|arm64) ARCH="arm64" ;;
   *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
+log_step "Detected Linux/$ARCH"
 
 HELPER_BINARY="${ROOT_PREFIX}/usr/local/bin/mmwxc-helper"
 HELPER_CONFIG="${ROOT_PREFIX}/etc/mmwxc-helper.env"
@@ -56,7 +63,16 @@ STAGING_ROOT="${ROOT_PREFIX}/var/lib/mmwxc/staging"
 mkdir -p "$STAGING_ROOT"
 chmod 700 "$STAGING_ROOT"
 tmp="$(mktemp -d "$STAGING_ROOT/install-XXXXXX")"
-trap 'rm -rf "$tmp"' EXIT
+cleanup() {
+  local status=$?
+  trap - EXIT
+  rm -rf "$tmp"
+  if [[ $status -ne 0 ]]; then
+    printf '[mmwxc] Installation failed (exit %d). Existing services and configuration were preserved or rolled back.\n' "$status" >&2
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
 
 asset_url() {
   local name="$1"
@@ -69,11 +85,13 @@ asset_url() {
 
 fetch_asset() {
   local name="$1" destination="$2"
+  log_step "Downloading $name"
   if [[ -n "$ASSET_DIR" ]]; then cp "$ASSET_DIR/$name" "$destination"
-  elif command -v curl >/dev/null 2>&1; then curl -fsSL --connect-timeout 10 --max-time 180 -o "$destination" "$(asset_url "$name")"
+  elif command -v curl >/dev/null 2>&1; then curl --fail --show-error --silent --location --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 10 --max-time 180 -o "$destination" "$(asset_url "$name")"
   elif command -v wget >/dev/null 2>&1; then wget -q --connect-timeout=10 --read-timeout=180 -O "$destination" "$(asset_url "$name")"
   else echo "curl or wget is required" >&2; exit 1
   fi
+  [[ -s "$destination" ]] || { echo "downloaded empty asset: $name" >&2; exit 1; }
 }
 
 verify_asset() {
@@ -119,6 +137,7 @@ atomic_install() {
 fetch_asset checksums.txt "$tmp/checksums.txt"
 fetch_asset "mmwxc-helper-linux-$ARCH" "$tmp/mmwxc-helper"
 fetch_asset "mmwxc-core-linux-$ARCH" "$tmp/mmwxc-core"
+log_step "Verifying checksums, ELF architecture, and versions"
 verify_asset "mmwxc-helper-linux-$ARCH" "$tmp/mmwxc-helper"
 verify_asset "mmwxc-core-linux-$ARCH" "$tmp/mmwxc-core"
 chmod 755 "$tmp/mmwxc-helper" "$tmp/mmwxc-core"
@@ -130,7 +149,7 @@ verify_elf "$tmp/mmwxc-core" "$ARCH"
 existing_config=false
 if [[ -f "$HELPER_CONFIG" ]]; then
   existing_config=true
-  echo "Existing Helper identity/config detected; preserving it unchanged."
+  log_step "Existing Helper identity/config detected; preserving it unchanged"
   grep -Eq '^(MMWXC_HELPER_API_URL|CUSTOM_API_URL)=' "$HELPER_CONFIG" || { echo "existing Helper config has no API URL" >&2; exit 1; }
   grep -Eq '^(MMWXC_HELPER_SERVER_ID|SERVER_ID)=' "$HELPER_CONFIG" || { echo "existing Helper config has no server ID" >&2; exit 1; }
   grep -Eq '^(MMWXC_HELPER_TOKEN|TOKEN)=' "$HELPER_CONFIG" || { echo "existing Helper config has no token" >&2; exit 1; }
@@ -143,6 +162,7 @@ old_helper=""
 had_helper=false
 if [[ -x "$HELPER_BINARY" ]]; then had_helper=true; old_helper="$($HELPER_BINARY --version 2>/dev/null | awk '{print $2}' || true)"; fi
 new_helper="$($tmp/mmwxc-helper --version | awk '{print $2}')"
+log_step "Helper version: ${old_helper:-not-installed} -> $new_helper"
 helper_changed=true
 if [[ -f "$HELPER_BINARY" ]] && [[ "$(sha256sum "$HELPER_BINARY" | awk '{print $1}')" == "$(sha256sum "$tmp/mmwxc-helper" | awk '{print $1}')" ]]; then helper_changed=false; fi
 if $helper_changed; then backup_file "$HELPER_BINARY" helper; atomic_install "$tmp/mmwxc-helper" "$HELPER_BINARY" 0755; fi
@@ -232,6 +252,7 @@ helper_is_ready() {
 }
 
 if [[ -z "$ROOT_PREFIX" ]]; then
+  log_step "Reloading systemd and restarting mmwxc-helper.service"
   "$SYSTEMCTL" daemon-reload
   "$SYSTEMCTL" enable mmwxc-helper.service >/dev/null
   if ! "$SYSTEMCTL" restart mmwxc-helper.service || ! "$SYSTEMCTL" is-active --quiet mmwxc-helper.service; then
@@ -247,6 +268,7 @@ if [[ -z "$ROOT_PREFIX" ]]; then
     exit 1
   fi
   deadline=$((SECONDS + 30))
+  log_step "Waiting for Helper to reconnect to the controller"
   while (( SECONDS < deadline )); do
     if helper_is_ready; then break; fi
     sleep 1
@@ -281,8 +303,7 @@ if [[ -z "$ROOT_PREFIX" ]]; then
 	fi
 fi
 
-echo "MMWXC Custom Agent installation complete"
-echo "Helper: ${old_helper:-not-installed} -> ${new_helper}"
-echo "Helper service: mmwxc-helper.service"
-echo "Custom Core: prepared at /opt/mmwxc/core/xray"
-echo "Custom Core service is not started until an explicit config/cutover command is issued."
+log_step "MMWXC Custom Agent installation complete"
+log_step "Helper service: mmwxc-helper.service"
+log_step "Custom Core prepared at /opt/mmwxc/core/xray"
+log_step "Custom Core remains stopped until an explicit config/cutover command is issued"

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	_ "embed"
@@ -15,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -324,12 +322,6 @@ func (a *app) createHelperInstallTokenHandler(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"success": false, "message": "method not allowed"})
 		return
 	}
-	adminToken := strings.TrimSpace(r.Header.Get("MM-Authorization"))
-	customAuthorized := a.apiToken != "" && a.authorized(r)
-	if adminToken == "" && !customAuthorized {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "missing operator authorization"})
-		return
-	}
 	var req helperInstallTokenRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxInstallTokenRequestBytes)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid json"})
@@ -340,17 +332,9 @@ func (a *app) createHelperInstallTokenHandler(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid server_id"})
 		return
 	}
-	if !customAuthorized {
-		if err := a.validateRemoteServer(r.Context(), adminToken, serverID); err != nil {
-			status := http.StatusBadGateway
-			if errors.Is(err, errRemoteServerUnauthorized) {
-				status = http.StatusUnauthorized
-			} else if errors.Is(err, errRemoteServerNotFound) {
-				status = http.StatusNotFound
-			}
-			writeJSON(w, status, map[string]any{"success": false, "message": err.Error()})
-			return
-		}
+	if err := a.authorizeOperatorServerRequest(r, serverID); err != nil {
+		writeOperatorAuthorizationError(w, err)
+		return
 	}
 	record, installToken, err := a.helperState.createInstallToken(serverID)
 	if err != nil {
@@ -358,14 +342,19 @@ func (a *app) createHelperInstallTokenHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 	installURL := a.externalBaseURL(r) + "/api/custom/helper/install/" + url.PathEscape(installToken)
+	quotedInstallURL := shellSingleQuote(installURL)
 	writeJSON(w, http.StatusOK, helperInstallTokenResponse{
 		Success:    true,
 		ServerID:   serverID,
 		ServerUUID: record.CustomServerUUID,
 		InstallURL: installURL,
 		ExpiresAt:  record.ExpiresAt.Format(time.RFC3339),
-		Command:    "curl -fsSL '" + installURL + "' | bash",
+		Command:    `(install_script="$(mktemp)" && trap 'rm -f "$install_script"' EXIT && curl --fail --show-error --silent --location --retry 3 --output "$install_script" ` + quotedInstallURL + ` && test -s "$install_script" && bash "$install_script")`,
 	})
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func (a *app) helperInstallScriptHandler(w http.ResponseWriter, r *http.Request) {
@@ -391,49 +380,6 @@ func (a *app) helperInstallScriptHandler(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = io.WriteString(w, renderHelperInstaller(a.externalBaseURL(r), record.CustomServerUUID, record.HelperToken))
-}
-
-var (
-	errRemoteServerUnauthorized = errors.New("admin authorization failed")
-	errRemoteServerNotFound     = errors.New("remote server not found")
-)
-
-func (a *app) validateRemoteServer(ctx context.Context, adminToken, serverID string) error {
-	reqURL := *a.mmwxAPITarget
-	reqURL.Path = path.Join(strings.TrimRight(reqURL.Path, "/"), "/api/admin/remote-servers")
-	reqURL.RawQuery = ""
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL.String(), nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("MM-Authorization", adminToken)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return errRemoteServerUnauthorized
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("remote server validation failed: %d", resp.StatusCode)
-	}
-	var body struct {
-		Servers []struct {
-			ID int64 `json:"id"`
-		} `json:"servers"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
-		return err
-	}
-	for _, server := range body.Servers {
-		if strconv.FormatInt(server.ID, 10) == serverID {
-			return nil
-		}
-	}
-	return errRemoteServerNotFound
 }
 
 func (a *app) externalBaseURL(r *http.Request) string {

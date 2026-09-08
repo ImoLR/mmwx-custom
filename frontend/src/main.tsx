@@ -322,7 +322,7 @@ function Dashboard({
         fetchRemoteServers(session.token),
         fetchUserConnections(session.token),
         fetchAdminTraffic(session.token),
-        fetchConnectionMetrics(),
+        fetchConnectionMetrics(session.token),
       ]);
 
       const servers = remoteServers.servers ?? [];
@@ -511,7 +511,7 @@ function Dashboard({
       controller?.abort();
       controller = new AbortController();
       try {
-        const response = await fetchConnectionMetrics(controller.signal);
+        const response = await fetchConnectionMetrics(session.token, controller.signal);
         if (!stopped) {
           setState((current) => ({ ...current, connectionMetrics: response.metrics ?? {} }));
         }
@@ -541,7 +541,7 @@ function Dashboard({
       controller?.abort();
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [activeTab]);
+  }, [activeTab, session.token]);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -631,6 +631,27 @@ function Dashboard({
     if (state.servers.length === 0) return undefined;
     return state.servers.find((server) => server.id === selectedServerId) ?? state.servers[0];
   }, [selectedServerId, state.servers]);
+
+  useEffect(() => {
+    if (!selectedServer) return;
+    const controller = new AbortController();
+    void fetchXrayServiceStatus(session.token, selectedServer.id)
+      .then((status) => {
+        if (controller.signal.aborted || !status.xray) return;
+        setState((current) => ({
+          ...current,
+          servers: current.servers.map((server) => server.id === selectedServer.id ? {
+            ...server,
+            xray_running: status.xray?.running ?? server.xray_running,
+            xray_version: status.xray?.version || server.xray_version,
+          } : server),
+        }));
+      })
+      .catch(() => {
+        // Preserve the last known server-list status and retry after the next dashboard refresh.
+      });
+    return () => controller.abort();
+  }, [selectedServer?.id, session.token]);
   const visibleServiceServers = useMemo(() => {
     if (activeServiceGroupId === ALL_SERVICE_GROUP_ID) return state.servers;
     const group = serviceGroups.find((item) => item.id === activeServiceGroupId);
@@ -876,7 +897,7 @@ function XrayStatusCard({
   onAction: (action: "start" | "stop" | "restart") => void;
 }) {
   const state = xrayState(server);
-  const version = server?.xray_version ? `v${stripVersionPrefix(server.xray_version)}` : "版本未知";
+  const version = server?.xray_version ? compactXrayVersion(server.xray_version) : "版本未知";
   const serviceAction = server?.xray_running ? "stop" : "start";
   const controlDisabled = !server || busy;
   const settingsTitle = "当前新版前端还没有已迁移的 Xray 设置入口";
@@ -3526,6 +3547,11 @@ function xrayState(server?: RemoteServer) {
 
 function stripVersionPrefix(version: string) {
   return version.trim().replace(/^v/i, "");
+}
+
+function compactXrayVersion(version: string) {
+  const match = version.match(/(?:^|\s)v?(\d+\.\d+(?:\.\d+)?)(?:\s|$)/i);
+  return match ? `v${match[1]}` : formatXrayVersion(stripVersionPrefix(version));
 }
 
 function clampPercent(value: number) {

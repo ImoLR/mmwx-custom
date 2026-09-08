@@ -73,7 +73,11 @@ func (a *app) connectionMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *app) listConnectionMetrics(w http.ResponseWriter, _ *http.Request) {
+func (a *app) listConnectionMetrics(w http.ResponseWriter, r *http.Request) {
+	if err := a.authorizeOperatorRequest(r); err != nil {
+		writeOperatorAuthorizationError(w, err)
+		return
+	}
 	now := time.Now()
 	metrics := make(map[string]connectionMetricsView)
 	metadata := a.helperState.metadataSnapshot()

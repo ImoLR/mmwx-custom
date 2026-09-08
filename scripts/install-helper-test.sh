@@ -20,7 +20,7 @@ mkdir -p "$assets"
 cat >"$tmp/helper.go" <<'EOF'
 package main
 import ("fmt"; "os")
-func main() { if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version") { fmt.Println("mmwxc-helper v0.3.0"); return } }
+func main() { if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version") { fmt.Println("mmwxc-helper v0.3.1"); return } }
 EOF
 cat >"$tmp/core.go" <<'EOF'
 package main
@@ -53,8 +53,12 @@ EOF
 config_before="$(sha256sum "$legacy_root/etc/mmwxc-helper.env" | awk '{print $1}')"
 state_before="$(sha256sum "$legacy_root/var/lib/mmwxc-helper/state.json" | awk '{print $1}')"
 
-MMWXC_INSTALL_ROOT="$legacy_root" MMWXC_ASSET_DIR="$assets" "$ROOT_DIR/scripts/install-helper.sh" >/dev/null
-[[ "$($legacy_root/usr/local/bin/mmwxc-helper --version)" == "mmwxc-helper v0.3.0" ]]
+legacy_output="$(MMWXC_INSTALL_ROOT="$legacy_root" MMWXC_ASSET_DIR="$assets" "$ROOT_DIR/scripts/install-helper.sh")"
+grep -q '^\[mmwxc\] Custom Agent installer started$' <<<"$legacy_output"
+grep -q '^\[mmwxc\] Existing Helper identity/config detected; preserving it unchanged$' <<<"$legacy_output"
+grep -q '^\[mmwxc\] Helper version: v0.1.0 -> v0.3.1$' <<<"$legacy_output"
+grep -q '^\[mmwxc\] MMWXC Custom Agent installation complete$' <<<"$legacy_output"
+[[ "$($legacy_root/usr/local/bin/mmwxc-helper --version)" == "mmwxc-helper v0.3.1" ]]
 [[ "$($legacy_root/opt/mmwxc/core/xray version)" == "Xray 26.9.8 MMWXC test" ]]
 [[ "$config_before" == "$(sha256sum "$legacy_root/etc/mmwxc-helper.env" | awk '{print $1}')" ]]
 [[ "$state_before" == "$(sha256sum "$legacy_root/var/lib/mmwxc-helper/state.json" | awk '{print $1}')" ]]
