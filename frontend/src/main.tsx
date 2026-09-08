@@ -287,6 +287,7 @@ function Dashboard({
   const [activeTab, setActiveTab] = useState("overview");
   const [menuOpen, setMenuOpen] = useState(false);
   const [selectedServerId, setSelectedServerId] = useState<number | null>(null);
+  const [runtimeXrayStatus, setRuntimeXrayStatus] = useState<{ serverId: number; running?: boolean; version?: string } | null>(null);
   const [xrayActionBusy, setXrayActionBusy] = useState(false);
   const [serviceViewMode, setServiceViewMode] = useState<"grid" | "list">("grid");
   const [serviceGroups, setServiceGroups] = useState<ServiceGroup[]>(() => loadServiceGroups(session.username));
@@ -635,23 +636,29 @@ function Dashboard({
   useEffect(() => {
     if (!selectedServer) return;
     const controller = new AbortController();
+    setRuntimeXrayStatus(null);
     void fetchXrayServiceStatus(session.token, selectedServer.id)
       .then((status) => {
         if (controller.signal.aborted || !status.xray) return;
-        setState((current) => ({
-          ...current,
-          servers: current.servers.map((server) => server.id === selectedServer.id ? {
-            ...server,
-            xray_running: status.xray?.running ?? server.xray_running,
-            xray_version: status.xray?.version || server.xray_version,
-          } : server),
-        }));
+        setRuntimeXrayStatus({
+          serverId: selectedServer.id,
+          running: status.xray.running,
+          version: status.xray.version,
+        });
       })
       .catch(() => {
-        // Preserve the last known server-list status and retry after the next dashboard refresh.
+        // Preserve the server-list fallback when the runtime status is unavailable.
       });
     return () => controller.abort();
   }, [selectedServer?.id, session.token]);
+  const selectedServerWithRuntimeStatus = useMemo(() => {
+    if (!selectedServer || runtimeXrayStatus?.serverId !== selectedServer.id) return selectedServer;
+    return {
+      ...selectedServer,
+      xray_running: runtimeXrayStatus.running ?? selectedServer.xray_running,
+      xray_version: runtimeXrayStatus.version || selectedServer.xray_version,
+    };
+  }, [runtimeXrayStatus, selectedServer]);
   const visibleServiceServers = useMemo(() => {
     if (activeServiceGroupId === ALL_SERVICE_GROUP_ID) return state.servers;
     const group = serviceGroups.find((item) => item.id === activeServiceGroupId);
@@ -775,7 +782,7 @@ function Dashboard({
         <div className="dashboard-content" aria-busy={loading}>
           <section className="metric-grid">
             <SystemStatusCard metrics={state.systemMetrics} />
-            <XrayStatusCard server={selectedServer} busy={xrayActionBusy} onAction={runXrayAction} />
+            <XrayStatusCard server={selectedServerWithRuntimeStatus} busy={xrayActionBusy} onAction={runXrayAction} />
           </section>
 
           <TrafficChart summary={state.summary} />
