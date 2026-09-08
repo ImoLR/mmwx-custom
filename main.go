@@ -115,9 +115,10 @@ type app struct {
 	lastCPU cpuTimes
 	hasCPU  bool
 
-	connectionMu      sync.Mutex
-	connectionMetrics map[string]connectionMetrics
-	helperRate        map[string]time.Time
+	connectionMu        sync.Mutex
+	connectionMetrics   map[string]connectionMetrics
+	detailedConnections map[string]serverDetailedConnectionRecord
+	helperRate          map[string]time.Time
 
 	geoMu       sync.Mutex
 	geoCache    map[string]geoCacheEntry
@@ -132,17 +133,18 @@ func main() {
 		log.Fatalf("[mmwx-custom] invalid MMWX_API_TARGET: %v", err)
 	}
 	api := &app{
-		allowedOrigins:    parseOrigins(getenv("MMWXC_ALLOWED_ORIGINS", defaultOrigins)),
-		apiToken:          os.Getenv("MMWXC_API_TOKEN"),
-		geoIPToken:        getenv("MMWXC_GEOIP_TOKEN", defaultGeoIPToken),
-		helperTokens:      parseHelperTokens(os.Getenv("MMWXC_HELPER_TOKENS")),
-		mmwxAPITarget:     mmwxAPITarget,
-		publicURL:         strings.TrimRight(os.Getenv("MMWXC_PUBLIC_URL"), "/"),
-		connectionMetrics: make(map[string]connectionMetrics),
-		helperRate:        make(map[string]time.Time),
-		geoCache:          make(map[string]geoCacheEntry),
-		geoInflight:       make(map[string]*geoInflightCall),
-		geoSlots:          make(chan struct{}, 4),
+		allowedOrigins:      parseOrigins(getenv("MMWXC_ALLOWED_ORIGINS", defaultOrigins)),
+		apiToken:            os.Getenv("MMWXC_API_TOKEN"),
+		geoIPToken:          getenv("MMWXC_GEOIP_TOKEN", defaultGeoIPToken),
+		helperTokens:        parseHelperTokens(os.Getenv("MMWXC_HELPER_TOKENS")),
+		mmwxAPITarget:       mmwxAPITarget,
+		publicURL:           strings.TrimRight(os.Getenv("MMWXC_PUBLIC_URL"), "/"),
+		connectionMetrics:   make(map[string]connectionMetrics),
+		detailedConnections: make(map[string]serverDetailedConnectionRecord),
+		helperRate:          make(map[string]time.Time),
+		geoCache:            make(map[string]geoCacheEntry),
+		geoInflight:         make(map[string]*geoInflightCall),
+		geoSlots:            make(chan struct{}, 4),
 	}
 	api.helperState, err = openHelperState(getenv("MMWXC_HELPER_STATE_FILE", defaultHelperStatePath), helperInstallTokenTTLFromEnv())
 	if err != nil {
@@ -166,6 +168,8 @@ func main() {
 	mux.HandleFunc("/api/geo/lookup", api.withCORS(api.geoLookup))
 	mux.HandleFunc("/api/custom/geo/lookup", api.withCORS(api.geoLookup))
 	mux.HandleFunc("/api/custom/agent/metrics", api.withCORS(api.connectionMetricsHandler))
+	mux.HandleFunc("/api/custom/agent/connections", api.withCORS(api.helperDetailedConnectionsHandler))
+	mux.HandleFunc("/api/custom/servers/", api.withCORS(api.serverConnectionsHandler))
 	mux.HandleFunc("/api/custom/helper/install-token", api.withCORS(api.createHelperInstallTokenHandler))
 	mux.HandleFunc("/api/custom/helper/install/", api.withCORS(api.helperInstallScriptHandler))
 	mux.Handle("/api/", api.withCORSHandler(mmwxAPIProxy(mmwxAPITarget)))
@@ -205,7 +209,7 @@ func (a *app) withCORS(next http.HandlerFunc) http.HandlerFunc {
 			if _, ok := a.allowedOrigins[origin]; ok {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 				w.Header().Set("Access-Control-Allow-Headers", "Authorization, MM-Authorization, Content-Type")
 			}
 		}

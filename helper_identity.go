@@ -37,8 +37,9 @@ type helperState struct {
 }
 
 type helperStateData struct {
-	Servers       map[string]helperServerIdentity `json:"servers"`
-	InstallTokens map[string]helperInstallToken   `json:"install_tokens"`
+	Servers            map[string]helperServerIdentity     `json:"servers"`
+	InstallTokens      map[string]helperInstallToken       `json:"install_tokens"`
+	ConnectionSettings map[string]serverConnectionSettings `json:"connection_settings,omitempty"`
 }
 
 type helperServerIdentity struct {
@@ -85,6 +86,7 @@ func openHelperState(statePath string, ttl time.Duration) (*helperState, error) 
 	store := &helperState{path: statePath, ttl: ttl}
 	store.data.Servers = make(map[string]helperServerIdentity)
 	store.data.InstallTokens = make(map[string]helperInstallToken)
+	store.data.ConnectionSettings = make(map[string]serverConnectionSettings)
 	if err := store.load(); err != nil {
 		return nil, err
 	}
@@ -110,6 +112,9 @@ func (s *helperState) load() error {
 	}
 	if s.data.InstallTokens == nil {
 		s.data.InstallTokens = make(map[string]helperInstallToken)
+	}
+	if s.data.ConnectionSettings == nil {
+		s.data.ConnectionSettings = make(map[string]serverConnectionSettings)
 	}
 	return nil
 }
@@ -258,6 +263,23 @@ func (s *helperState) metadataSnapshot() map[string]helperServerIdentity {
 		out[k] = v
 	}
 	return out
+}
+
+func (s *helperState) connectionSettings(officialServerID string) serverConnectionSettings {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settings, ok := s.data.ConnectionSettings[officialServerID]
+	if !ok {
+		return defaultServerConnectionSettings()
+	}
+	return cloneServerConnectionSettings(settings)
+}
+
+func (s *helperState) setConnectionSettings(officialServerID string, settings serverConnectionSettings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.ConnectionSettings[officialServerID] = cloneServerConnectionSettings(settings)
+	return s.saveLocked()
 }
 
 func (s *helperState) pruneExpiredLocked(now time.Time) {
@@ -448,6 +470,9 @@ MMWXC_HELPER_API_URL=${API_URL}
 MMWXC_HELPER_SERVER_ID=${SERVER_ID}
 MMWXC_HELPER_TOKEN=${TOKEN}
 MMWXC_HELPER_INTERVAL=${INTERVAL}
+MMWXC_HELPER_CORE_SOCKET=/run/mmwxc/core-control.sock
+MMWXC_HELPER_STATE_FILE=/var/lib/mmwxc-helper/state.json
+MMWXC_HELPER_ENABLE_NFTABLES=false
 EOF
 chmod 600 /etc/mmwxc-helper.env
 
@@ -461,6 +486,8 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=/etc/mmwxc-helper.env
 ExecStart=/usr/local/bin/mmwxc-helper
+RuntimeDirectory=mmwxc
+StateDirectory=mmwxc-helper
 Restart=on-failure
 RestartSec=3
 

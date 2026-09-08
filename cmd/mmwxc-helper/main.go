@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -21,7 +20,10 @@ const (
 	defaultConfigPath = "/etc/mmwxc-helper.env"
 	defaultInterval   = 5 * time.Second
 	defaultEndpoint   = "/api/custom/agent/metrics"
-	helperVersion     = "v0.1.0"
+	detailedEndpoint  = "/api/custom/agent/connections"
+	defaultCoreSocket = "/run/mmwxc/core-control.sock"
+	defaultStatePath  = "/var/lib/mmwxc-helper/state.json"
+	helperVersion     = "v0.2.0"
 )
 
 type config struct {
@@ -29,6 +31,9 @@ type config struct {
 	ServerID     string
 	Token        string
 	Interval     time.Duration
+	CoreSocket   string
+	StatePath    string
+	EnableNft    bool
 }
 
 type connectionSnapshot struct {
@@ -65,23 +70,45 @@ func main() {
 	}
 
 	client := &http.Client{Timeout: 8 * time.Second}
+	core := newCoreClient(cfg.CoreSocket)
+	state, err := loadLocalState(cfg.StatePath)
+	if err != nil {
+		log.Fatalf("[mmwxc-helper] state error: %v", err)
+	}
+	onlineTracker := newOnlineIPTracker()
+	nftables := newNftablesManager(cfg.EnableNft)
 	if *printOnly {
-		snapshot, err := readConnections()
-		if err != nil {
-			log.Fatalf("[mmwxc-helper] read connections: %v", err)
-		}
+		snapshot := collectDetailedSnapshot(context.Background(), core, onlineTracker, state.Settings)
 		_ = json.NewEncoder(os.Stdout).Encode(snapshot)
 		return
 	}
 
 	runOnce := func() {
-		snapshot, err := readConnections()
+		applyCtx, cancelApply := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := core.apply(applyCtx, state.Settings); err != nil {
+			log.Printf("[mmwxc-helper] core config unavailable: %v", err)
+		}
+		cancelApply()
+		snapshot := collectDetailedSnapshot(context.Background(), core, onlineTracker, state.Settings)
+		if snapshot.Core.Available {
+			applyNftables(nftables, snapshot, state.Settings)
+		}
+		settings, err := uploadDetailedMetrics(context.Background(), client, cfg, snapshot)
 		if err != nil {
-			log.Printf("[mmwxc-helper] read connections failed: %v", err)
+			log.Printf("[mmwxc-helper] upload failed: %v", err)
 			return
 		}
-		if err := uploadMetrics(context.Background(), client, cfg, snapshot); err != nil {
-			log.Printf("[mmwxc-helper] upload failed: %v", err)
+		state.Settings = settings
+		if err := saveLocalState(cfg.StatePath, state); err != nil {
+			log.Printf("[mmwxc-helper] save state failed: %v", err)
+		}
+		applyCtx, cancelApply = context.WithTimeout(context.Background(), 5*time.Second)
+		if err := core.apply(applyCtx, state.Settings); err != nil {
+			log.Printf("[mmwxc-helper] apply updated core config failed: %v", err)
+		}
+		cancelApply()
+		if snapshot.Core.Available {
+			applyNftables(nftables, snapshot, state.Settings)
 		}
 	}
 
@@ -94,6 +121,18 @@ func main() {
 	defer ticker.Stop()
 	for range ticker.C {
 		runOnce()
+	}
+}
+
+func applyNftables(manager *nftablesManager, snapshot detailedConnectionSnapshot, settings connectionSettings) {
+	policies, warnings := deriveInboundIPPolicies(coreSnapshotFromDetailed(snapshot), settings)
+	for _, warning := range warnings {
+		log.Printf("[mmwxc-helper] IP limiter: %s", warning)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := manager.apply(ctx, policies, time.Duration(settings.OnlineIPGracePeriodSeconds)*time.Second); err != nil {
+		log.Printf("[mmwxc-helper] IP limiter apply failed: %v", err)
 	}
 }
 
@@ -149,6 +188,21 @@ func loadConfig(path string) (config, error) {
 		ServerID:     getLegacy("MMWXC_HELPER_SERVER_ID", "SERVER_ID"),
 		Token:        getLegacy("MMWXC_HELPER_TOKEN", "TOKEN"),
 		Interval:     interval,
+		CoreSocket:   get("MMWXC_HELPER_CORE_SOCKET"),
+		StatePath:    get("MMWXC_HELPER_STATE_FILE"),
+	}
+	if cfg.CoreSocket == "" {
+		cfg.CoreSocket = defaultCoreSocket
+	}
+	if cfg.StatePath == "" {
+		cfg.StatePath = defaultStatePath
+	}
+	if raw := get("MMWXC_HELPER_ENABLE_NFTABLES"); raw != "" {
+		enabled, err := strconv.ParseBool(raw)
+		if err != nil {
+			return config{}, fmt.Errorf("invalid MMWXC_HELPER_ENABLE_NFTABLES %q", raw)
+		}
+		cfg.EnableNft = enabled
 	}
 	if cfg.CustomAPIURL == "" {
 		return config{}, errors.New("CUSTOM_API_URL is required")
@@ -176,43 +230,33 @@ func parseInterval(raw string) (time.Duration, error) {
 	return time.Duration(seconds) * time.Second, nil
 }
 
-func readConnections() (connectionSnapshot, error) {
-	tcp, okTCP := countProcNetRows("/proc/net/tcp")
-	tcp6, okTCP6 := countProcNetRows("/proc/net/tcp6")
-	udp, okUDP := countProcNetRows("/proc/net/udp")
-	udp6, okUDP6 := countProcNetRows("/proc/net/udp6")
-	if !okTCP && !okTCP6 && !okUDP && !okUDP6 {
-		return connectionSnapshot{}, errors.New("no /proc/net socket tables are readable")
+func collectDetailedSnapshot(ctx context.Context, core *coreClient, tracker *onlineIPTracker, settings connectionSettings) detailedConnectionSnapshot {
+	snapshot := detailedConnectionSnapshot{SampledAt: time.Now().UTC()}
+	sockets, socketErr := readTCPSockets()
+	if socketErr == nil {
+		snapshot.System = summarizeTCP(sockets)
 	}
-	tcpCount := tcp + tcp6
-	udpCount := udp + udp6
-	return connectionSnapshot{
-		TCPCount:        tcpCount,
-		UDPCount:        udpCount,
-		ConnectionCount: tcpCount + udpCount,
-		SampledAt:       time.Now().UTC(),
-	}, nil
+	coreSnapshot, coreErr := core.snapshot(ctx)
+	if coreErr != nil {
+		snapshot.Core = coreStatus{Available: false, Error: coreErr.Error()}
+		return snapshot
+	}
+	snapshot.Core = coreStatus{Available: true, Version: coreSnapshot.Version, StartedAt: coreSnapshot.StartedAt}
+	snapshot.Inbounds, snapshot.ProxyUsers = tracker.aggregate(sockets, coreSnapshot, settings)
+	return snapshot
 }
 
-func countProcNetRows(path string) (int64, bool) {
-	file, err := os.Open(path)
-	if err != nil {
-		return 0, false
+func coreSnapshotFromDetailed(snapshot detailedConnectionSnapshot) coreSnapshotResponse {
+	core := coreSnapshotResponse{Version: snapshot.Core.Version, StartedAt: snapshot.Core.StartedAt}
+	for _, user := range snapshot.ProxyUsers {
+		core.Users = append(core.Users, coreUserSnapshot{
+			Identity:      user.Identity,
+			InboundPort:   user.InboundPort,
+			Attributed:    true,
+			InboundActive: user.InboundActive,
+		})
 	}
-	defer file.Close()
-
-	var lines int64
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		lines++
-	}
-	if scanner.Err() != nil {
-		return 0, false
-	}
-	if lines == 0 {
-		return 0, true
-	}
-	return lines - 1, true
+	return core
 }
 
 func uploadMetrics(ctx context.Context, client *http.Client, cfg config, snapshot connectionSnapshot) error {
@@ -245,4 +289,48 @@ func uploadMetrics(ctx context.Context, client *http.Client, cfg config, snapsho
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	return nil
+}
+
+func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config, snapshot detailedConnectionSnapshot) (connectionSettings, error) {
+	legacy, err := readConnections()
+	if err != nil {
+		legacy = connectionSnapshot{TCPCount: snapshot.System.Total, ConnectionCount: snapshot.System.Total, SampledAt: snapshot.SampledAt}
+	}
+	payload := detailedMetricsPayload{
+		ServerID: cfg.ServerID, HelperVersion: helperVersion, TCPCount: legacy.TCPCount, UDPCount: legacy.UDPCount,
+		ConnectionCount: legacy.ConnectionCount, Snapshot: snapshot,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return connectionSettings{}, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.CustomAPIURL+detailedEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return connectionSettings{}, err
+	}
+	request.Header.Set("Authorization", "Bearer "+cfg.Token)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return connectionSettings{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+		return connectionSettings{}, fmt.Errorf("HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var decoded detailedMetricsResponse
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&decoded); err != nil {
+		return connectionSettings{}, fmt.Errorf("decode controller response: %w", err)
+	}
+	if !decoded.Success {
+		return connectionSettings{}, errors.New("controller rejected detailed metrics")
+	}
+	if decoded.Settings.OnlineIPGracePeriodSeconds <= 0 {
+		decoded.Settings.OnlineIPGracePeriodSeconds = 30
+	}
+	if decoded.Settings.Users == nil {
+		decoded.Settings.Users = []userConnectionSettings{}
+	}
+	return decoded.Settings, nil
 }
