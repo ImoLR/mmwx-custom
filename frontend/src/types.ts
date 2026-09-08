@@ -188,6 +188,84 @@ export type ConnectionMetricsResponse = {
   metrics?: Record<string, ConnectionMetric>;
 };
 
+export type ConnectionIdentity = {
+  inbound_tag: string;
+  user: string;
+};
+
+export type UserConnectionSettings = {
+  identity: ConnectionIdentity;
+  max_inbound_online_ips: number | null;
+  max_outbound_tcp_active: number | null;
+  max_outbound_tcp_new_per_second: number | null;
+  close_wait_timeout_seconds: number | null;
+};
+
+export type ServerConnectionSettings = {
+  default_close_wait_timeout_seconds: number | null;
+  online_ip_grace_period_seconds: number;
+  users: UserConnectionSettings[];
+};
+
+export type DetailedConnectionResponse = {
+  success: boolean;
+  available: boolean;
+  stale_timeout_seconds: number;
+  settings: ServerConnectionSettings;
+  record?: {
+    server_id: string;
+    custom_server_uuid?: string;
+    helper_version?: string;
+    updated_at?: string;
+    snapshot: {
+      system: {
+        tcp_total: number;
+        established: number;
+        time_wait: number;
+        close_wait: number;
+        syn_sent: number;
+        syn_recv: number;
+      };
+      inbounds: Array<{
+        port: number;
+        inbound_tag: string;
+        protocol?: string;
+        user?: string;
+        attribution: "single_user_inbound" | "inbound_port" | string;
+        established: number;
+        time_wait: number;
+        close_wait: number;
+        online_ip_count: number;
+        online_ips: Array<{ ip: string; connections: number }>;
+        max_online_ips: number | null;
+      }>;
+      proxy_users: Array<{
+        identity: ConnectionIdentity;
+        inbound_tag: string;
+        user: string;
+        inbound_port?: number;
+        inbound_active: number;
+        outbound_active: number;
+        outbound_new_rate: number;
+        outbound_new_total: number;
+        outbound_rejected_total: number;
+        max_inbound_online_ips: number | null;
+        max_outbound_tcp_active: number | null;
+        max_outbound_tcp_new_per_second: number | null;
+        close_wait_timeout_seconds: number | null;
+        source: string;
+      }>;
+      core: {
+        available: boolean;
+        interface_version?: number;
+        started_at?: string;
+        error?: string;
+      };
+      sampled_at: string;
+    };
+  };
+};
+
 export type HelperInstallTokenResponse = {
   success: boolean;
   server_id: string;

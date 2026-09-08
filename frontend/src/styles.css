@@ -1468,6 +1468,8 @@ button {
 .connection-tag {
   gap: 5px;
   padding-inline: 8px;
+  border: 0;
+  cursor: pointer;
 }
 
 .connection-tag-icon,
@@ -5623,6 +5625,265 @@ button {
 .menu-item.danger {
   margin-top: auto;
   color: var(--danger);
+}
+
+.connection-manager {
+  display: grid;
+  gap: 14px;
+  overflow-x: hidden;
+}
+
+.connection-manager-toolbar,
+.connection-section-head,
+.connection-card-title,
+.connection-inline-stats,
+.connection-ip-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.connection-manager-toolbar > div,
+.connection-card-title > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.connection-manager-toolbar strong,
+.connection-card-title strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 17px;
+}
+
+.connection-manager-toolbar span,
+.connection-card-title span,
+.connection-attribution,
+.connection-boundary {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.connection-manager-toolbar button {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+}
+
+.connection-manager-toolbar button svg,
+.connection-save svg,
+.connection-message svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.connection-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 11px 12px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.connection-message.error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--card));
+}
+
+.connection-message.success {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 8%, var(--card));
+}
+
+.connection-section {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.connection-section-head {
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.connection-section-head h4 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.connection-source {
+  max-width: 54%;
+  color: var(--muted);
+  text-align: right;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.connection-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.connection-stat-grid > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  background: var(--fill);
+  border-radius: 6px;
+}
+
+.connection-stat-grid span,
+.connection-inline-stats span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.connection-stat-grid strong {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+.connection-inbound,
+.connection-user {
+  min-width: 0;
+  display: grid;
+  gap: 11px;
+  padding: 13px 0;
+  border-top: 1px solid var(--border);
+}
+
+.connection-inbound:first-of-type,
+.connection-user:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.connection-card-title em {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--fill);
+  color: var(--text);
+  font-size: 14px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.connection-inline-stats {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.connection-inline-stats strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.connection-ip-list {
+  display: grid;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.connection-ip-list > div {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.connection-ip-list > div:first-child {
+  border-top: 0;
+}
+
+.connection-ip-list code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.connection-ip-list strong {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.connection-limit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.connection-limit-grid label {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.connection-limit-grid label > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.connection-limit-grid input {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  padding: 0 10px;
+  font-size: 16px;
+}
+
+.connection-save {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--text);
+  color: var(--card);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.connection-empty {
+  display: grid;
+  min-height: 110px;
+  place-items: center;
+  color: var(--muted);
+  text-align: center;
+  font-size: 15px;
+}
+
+.connection-boundary {
+  margin: 0;
 }
 
 @media (min-width: 620px) {

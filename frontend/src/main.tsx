@@ -93,6 +93,7 @@ import {
   validateRemoteWebsite,
 } from "./api";
 import { formatBytes, formatDurationSince, formatSpeed } from "./format";
+import { ConnectionsManager } from "./connections-manager";
 import { loadingRegion, lookupServerRegion, serverRegionAddress, serverRegionFromFields, unknownRegion } from "./geo";
 import type {
   AdminTrafficResponse,
@@ -292,7 +293,7 @@ function Dashboard({
   const [activeServiceGroupId, setActiveServiceGroupId] = useState(ALL_SERVICE_GROUP_ID);
   const [serviceGroupDialogOpen, setServiceGroupDialogOpen] = useState(false);
   const [serviceMenuServer, setServiceMenuServer] = useState<RemoteServer | null>(null);
-  const [serviceDialog, setServiceDialog] = useState<{ kind: "add" | "access" | "edit" | "xray" | "agent" | "helper" | "batch-agent"; server?: RemoteServer } | null>(null);
+  const [serviceDialog, setServiceDialog] = useState<{ kind: "add" | "access" | "edit" | "xray" | "agent" | "helper" | "connections" | "batch-agent"; server?: RemoteServer } | null>(null);
   const [trafficRange, setTrafficRange] = useState<TrafficRange>("today");
   const [periodLoading, setPeriodLoading] = useState(true);
   const [trafficDialog, setTrafficDialog] = useState<"nodes" | "users" | null>(null);
@@ -1277,7 +1278,7 @@ function ServiceManagementPage({
   onOpenGroupManager: () => void;
   onOpenGlobalMenu: () => void;
   onOpenMenu: (server: RemoteServer) => void;
-  onOpenDialog: (kind: "add" | "access" | "edit" | "xray" | "agent" | "helper" | "batch-agent", server?: RemoteServer) => void;
+  onOpenDialog: (kind: "add" | "access" | "edit" | "xray" | "agent" | "helper" | "connections" | "batch-agent", server?: RemoteServer) => void;
 }) {
   const online = servers.filter(isServerOnline).length;
   const offline = Math.max(0, servers.length - online);
@@ -1568,7 +1569,7 @@ function ServiceServerCard({
   connectionMetric?: ConnectionMetric;
   viewMode: "grid" | "list";
   onOpenMenu: () => void;
-  onOpenDialog: (kind: "edit" | "xray" | "agent" | "helper") => void;
+  onOpenDialog: (kind: "edit" | "xray" | "agent" | "helper" | "connections") => void;
 }) {
   const region = useServerRegion(server);
 
@@ -1592,10 +1593,10 @@ function ServiceServerCard({
         <div className="service-badges">
           <span className="service-badge success">{formatXrayMode(server.xray_mode)}</span>
           <span className="service-badge success">Agent {agentVersion(server)}</span>
-          <span className="service-badge success connection-tag" aria-label={`连接数 ${formatConnectionCount(connectionMetric)}`} title="连接数">
+          <button className="service-badge success connection-tag" type="button" onClick={() => onOpenDialog("connections")} aria-label={`查看具体连接数，当前 ${formatConnectionCount(connectionMetric)}`} title="具体连接数">
             <span className="connection-tag-icon" aria-hidden="true">🔌</span>
             <span className="connection-tag-value">{formatConnectionCount(connectionMetric)}</span>
-          </span>
+          </button>
           {server.ddns_pending && <span className="service-badge warning">DDNS 待同步</span>}
         </div>
 
@@ -2206,7 +2207,7 @@ function ServerActionsLayer({
   server: RemoteServer;
   connectionMetric?: ConnectionMetric;
   onClose: () => void;
-  onOpenDialog: (kind: "edit" | "xray" | "agent" | "helper") => void;
+  onOpenDialog: (kind: "edit" | "xray" | "agent" | "helper" | "connections") => void;
   onXrayAction: (action: "start" | "stop" | "restart") => void;
 }) {
   const helper = helperStatus(connectionMetric);
@@ -2244,6 +2245,7 @@ function ServerActionsLayer({
           <ActionButton icon={<RefreshCw />} label="升级 Agent" danger onClick={() => onOpenDialog("agent")} />
         </ActionGroup>
         <ActionGroup title="Connections Helper">
+          <ActionButton icon={<Gauge />} label="具体连接数与限制" onClick={() => onOpenDialog("connections")} />
           <ActionButton
             icon={<Gauge />}
             label={`Helper ${helper.label}${helper.version ? ` ${helper.version}` : ""}`}
@@ -2294,7 +2296,7 @@ function ServiceDialog({
   connectionMetric,
   onChanged,
 }: {
-  dialog: { kind: "add" | "access" | "edit" | "xray" | "agent" | "helper" | "batch-agent"; server?: RemoteServer };
+  dialog: { kind: "add" | "access" | "edit" | "xray" | "agent" | "helper" | "connections" | "batch-agent"; server?: RemoteServer };
   onClose: () => void;
   onXrayAction: (action: "start" | "stop" | "restart") => void;
   xrayActionBusy: boolean;
@@ -2312,6 +2314,7 @@ function ServiceDialog({
     xray: "Xray 管理",
     agent: "Agent 管理",
     helper: "Connections Helper",
+    connections: "具体连接数",
     "batch-agent": "批量升级 Agent",
   }[dialog.kind];
 
@@ -2343,6 +2346,8 @@ function ServiceDialog({
           </div>
         ) : dialog.kind === "helper" && server ? (
           <HelperInstallDialog server={server} sessionToken={sessionToken} connectionMetric={connectionMetric} />
+        ) : dialog.kind === "connections" && server ? (
+          <ConnectionsManager server={server} token={sessionToken} />
         ) : (
           <div className="service-dialog-body">
             <div className="service-dialog-section">

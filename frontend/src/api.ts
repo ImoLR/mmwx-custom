@@ -3,6 +3,8 @@ import type {
   AgentSyncNodesResponse,
   AgentVersionInfo,
   ConnectionMetricsResponse,
+  DetailedConnectionResponse,
+  ServerConnectionSettings,
   GeoLookupResponse,
   HelperInstallTokenResponse,
   LoginResponse,
@@ -636,6 +638,21 @@ export function fetchLocalSystemMetrics(_token: string, signal?: AbortSignal) {
 
 export function fetchConnectionMetrics(signal?: AbortSignal) {
   return requestCustomApi<ConnectionMetricsResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/agent/metrics"), { signal });
+}
+
+export function fetchDetailedConnections(token: string, serverId: number, signal?: AbortSignal) {
+  return requestCustomApi<DetailedConnectionResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/connections`), {
+    signal,
+    headers: { "MM-Authorization": token },
+  });
+}
+
+export function updateDetailedConnectionSettings(token: string, serverId: number, settings: ServerConnectionSettings) {
+  return requestCustomApi<DetailedConnectionResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/connections`), {
+    method: "PUT",
+    headers: { "MM-Authorization": token, "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
 }
 
 export function createHelperInstallToken(token: string, serverId: number) {
