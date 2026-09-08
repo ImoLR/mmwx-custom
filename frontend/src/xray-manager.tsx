@@ -833,6 +833,76 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
   );
 }
 
+export function ManagedNodeCreateDialog({ servers, token, username, onClose, onCreated }: { servers: RemoteServer[]; token: string; username: string; onClose: () => void; onCreated: () => Promise<void> }) {
+  const [serverIds, setServerIds] = useState<Set<number>>(() => new Set(servers[0] ? [servers[0].id] : []));
+  const [server, setServer] = useState<RemoteServer | null>(null);
+  const [item, setItem] = useState<XrayObject | null>(null);
+  const [nodes, setNodes] = useState<XrayNode[]>([]);
+  const [usedPorts, setUsedPorts] = useState<number[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const begin = async () => {
+    const selected = servers.find((value) => serverIds.has(value.id));
+    if (!selected) return;
+    setBusy(true);
+    setError("");
+    try {
+      const [nodeResp, inboundResp] = await Promise.all([fetchXrayNodes(token), fetchXrayInbounds(token, selected.id)]);
+      setNodes(nodeResp.nodes || []);
+      setUsedPorts((inboundResp.inbounds || []).map((value) => asNumber(value.port)).filter(Boolean));
+      setServer(selected);
+      setItem(defaultInboundForUser("vless", username));
+    } catch (reason) {
+      setError(getError(reason, "读取服务器入站信息失败"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const save = async (next: XrayObject) => {
+    if (!server) return;
+    setBusy(true);
+    setError("");
+    try {
+      const inbound = sanitizeInbound(next);
+      const tag = asString(next.tag).trim();
+      const nodeName = asString(next._wizard_node_name).trim();
+      if (!tag || !asString(next.protocol)) throw new Error("入站标识和协议不能为空");
+      const targets = servers.filter((value) => serverIds.has(value.id));
+      if (!targets.length) throw new Error("请至少选择一台远程服务器");
+      const results = await Promise.allSettled(targets.map((target) => mutateXrayInbound(token, target.id, { action: "add", inbound, ...(nodeName ? { node_name: nodeName } : {}) })));
+      const failures = results.map((result, index) => result.status === "rejected" ? targets[index].name : "").filter(Boolean);
+      if (failures.length) {
+        await onCreated();
+        throw new Error(`已创建 ${targets.length - failures.length} 台，失败：${failures.join("、")}。请先关闭并检查，不要直接重复提交。`);
+      }
+      await onCreated();
+      onClose();
+    } catch (reason) {
+      setError(getError(reason, "添加节点失败"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (server && item) return <>
+    {error && <div className="xray-global-error" role="alert">{error}</div>}
+    <ObjectEditor editor={{ kind: "inbound", item }} server={server} token={token} username={username} nodes={nodes} outbounds={[]} balancers={[]} usedPorts={usedPorts} pending={busy} onCancel={onClose} onSave={(next) => void save(next)} />
+  </>;
+
+  return <div className="node-dialog-layer" role="presentation" onClick={onClose}>
+    <section className="node-dialog" role="dialog" aria-modal="true" aria-label="添加节点" onClick={(event) => event.stopPropagation()}>
+      <header><div><h2>添加节点</h2><p>选择远程服务器，然后使用与 Xray 入站管理相同的完整向导创建节点</p></div><button type="button" onClick={onClose} aria-label="关闭"><X /></button></header>
+      <div className="node-dialog-body">
+        <div className="node-subpanel"><h3>远程服务器</h3><p className="node-help">可选择一台或多台服务器；下一步使用第一台服务器加载证书、域名和端口信息。</p><div className="node-check-grid">{servers.map((value) => <label className="node-check" key={value.id}><input type="checkbox" checked={serverIds.has(value.id)} onChange={() => setServerIds((current) => { const next = new Set(current); next.has(value.id) ? next.delete(value.id) : next.add(value.id); return next; })} /><span>{value.name}</span></label>)}</div></div>
+        {error && <p className="node-error">{error}</p>}
+        <div className="node-dialog-actions"><button type="button" onClick={onClose}>取消</button><button className="primary" type="button" disabled={busy || !serverIds.size} onClick={() => void begin()}><Plus />{busy ? "读取中" : `继续（${serverIds.size} 台）`}</button></div>
+      </div>
+    </section>
+  </div>;
+}
+
 function Switch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
   return <label className="xray-switch"><span>{label}</span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i /></label>;
 }

@@ -391,18 +391,370 @@ export type XrayRoutingResponse = {
 
 export type XrayNode = {
   id: number;
+  raw_url?: string;
   node_name: string;
   server?: string;
   port?: number;
   protocol?: string;
-  node_type?: string;
-  routed_outbound_tag?: string;
+  parsed_config?: string;
   clash_config?: string;
+  enabled?: boolean;
+  tag?: string;
+  tags?: string[];
+  original_server?: string;
+  original_domain?: string;
+  inbound_tag?: string;
+  chain_proxy_node_id?: number | null;
+  relay_group_name?: string;
+  relay_group_node_ids?: number[];
+  node_type?: string;
+  parent_node_id?: number | null;
+  routed_outbound_tag?: string;
+  routed_owner?: string;
+  created_by?: string;
+  multiplier?: number;
+  relay_orig_server?: string;
+  relay_orig_port?: number;
+  created_at?: string;
+  updated_at?: string;
 };
 
 export type XrayNodesResponse = {
   success?: boolean;
   nodes?: XrayNode[];
+};
+
+export type PackageTemplate = {
+  name: string;
+  filename: string;
+  type?: "clash" | "surge" | string;
+};
+
+export type ManagedPackage = {
+  id: number;
+  name: string;
+  description?: string;
+  traffic_limit_gb: number;
+  cycle_days: number;
+  is_reset: boolean;
+  reset_day: number;
+  nodes: number[];
+  nodes_configured?: boolean;
+  node_multipliers?: Record<number, number> | null;
+  node_name_overrides?: Record<number, string> | null;
+  node_name_override_enabled: boolean;
+  node_speed_limits?: Record<number, number> | null;
+  node_device_limits?: Record<number, number> | null;
+  node_traffic_limits?: Record<number, number> | null;
+  speed_limit_mbps: number;
+  device_limit: number;
+  forward_rule_limit: number;
+  forward_port_limit: number;
+  forward_speed_mbps: number;
+  forward_conn_limit: number;
+  forward_chains?: number[] | null;
+  short_code?: string;
+  traffic_mode: "oneway" | "twoway" | string;
+  template_filename?: string;
+  surge_template_filename?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type PackagePayload = Omit<ManagedPackage, "id" | "nodes_configured" | "short_code" | "created_at" | "updated_at"> & {
+  id?: number;
+  description: string;
+  node_multipliers: Record<number, number>;
+  node_name_overrides: Record<number, string>;
+  node_speed_limits: Record<number, number>;
+  node_device_limits: Record<number, number>;
+  node_traffic_limits: Record<number, number>;
+  forward_chains: number[];
+  template_filename: string;
+  surge_template_filename: string;
+};
+
+export type PackagesResponse = { packages?: ManagedPackage[] };
+export type PackageTemplatesResponse = { templates?: PackageTemplate[] };
+
+export type PackageForwardChain = {
+  id: number;
+  name: string;
+  hops?: unknown[];
+  port_range_start?: number;
+  port_range_end?: number;
+};
+
+export type PackageForwardChainsResponse = {
+  success?: boolean;
+  chains?: PackageForwardChain[] | null;
+  issues?: Record<string, unknown>;
+};
+
+export type ForwardBalanceStrategy =
+  | "round_robin"
+  | "least_conn"
+  | "percentage"
+  | "cycle"
+  | "sticky"
+  | string;
+
+export type ForwardGroupMember = {
+  server_id: number;
+  weight?: number;
+};
+
+export type ForwardGroup = {
+  id: number;
+  name: string;
+  description?: string;
+  balance_strategy?: ForwardBalanceStrategy;
+  members?: ForwardGroupMember[];
+};
+
+export type ForwardChainHop = {
+  group_id: number;
+  group_name?: string;
+  order: number;
+};
+
+export type ForwardBoundNode = {
+  node_id: number;
+  node_name?: string;
+  port?: number;
+  terminus_addr?: string;
+};
+
+export type ForwardChain = {
+  id: number;
+  name: string;
+  hops?: ForwardChainHop[];
+  port_range_start?: number;
+  port_range_end?: number;
+  dns_domain?: string;
+  dns_domain_v6?: string;
+  dns_provider_id?: number;
+  bound_nodes?: ForwardBoundNode[];
+};
+
+export type ForwardChainsResponse = {
+  success?: boolean;
+  chains?: ForwardChain[] | null;
+  issues?: Record<string, string[] | string | unknown>;
+};
+
+export type ForwardGroupsResponse = { success?: boolean; groups?: ForwardGroup[] | null };
+export type ForwardServersResponse = { success?: boolean; servers?: RemoteServer[] | null };
+export type ForwardCertificatesResponse = { success?: boolean; certificates?: ValidCertificate[] | null };
+export type ForwardNodesResponse = { success?: boolean; nodes?: XrayNode[] | null };
+export type ForwardMutationResponse = {
+  success?: boolean;
+  message?: string;
+  id?: number;
+  chain_id?: number;
+  group_id?: number;
+  group?: ForwardGroup;
+  chain?: ForwardChain;
+  warning?: string;
+  warnings?: string[];
+  count?: number;
+};
+export type ForwardProbeResponse = {
+  success?: boolean;
+  latency_ms?: number;
+  method?: string;
+  error?: string;
+  results?: Array<{
+    target?: string;
+    success?: boolean;
+    latency_ms?: number;
+    method?: string;
+    error?: string;
+  }>;
+};
+
+export type PackageMutationResponse = {
+  id?: number;
+  success?: boolean;
+  message?: string;
+};
+
+export type CarpoolPublishRequest = {
+  package_id: number;
+  price_minor: number;
+  currency: "CNY" | "USDT";
+  billing_period: "monthly" | "quarterly" | "yearly" | "one_time" | "custom";
+  slots_total: number;
+  slots_available: number;
+  description: string;
+};
+
+export type NodeMutationRequest = {
+  raw_url?: string;
+  node_name: string;
+  protocol?: string;
+  parsed_config?: string;
+  clash_config?: string;
+  enabled?: boolean;
+  tag?: string;
+  tags?: string[];
+  inbound_tag?: string;
+  chain_proxy_node_id?: number | null;
+  relay_group_name?: string;
+  relay_group_node_ids?: number[] | null;
+  relay_server?: string;
+  relay_port?: number;
+};
+
+export type NodeMutationResponse = {
+  success?: boolean;
+  message?: string;
+  status?: string;
+  node?: XrayNode;
+  nodes?: XrayNode[];
+  deleted?: number;
+  total?: number;
+  failed?: number;
+  skipped?: number;
+};
+
+export type NodeParseResponse = {
+  success?: boolean;
+  proxies?: Array<Record<string, unknown>>;
+  count?: number;
+  suggested_tag?: string;
+};
+
+export type NodeTagsResponse = {
+  success?: boolean;
+  tags?: string[];
+};
+
+export type NodeURIResponse = {
+  uri?: string;
+};
+
+export type NodeRelatedInboundsResponse = {
+  node_name?: string;
+  inbound_tag?: string;
+  inbounds?: Array<Record<string, unknown>>;
+  count?: number;
+};
+
+export type NodeTCPingResponse = {
+  success?: boolean;
+  latency?: number;
+  error?: string;
+};
+
+export type NodeTempSubscriptionResponse = {
+  success?: boolean;
+  url?: string;
+  token?: string;
+  expire_at?: string;
+  expires_at?: string;
+};
+
+export type SpeedTester = {
+  id: number;
+  name: string;
+  created_by?: string;
+  last_seen?: string | null;
+  created_at?: string;
+  online?: boolean;
+  caps?: string[];
+  version?: string;
+};
+
+export type SpeedTestResult = {
+  id?: number;
+  node_id?: number;
+  node_name?: string;
+  source?: string;
+  down_mbps?: number;
+  latency_ms?: number;
+  bytes?: number;
+  status?: string;
+  error?: string;
+  egress_ip?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type SpeedTestResultsResponse = {
+  success?: boolean;
+  results?: SpeedTestResult[];
+};
+
+export type SpeedTestRunResponse = {
+  success?: boolean;
+  result?: SpeedTestResult;
+};
+
+export type SpeedTestersResponse = {
+  success?: boolean;
+  testers?: SpeedTester[];
+};
+
+export type NodeURIItem = {
+  username: string;
+  node_id: number;
+  node_name: string;
+  server_name?: string;
+  protocol?: string;
+  node_type?: string;
+  uri: string;
+};
+
+export type NodeTunnel = {
+  kind: "inbound" | "routed";
+  server_id: number;
+  server_name: string;
+  is_federated?: boolean;
+  tag: string;
+  listen_port?: number;
+  target_address?: string;
+  target_port?: number;
+  network?: string;
+  inbound_tag?: string;
+  match_domain?: string[];
+  match_ip?: string[];
+  rule_index?: number;
+};
+
+export type NodeTunnelChain = {
+  label: string;
+  hops: Array<{
+    server_id: number;
+    server_name: string;
+    tag: string;
+    listen_port?: number;
+    target_address?: string;
+    target_port?: number;
+  }>;
+  entry_server?: number;
+  entry_port?: number;
+  final_target?: string;
+};
+
+export type ExternalSyncCandidate = {
+  id: string;
+  subscription_name: string;
+  name: string;
+  protocol: string;
+  server: string;
+  port?: string | number;
+};
+
+export type ExternalSyncResponse = {
+  message?: string;
+  updated_count?: number;
+  session_id?: string;
+  new_nodes?: ExternalSyncCandidate[];
+};
+
+export type UserConfigResponse = Record<string, unknown> & {
+  node_order?: number[];
 };
 
 export type NodeTrafficItem = {

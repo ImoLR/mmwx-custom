@@ -22,6 +22,7 @@ import {
   Menu,
   Moon,
   MoreHorizontal,
+  Package as PackageIcon,
   Power,
   Plus,
   RefreshCw,
@@ -115,6 +116,9 @@ import type {
   XrayServiceStatusResponse,
   XraySnapshotItem,
 } from "./types";
+import { NodeManagementPage } from "./node-manager";
+import { PackageManagementPage } from "./package-manager";
+import { ForwardManagementPage } from "./forward-manager";
 import { XrayManager } from "./xray-manager";
 import "./styles.css";
 
@@ -140,6 +144,12 @@ type PeriodMeta = {
   complete: boolean;
 };
 
+type ServiceGroup = {
+  id: string;
+  name: string;
+  serverIds: number[];
+};
+
 const emptyState: DashboardState = {
   summary: null,
   systemMetrics: null,
@@ -154,6 +164,8 @@ const emptyState: DashboardState = {
   period: null,
 };
 
+const ALL_SERVICE_GROUP_ID = "all";
+const SERVICE_GROUPS_STORAGE_PREFIX = "mmwxc-service-groups:";
 const SYSTEM_METRICS_REFRESH_MS = 5000;
 
 function App() {
@@ -276,6 +288,9 @@ function Dashboard({
   const [selectedServerId, setSelectedServerId] = useState<number | null>(null);
   const [xrayActionBusy, setXrayActionBusy] = useState(false);
   const [serviceViewMode, setServiceViewMode] = useState<"grid" | "list">("grid");
+  const [serviceGroups, setServiceGroups] = useState<ServiceGroup[]>(() => loadServiceGroups(session.username));
+  const [activeServiceGroupId, setActiveServiceGroupId] = useState(ALL_SERVICE_GROUP_ID);
+  const [serviceGroupDialogOpen, setServiceGroupDialogOpen] = useState(false);
   const [serviceMenuServer, setServiceMenuServer] = useState<RemoteServer | null>(null);
   const [serviceDialog, setServiceDialog] = useState<{ kind: "add" | "access" | "edit" | "xray" | "agent" | "helper" | "batch-agent"; server?: RemoteServer } | null>(null);
   const [trafficRange, setTrafficRange] = useState<TrafficRange>("today");
@@ -615,6 +630,14 @@ function Dashboard({
     if (state.servers.length === 0) return undefined;
     return state.servers.find((server) => server.id === selectedServerId) ?? state.servers[0];
   }, [selectedServerId, state.servers]);
+  const visibleServiceServers = useMemo(() => {
+    if (activeServiceGroupId === ALL_SERVICE_GROUP_ID) return state.servers;
+    const group = serviceGroups.find((item) => item.id === activeServiceGroupId);
+    if (!group) return state.servers;
+    const ids = new Set(group.serverIds);
+    return state.servers.filter((server) => ids.has(server.id));
+  }, [activeServiceGroupId, serviceGroups, state.servers]);
+  const visibleServiceTotals = useMemo(() => calculateTotals(visibleServiceServers), [visibleServiceServers]);
 
   useEffect(() => {
     if (state.servers.length === 0) {
@@ -625,6 +648,26 @@ function Dashboard({
       setSelectedServerId(state.servers[0].id);
     }
   }, [selectedServerId, state.servers]);
+
+  useEffect(() => {
+    setServiceGroups(loadServiceGroups(session.username));
+    setActiveServiceGroupId(ALL_SERVICE_GROUP_ID);
+  }, [session.username]);
+
+  useEffect(() => {
+    setServiceGroups((current) => sanitizeServiceGroups(current, state.servers));
+  }, [state.servers]);
+
+  useEffect(() => {
+    saveServiceGroups(session.username, serviceGroups);
+  }, [session.username, serviceGroups]);
+
+  useEffect(() => {
+    if (activeServiceGroupId === ALL_SERVICE_GROUP_ID) return;
+    if (!serviceGroups.some((group) => group.id === activeServiceGroupId)) {
+      setActiveServiceGroupId(ALL_SERVICE_GROUP_ID);
+    }
+  }, [activeServiceGroupId, serviceGroups]);
 
   const runXrayAction = useCallback(
     async (action: "start" | "stop" | "restart", targetServer = selectedServer) => {
@@ -684,15 +727,26 @@ function Dashboard({
 
       {activeTab === "services" ? (
         <ServiceManagementPage
-          servers={state.servers}
+          servers={visibleServiceServers}
+          allServers={state.servers}
+          serviceGroups={serviceGroups}
+          activeServiceGroupId={activeServiceGroupId}
           connectionMetrics={state.connectionMetrics}
-          totals={totals}
+          totals={visibleServiceTotals}
           viewMode={serviceViewMode}
           onViewModeChange={setServiceViewMode}
+          onSelectServiceGroup={setActiveServiceGroupId}
+          onOpenGroupManager={() => setServiceGroupDialogOpen(true)}
           onOpenGlobalMenu={() => setMenuOpen(true)}
           onOpenMenu={setServiceMenuServer}
           onOpenDialog={(kind, server) => setServiceDialog({ kind, server })}
         />
+      ) : activeTab === "nodes" ? (
+        <NodeManagementPage token={session.token} servers={state.servers} username={session.username} />
+      ) : activeTab === "packages" ? (
+        <PackageManagementPage token={session.token} />
+      ) : activeTab === "forward" ? (
+        <ForwardManagementPage token={session.token} />
       ) : activeTab !== "overview" ? (
         <Placeholder title={tabTitle(activeTab)} />
       ) : (
@@ -739,6 +793,17 @@ function Dashboard({
           userConnections={state.userConnections}
           userSpeeds={state.userSpeeds}
           onClose={() => setTrafficDialog(null)}
+        />
+      )}
+
+      {serviceGroupDialogOpen && (
+        <ServiceGroupDialog
+          servers={state.servers}
+          groups={serviceGroups}
+          activeGroupId={activeServiceGroupId}
+          onGroupsChange={setServiceGroups}
+          onActiveGroupChange={setActiveServiceGroupId}
+          onClose={() => setServiceGroupDialogOpen(false)}
         />
       )}
 
@@ -1187,25 +1252,38 @@ function TrafficListDialog({
 
 function ServiceManagementPage({
   servers,
+  allServers,
+  serviceGroups,
+  activeServiceGroupId,
   connectionMetrics,
   totals,
   viewMode,
   onViewModeChange,
+  onSelectServiceGroup,
+  onOpenGroupManager,
   onOpenGlobalMenu,
   onOpenMenu,
   onOpenDialog,
 }: {
   servers: RemoteServer[];
+  allServers: RemoteServer[];
+  serviceGroups: ServiceGroup[];
+  activeServiceGroupId: string;
   connectionMetrics: Record<string, ConnectionMetric>;
   totals: { upload: number; download: number };
   viewMode: "grid" | "list";
   onViewModeChange: (mode: "grid" | "list") => void;
+  onSelectServiceGroup: (groupId: string) => void;
+  onOpenGroupManager: () => void;
   onOpenGlobalMenu: () => void;
   onOpenMenu: (server: RemoteServer) => void;
   onOpenDialog: (kind: "add" | "access" | "edit" | "xray" | "agent" | "helper" | "batch-agent", server?: RemoteServer) => void;
 }) {
   const online = servers.filter(isServerOnline).length;
   const offline = Math.max(0, servers.length - online);
+  const activeGroupName = activeServiceGroupId === ALL_SERVICE_GROUP_ID
+    ? "全部"
+    : serviceGroups.find((group) => group.id === activeServiceGroupId)?.name ?? "全部";
 
   return (
     <div className="service-page">
@@ -1246,6 +1324,38 @@ function ServiceManagementPage({
         <ServiceSummaryItem icon={<ArrowDown />} value={formatSpeed(totals.download)} tone="download" label="下载" />
       </section>
 
+      <section className="service-group-panel" aria-label="服务器分组">
+        <div className="service-group-scroll" role="list" aria-label={`当前分组 ${activeGroupName}`}>
+          <button
+            className={activeServiceGroupId === ALL_SERVICE_GROUP_ID ? "active" : ""}
+            type="button"
+            onClick={() => onSelectServiceGroup(ALL_SERVICE_GROUP_ID)}
+          >
+            <span>全部</span>
+            <em>{allServers.length}</em>
+          </button>
+          {serviceGroups.map((group) => {
+            const visibleCount = group.serverIds.filter((id) => allServers.some((server) => server.id === id)).length;
+            return (
+              <button
+                key={group.id}
+                className={activeServiceGroupId === group.id ? "active" : ""}
+                type="button"
+                onClick={() => onSelectServiceGroup(group.id)}
+                title={group.name}
+              >
+                <span>{group.name}</span>
+                <em>{visibleCount}</em>
+              </button>
+            );
+          })}
+        </div>
+        <button className="service-group-manage-button" type="button" onClick={onOpenGroupManager}>
+          <Tags />
+          <span>分组</span>
+        </button>
+      </section>
+
       <section className={`service-server-list ${viewMode}`}>
         {servers.length ? (
           servers.map((server) => (
@@ -1260,9 +1370,173 @@ function ServiceManagementPage({
           ))
         ) : (
           <section className="panel-card">
-            <EmptyText>暂无服务器数据</EmptyText>
+            <EmptyText>{activeServiceGroupId === ALL_SERVICE_GROUP_ID ? "暂无服务器数据" : "这个分组里还没有服务器"}</EmptyText>
           </section>
         )}
+      </section>
+    </div>
+  );
+}
+
+function ServiceGroupDialog({
+  servers,
+  groups,
+  activeGroupId,
+  onGroupsChange,
+  onActiveGroupChange,
+  onClose,
+}: {
+  servers: RemoteServer[];
+  groups: ServiceGroup[];
+  activeGroupId: string;
+  onGroupsChange: (groups: ServiceGroup[]) => void;
+  onActiveGroupChange: (groupId: string) => void;
+  onClose: () => void;
+}) {
+  const [newGroupName, setNewGroupName] = useState("");
+  const [selectedGroupId, setSelectedGroupId] = useState(() => activeGroupId === ALL_SERVICE_GROUP_ID ? groups[0]?.id ?? "" : activeGroupId);
+  const [renameValue, setRenameValue] = useState("");
+  const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
+
+  useEffect(() => {
+    if (!selectedGroupId && groups[0]) setSelectedGroupId(groups[0].id);
+    if (selectedGroupId && !groups.some((group) => group.id === selectedGroupId)) {
+      setSelectedGroupId(groups[0]?.id ?? "");
+    }
+  }, [groups, selectedGroupId]);
+
+  useEffect(() => {
+    setRenameValue(selectedGroup?.name ?? "");
+  }, [selectedGroup?.id, selectedGroup?.name]);
+
+  function createGroup(event: React.FormEvent) {
+    event.preventDefault();
+    const name = normalizeServiceGroupName(newGroupName);
+    if (!name || serviceGroupNameExists(groups, name)) return;
+    const group = { id: createServiceGroupId(), name, serverIds: [] };
+    onGroupsChange([...groups, group]);
+    setSelectedGroupId(group.id);
+    onActiveGroupChange(group.id);
+    setNewGroupName("");
+  }
+
+  function renameGroup(event: React.FormEvent) {
+    event.preventDefault();
+    if (!selectedGroup) return;
+    const name = normalizeServiceGroupName(renameValue);
+    if (!name || serviceGroupNameExists(groups, name, selectedGroup.id)) {
+      setRenameValue(selectedGroup.name);
+      return;
+    }
+    onGroupsChange(groups.map((group) => group.id === selectedGroup.id ? { ...group, name } : group));
+  }
+
+  function deleteGroup(groupId: string) {
+    const group = groups.find((item) => item.id === groupId);
+    if (!group) return;
+    if (!window.confirm(`删除分组「${group.name}」？服务器不会被删除。`)) return;
+    const nextGroups = groups.filter((item) => item.id !== groupId);
+    onGroupsChange(nextGroups);
+    if (activeGroupId === groupId) onActiveGroupChange(ALL_SERVICE_GROUP_ID);
+    if (selectedGroupId === groupId) setSelectedGroupId(nextGroups[0]?.id ?? "");
+  }
+
+  function toggleServer(serverId: number, checked: boolean) {
+    if (!selectedGroup) return;
+    const currentIds = new Set(selectedGroup.serverIds);
+    if (checked) currentIds.add(serverId);
+    else currentIds.delete(serverId);
+    onGroupsChange(groups.map((group) => group.id === selectedGroup.id ? { ...group, serverIds: [...currentIds] } : group));
+  }
+
+  function setAllServers(checked: boolean) {
+    if (!selectedGroup) return;
+    const serverIds = checked ? servers.map((server) => server.id) : [];
+    onGroupsChange(groups.map((group) => group.id === selectedGroup.id ? { ...group, serverIds } : group));
+  }
+
+  return (
+    <div className="service-dialog-layer" role="presentation" onClick={onClose}>
+      <section className="service-dialog service-group-dialog" role="dialog" aria-label="服务器分组管理" onClick={(event) => event.stopPropagation()}>
+        <div className="service-dialog-head">
+          <h3>服务器分组</h3>
+          <button className="service-icon-button" type="button" onClick={onClose} aria-label="关闭">
+            <X />
+          </button>
+        </div>
+        <div className="service-dialog-body service-group-dialog-body">
+          <section className="service-group-section">
+            <h4>新建分组</h4>
+            <form className="service-group-create" onSubmit={createGroup}>
+              <input value={newGroupName} maxLength={28} onChange={(event) => setNewGroupName(event.target.value)} placeholder="输入组名，例如 香港节点" />
+              <button type="submit" disabled={!normalizeServiceGroupName(newGroupName) || serviceGroupNameExists(groups, newGroupName)}>
+                <Plus />
+                <span>新增</span>
+              </button>
+            </form>
+          </section>
+
+          <section className="service-group-section">
+            <h4>选择分组</h4>
+            {groups.length ? (
+              <div className="service-group-list">
+                {groups.map((group) => (
+                  <div className={`service-group-row ${selectedGroupId === group.id ? "active" : ""}`} key={group.id}>
+                    <button type="button" onClick={() => {
+                      setSelectedGroupId(group.id);
+                      onActiveGroupChange(group.id);
+                    }}>
+                      <span>{group.name}</span>
+                      <em>{group.serverIds.length} 台</em>
+                    </button>
+                    <button type="button" onClick={() => deleteGroup(group.id)} aria-label={`删除 ${group.name}`}>
+                      <Trash2 />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyText>还没有自定义分组</EmptyText>
+            )}
+          </section>
+
+          {selectedGroup && (
+            <section className="service-group-section">
+              <h4>编辑分组</h4>
+              <form className="service-group-rename" onSubmit={renameGroup}>
+                <input value={renameValue} maxLength={28} onChange={(event) => setRenameValue(event.target.value)} />
+                <button type="submit" disabled={!normalizeServiceGroupName(renameValue) || normalizeServiceGroupName(renameValue) === selectedGroup.name}>
+                  <CheckCircle2 />
+                  <span>保存名称</span>
+                </button>
+              </form>
+              <div className="service-group-bulk">
+                <button type="button" onClick={() => setAllServers(true)}>全选</button>
+                <button type="button" onClick={() => setAllServers(false)}>清空</button>
+              </div>
+              <div className="service-group-server-list">
+                {servers.map((server) => (
+                  <label className="service-group-server-row" key={server.id}>
+                    <input
+                      type="checkbox"
+                      checked={selectedGroup.serverIds.includes(server.id)}
+                      onChange={(event) => toggleServer(server.id, event.target.checked)}
+                    />
+                    <span>
+                      <strong>{server.name}</strong>
+                      <small>{displayServerAddress(server) || "地址未填写"}</small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <p className="service-group-note">分组只改变当前页面显示范围，不会修改服务器配置、节点、Agent 或 Xray。</p>
+        </div>
+        <div className="service-dialog-actions">
+          <button type="button" onClick={onClose}>关闭</button>
+        </div>
       </section>
     </div>
   );
@@ -2704,8 +2978,10 @@ function SideMenu({
 }) {
   const menuItems = [
     { key: "overview", label: "概览", icon: Home },
-    { key: "nodes", label: "节点", icon: Boxes },
+    { key: "nodes", label: "节点管理", icon: Boxes },
     { key: "users", label: "用户", icon: Users },
+    { key: "packages", label: "套餐管理", icon: PackageIcon },
+    { key: "forward", label: "转发管理", icon: Share2 },
     { key: "services", label: "服务管理", icon: Server },
     { key: "settings", label: "设置", icon: Settings },
     { key: "inbounds", label: "入站", icon: LogIn },
@@ -2814,6 +3090,82 @@ function calculateTotals(servers: RemoteServer[]) {
     }),
     { upload: 0, download: 0 },
   );
+}
+
+function serviceGroupsStorageKey(username: string) {
+  return `${SERVICE_GROUPS_STORAGE_PREFIX}${username || "default"}`;
+}
+
+function loadServiceGroups(username: string): ServiceGroup[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(serviceGroupsStorageKey(username));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return sanitizeServiceGroups(parsed, []);
+  } catch {
+    return [];
+  }
+}
+
+function saveServiceGroups(username: string, groups: ServiceGroup[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(serviceGroupsStorageKey(username), JSON.stringify(groups));
+  } catch {
+    // Keep the in-memory grouping if the browser refuses localStorage writes.
+  }
+}
+
+function sanitizeServiceGroups(groups: unknown, servers: RemoteServer[]): ServiceGroup[] {
+  if (!Array.isArray(groups)) return [];
+  const validServerIds = new Set(servers.map((server) => server.id));
+  const seenGroupIds = new Set<string>();
+  const seenNames = new Set<string>();
+  const sanitized: ServiceGroup[] = [];
+
+  for (const item of groups) {
+    if (!item || typeof item !== "object") continue;
+    const source = item as Partial<ServiceGroup>;
+    const id = typeof source.id === "string" && source.id.trim() ? source.id.trim() : createServiceGroupId();
+    const name = normalizeServiceGroupName(source.name);
+    if (!name || seenGroupIds.has(id) || seenNames.has(name.toLowerCase())) continue;
+    const serverIds = Array.isArray(source.serverIds)
+      ? [...new Set(source.serverIds.filter((idValue): idValue is number => Number.isInteger(idValue) && (validServerIds.size === 0 || validServerIds.has(idValue))))]
+      : [];
+    seenGroupIds.add(id);
+    seenNames.add(name.toLowerCase());
+    sanitized.push({ id, name, serverIds });
+  }
+  return serviceGroupsEqual(groups, sanitized) ? groups as ServiceGroup[] : sanitized;
+}
+
+function serviceGroupsEqual(left: unknown, right: ServiceGroup[]) {
+  if (!Array.isArray(left) || left.length !== right.length) return false;
+  return left.every((item, index) => {
+    const group = item as Partial<ServiceGroup>;
+    const other = right[index];
+    return group.id === other.id
+      && group.name === other.name
+      && Array.isArray(group.serverIds)
+      && group.serverIds.length === other.serverIds.length
+      && group.serverIds.every((serverId, serverIndex) => serverId === other.serverIds[serverIndex]);
+  });
+}
+
+function normalizeServiceGroupName(value?: string | null) {
+  return value?.trim().replace(/\s+/g, " ").slice(0, 28) ?? "";
+}
+
+function serviceGroupNameExists(groups: ServiceGroup[], name: string, exceptId?: string) {
+  const normalized = normalizeServiceGroupName(name).toLowerCase();
+  if (!normalized) return false;
+  return groups.some((group) => group.id !== exceptId && group.name.toLowerCase() === normalized);
+}
+
+function createServiceGroupId() {
+  return `group-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function mergeServerSnapshots(current: RemoteServer[], snapshot: RemoteServer[]) {
@@ -3183,6 +3535,8 @@ function tabTitle(tab: string) {
   const titles: Record<string, string> = {
     overview: "概览",
     nodes: "节点",
+    packages: "套餐管理",
+    forward: "转发管理",
     users: "用户",
     subscriptions: "订阅",
     settings: "设置",

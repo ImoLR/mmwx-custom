@@ -6,13 +6,43 @@ import type {
   GeoLookupResponse,
   HelperInstallTokenResponse,
   LoginResponse,
+  NodeMutationRequest,
+  NodeMutationResponse,
   NodeConnectionsResponse,
+  NodeParseResponse,
+  NodeRelatedInboundsResponse,
+  NodeTagsResponse,
+  NodeTCPingResponse,
+  NodeTempSubscriptionResponse,
+  SpeedTestResultsResponse,
+  SpeedTestRunResponse,
+  SpeedTestersResponse,
+  ExternalSyncResponse,
+  ForwardCertificatesResponse,
+  ForwardChainsResponse,
+  ForwardGroup,
+  ForwardGroupsResponse,
+  ForwardMutationResponse,
+  ForwardNodesResponse,
+  ForwardProbeResponse,
+  ForwardServersResponse,
+  NodeTunnel,
+  NodeTunnelChain,
+  NodeURIItem,
+  UserConfigResponse,
   SystemMetrics,
   NodeTotalsResponse,
   NodeTrafficItem,
+  NodeURIResponse,
   PeriodUserTrafficItem,
   DNSProvidersResponse,
   MasterUrlResponse,
+  CarpoolPublishRequest,
+  PackageForwardChainsResponse,
+  PackageMutationResponse,
+  PackagePayload,
+  PackagesResponse,
+  PackageTemplatesResponse,
   RemoteServerCreateRequest,
   RemoteServerMutationResponse,
   RemoteServer,
@@ -30,6 +60,7 @@ import type {
   UsersTrafficResponse,
   XrayConfigResponse,
   XrayInboundsResponse,
+  XrayNode,
   XrayNodesResponse,
   XrayObject,
   XrayOutboundsResponse,
@@ -44,6 +75,7 @@ import type {
   XrayWarpStatus,
   WebsiteMutationResponse,
 } from "./types";
+import nacl from "tweetnacl";
 
 const SESSION_KEY = "mmwx-session";
 const MMWX_API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_MMWX_API_BASE_URL ?? "");
@@ -52,9 +84,10 @@ const MMWX_SECURE_AUDIENCE = normalizeBaseUrl(import.meta.env.VITE_MMWX_SECURE_A
 const SECURE_CHANNEL_VERSION = "v1";
 const SECURE_CHANNEL_PROTO = "v2";
 const SECURE_ENVELOPE_VERSION = 0x01;
-const SECURE_CHANNEL_STATIC_PUB_B64 = "r2ItZKepeBU5sB40geAHZ6cFwznLAZx4ww9GOtITXnA=";
-const X25519_BASEPOINT = new Uint8Array([9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-const X25519_P = (1n << 255n) - 19n;
+const SECURE_CHANNEL_WASM_URL = "/assets/securechan-CEps0XQO.wasm";
+const SECURE_CHANNEL_BUFFER_LIMIT = 1024 * 1024;
+const SECURE_CHANNEL_RUNTIME_PROOF_PREFIX = "mmwx-runtime-proof-v1\n";
+const SECURE_CHANNEL_RUNTIME_PUBLIC_KEY_B64 = "BAusWULXB7lQxBbQUByyXi4Eg5NBVW/UTpaYNpSDFQQ=";
 
 function normalizeBaseUrl(value: string) {
   return value.trim().replace(/\/+$/, "");
@@ -127,14 +160,23 @@ async function request<T>(path: string, token?: string, init?: RequestInit): Pro
 
 type SecureChannel = {
   sessionId: string;
-  sendKey: CryptoKey;
-  recvKey: CryptoKey;
-  sendNonce: Uint8Array;
-  recvNonce: Uint8Array;
-  sendSeq: number;
+  sendSeq: bigint;
+  recvMaxSeq: bigint;
+  recvBitmap: bigint;
+};
+
+// v0.5.3 keeps key generation, derivation and AEAD inside the official secure-channel module.
+type SecureChannelWasm = {
+  memory: WebAssembly.Memory;
+  a: () => number;
+  b: () => number;
+  c: (infoLength: number, clientMode: number) => number;
+  d: (inputLength: number, sequenceHigh: number, sequenceLow: number) => number;
+  e: (inputLength: number, sequenceHigh: number, sequenceLow: number) => number;
 };
 
 let activeSecureChannel: Promise<SecureChannel | null> | null = null;
+let secureChannelWasm: Promise<SecureChannelWasm> | null = null;
 
 async function requestWithSecureChannel<T>(path: string, token: string | undefined, init: RequestInit | undefined, channel: SecureChannel, allowRetry: boolean): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -200,9 +242,12 @@ async function getSecureChannel(path: string) {
 }
 
 async function createSecureChannel(path: string): Promise<SecureChannel> {
-  const privateKey = new Uint8Array(32);
-  crypto.getRandomValues(privateKey);
-  const publicKey = x25519(privateKey, X25519_BASEPOINT);
+  const wasm = await getSecureChannelWasm();
+  const pointer = wasm.a();
+  const memory = secureChannelMemory(wasm);
+  memory.set(crypto.getRandomValues(new Uint8Array(32)), pointer);
+  if (wasm.b() !== 0) throw new Error("secure channel key generation failed");
+  const publicKey = secureChannelMemory(wasm).slice(pointer, pointer + 32);
   const handshakeUrl = new URL(joinUrl(apiBaseFromPath(path), "/api/securechan/handshake"), window.location.origin);
   const audience = secureAudienceFromPath(path);
   const response = await fetch(handshakeUrl.toString(), {
@@ -211,27 +256,58 @@ async function createSecureChannel(path: string): Promise<SecureChannel> {
     body: JSON.stringify({ client_pub_b64: bytesToBase64(publicKey), audience, proto: SECURE_CHANNEL_PROTO }),
   });
   if (!response.ok) throw new Error(`secure channel handshake failed (${response.status})`);
-  const body = await response.json() as { session_id?: string; server_pub_b64?: string };
-  if (!body.session_id || !body.server_pub_b64) throw new Error("secure channel handshake response invalid");
+  const body = await response.json() as { proto?: string; session_id?: string; server_pub_b64?: string; runtime_proof?: string };
+  if (!body.session_id || !body.server_pub_b64 || !body.runtime_proof) throw new Error("secure channel handshake response invalid");
   const serverPublicKey = base64ToBytes(body.server_pub_b64);
-  const ephemeralShared = x25519(privateKey, serverPublicKey);
-  const staticShared = x25519(privateKey, base64ToBytes(SECURE_CHANNEL_STATIC_PUB_B64));
-  const shared = concatBytes(ephemeralShared, staticShared);
-  const salt = concatBytes(publicKey, serverPublicKey);
-  const hkdfKey = await crypto.subtle.importKey("raw", shared, "HKDF", false, ["deriveBits"]);
-  const derived = new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info: textToBytes(`securechan-v2\n${body.session_id}`) }, hkdfKey, 704));
-  const masterToAgentKey = derived.slice(0, 32);
-  const agentToMasterKey = derived.slice(32, 64);
-  const masterToAgentNonce = derived.slice(64, 76);
-  const agentToMasterNonce = derived.slice(76, 88);
+  if (body.proto !== SECURE_CHANNEL_PROTO || serverPublicKey.length !== 32) {
+    throw new Error("secure channel protocol mismatch");
+  }
+  const proofMessage = textToBytes(`${SECURE_CHANNEL_RUNTIME_PROOF_PREFIX}${body.session_id}\n${bytesToBase64(publicKey)}\n${body.server_pub_b64}\n${audience}`);
+  const proofValid = nacl.sign.detached.verify(
+    proofMessage,
+    base64ToBytes(body.runtime_proof),
+    base64ToBytes(SECURE_CHANNEL_RUNTIME_PUBLIC_KEY_B64),
+  );
+  if (!proofValid) throw new Error("secure channel runtime proof invalid");
+  const info = textToBytes(`securechan-v2\n${body.session_id}`);
+  if (32 + info.length > SECURE_CHANNEL_BUFFER_LIMIT) throw new Error("secure channel handshake response too large");
+  const nextMemory = secureChannelMemory(wasm);
+  nextMemory.set(serverPublicKey, pointer);
+  nextMemory.set(info, pointer + 32);
+  if (wasm.c(info.length, 1) !== 0) throw new Error("secure channel key derivation failed");
   return {
     sessionId: body.session_id,
-    sendKey: await crypto.subtle.importKey("raw", agentToMasterKey, "AES-GCM", false, ["encrypt"]),
-    recvKey: await crypto.subtle.importKey("raw", masterToAgentKey, "AES-GCM", false, ["decrypt"]),
-    sendNonce: agentToMasterNonce,
-    recvNonce: masterToAgentNonce,
-    sendSeq: 0,
+    sendSeq: 0n,
+    recvMaxSeq: 0n,
+    recvBitmap: 0n,
   };
+}
+
+async function getSecureChannelWasm() {
+  if (!secureChannelWasm) {
+    secureChannelWasm = (async () => {
+      const response = await fetch(SECURE_CHANNEL_WASM_URL);
+      if (!response.ok) throw new Error(`secure channel module unavailable (${response.status})`);
+      const { instance } = await WebAssembly.instantiate(await response.arrayBuffer(), {});
+      const wasm = instance.exports as unknown as SecureChannelWasm;
+      if (!wasm.memory || !wasm.a || !wasm.b || !wasm.c || !wasm.d || !wasm.e) {
+        throw new Error("secure channel module invalid");
+      }
+      const pointer = wasm.a();
+      if (pointer + SECURE_CHANNEL_BUFFER_LIMIT > wasm.memory.buffer.byteLength) {
+        throw new Error("secure channel module memory is too small");
+      }
+      return wasm;
+    })().catch((error) => {
+      secureChannelWasm = null;
+      throw error;
+    });
+  }
+  return secureChannelWasm;
+}
+
+function secureChannelMemory(wasm: SecureChannelWasm) {
+  return new Uint8Array(wasm.memory.buffer);
 }
 
 function secureAudienceFromPath(path: string) {
@@ -255,10 +331,16 @@ function apiBaseFromPath(path: string) {
 }
 
 async function encryptEnvelope(channel: SecureChannel, plaintext: Uint8Array) {
-  channel.sendSeq += 1;
+  if (plaintext.length > SECURE_CHANNEL_BUFFER_LIMIT) throw new Error("secure channel request is too large");
+  const wasm = await getSecureChannelWasm();
+  const pointer = wasm.a();
+  secureChannelMemory(wasm).set(plaintext, pointer);
+  channel.sendSeq += 1n;
   const seq = channel.sendSeq;
-  const nonce = secureNonce(channel.sendNonce, seq);
-  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, channel.sendKey, toArrayBuffer(plaintext)));
+  const [sequenceHigh, sequenceLow] = splitUint64(seq);
+  const outputLength = wasm.d(plaintext.length, sequenceHigh, sequenceLow);
+  if (outputLength < 0 || outputLength > SECURE_CHANNEL_BUFFER_LIMIT) throw new Error("secure channel encryption failed");
+  const ciphertext = secureChannelMemory(wasm).slice(pointer, pointer + outputLength);
   const envelope = new Uint8Array(9 + ciphertext.length);
   envelope[0] = SECURE_ENVELOPE_VERSION;
   writeUint64BE(envelope, 1, seq);
@@ -269,122 +351,41 @@ async function encryptEnvelope(channel: SecureChannel, plaintext: Uint8Array) {
 async function decryptEnvelope(channel: SecureChannel, envelope: Uint8Array) {
   if (envelope.length < 25 || envelope[0] !== SECURE_ENVELOPE_VERSION) throw new Error("secure channel response invalid");
   const seq = readUint64BE(envelope, 1);
-  const nonce = secureNonce(channel.recvNonce, seq);
-  return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce }, channel.recvKey, toArrayBuffer(envelope.slice(9))));
+  if (!rememberSecureSequence(channel, seq)) throw new Error("secure channel response replayed");
+  const ciphertext = envelope.slice(9);
+  if (ciphertext.length > SECURE_CHANNEL_BUFFER_LIMIT) throw new Error("secure channel response is too large");
+  const wasm = await getSecureChannelWasm();
+  const pointer = wasm.a();
+  secureChannelMemory(wasm).set(ciphertext, pointer);
+  const [sequenceHigh, sequenceLow] = splitUint64(seq);
+  const outputLength = wasm.e(ciphertext.length, sequenceHigh, sequenceLow);
+  if (outputLength < 0 || outputLength > SECURE_CHANNEL_BUFFER_LIMIT) throw new Error("secure channel decryption failed");
+  return secureChannelMemory(wasm).slice(pointer, pointer + outputLength);
 }
 
-function secureNonce(base: Uint8Array, seq: number) {
-  const nonce = new Uint8Array(base);
-  const seqBytes = new Uint8Array(12);
-  writeUint64BE(seqBytes, 4, seq);
-  for (let index = 0; index < nonce.length; index += 1) nonce[index] ^= seqBytes[index];
-  return nonce;
-}
-
-function clampX25519PrivateKey(key: Uint8Array) {
-  key[0] &= 248;
-  key[31] &= 127;
-  key[31] |= 64;
-}
-
-function x25519(privateKey: Uint8Array, publicKey: Uint8Array) {
-  const scalarBytes = new Uint8Array(privateKey);
-  clampX25519PrivateKey(scalarBytes);
-  const publicBytes = new Uint8Array(publicKey);
-  publicBytes[31] &= 127;
-  const scalar = littleEndianToBigInt(scalarBytes);
-  const x1 = littleEndianToBigInt(publicBytes) % X25519_P;
-  let x2 = 1n;
-  let z2 = 0n;
-  let x3 = x1;
-  let z3 = 1n;
-  let swap = 0n;
-
-  for (let t = 254; t >= 0; t -= 1) {
-    const bit = (scalar >> BigInt(t)) & 1n;
-    swap ^= bit;
-    [x2, x3] = conditionalSwap(swap, x2, x3);
-    [z2, z3] = conditionalSwap(swap, z2, z3);
-    swap = bit;
-
-    const a = mod(x2 + z2);
-    const aa = mod(a * a);
-    const b = mod(x2 - z2);
-    const bb = mod(b * b);
-    const e = mod(aa - bb);
-    const c = mod(x3 + z3);
-    const d = mod(x3 - z3);
-    const da = mod(d * a);
-    const cb = mod(c * b);
-    x3 = mod((da + cb) ** 2n);
-    z3 = mod(x1 * mod((da - cb) ** 2n));
-    x2 = mod(aa * bb);
-    z2 = mod(e * mod(aa + 121665n * e));
+function rememberSecureSequence(channel: SecureChannel, sequence: bigint) {
+  if (sequence <= 0n) return false;
+  if (sequence > channel.recvMaxSeq) {
+    const shift = sequence - channel.recvMaxSeq;
+    channel.recvBitmap = shift >= 64n ? 0n : (channel.recvBitmap << shift) & ((1n << 64n) - 1n);
+    channel.recvMaxSeq = sequence;
+    channel.recvBitmap |= 1n;
+    return true;
   }
-  [x2, x3] = conditionalSwap(swap, x2, x3);
-  [z2, z3] = conditionalSwap(swap, z2, z3);
-  return bigIntToLittleEndian(mod(x2 * modInverse(z2)));
+  const delta = channel.recvMaxSeq - sequence;
+  if (delta >= 64n) return false;
+  const bit = 1n << delta;
+  if ((channel.recvBitmap & bit) !== 0n) return false;
+  channel.recvBitmap |= bit;
+  return true;
 }
 
-function conditionalSwap(swap: bigint, a: bigint, b: bigint): [bigint, bigint] {
-  return swap ? [b, a] : [a, b];
+function splitUint64(value: bigint): [number, number] {
+  return [Number((value >> 32n) & 0xffffffffn), Number(value & 0xffffffffn)];
 }
 
-function mod(value: bigint) {
-  const result = value % X25519_P;
-  return result >= 0n ? result : result + X25519_P;
-}
-
-function modInverse(value: bigint) {
-  return modPow(value, X25519_P - 2n);
-}
-
-function modPow(base: bigint, exponent: bigint) {
-  let result = 1n;
-  let value = mod(base);
-  let power = exponent;
-  while (power > 0n) {
-    if (power & 1n) result = mod(result * value);
-    value = mod(value * value);
-    power >>= 1n;
-  }
-  return result;
-}
-
-function littleEndianToBigInt(bytes: Uint8Array) {
-  let value = 0n;
-  for (let index = bytes.length - 1; index >= 0; index -= 1) value = (value << 8n) + BigInt(bytes[index]);
-  return value;
-}
-
-function bigIntToLittleEndian(value: bigint) {
-  const bytes = new Uint8Array(32);
+function writeUint64BE(bytes: Uint8Array, offset: number, value: bigint) {
   let current = value;
-  for (let index = 0; index < bytes.length; index += 1) {
-    bytes[index] = Number(current & 255n);
-    current >>= 8n;
-  }
-  return bytes;
-}
-
-function concatBytes(...parts: Uint8Array[]) {
-  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
-}
-
-function toArrayBuffer(bytes: Uint8Array) {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy.buffer;
-}
-
-function writeUint64BE(bytes: Uint8Array, offset: number, value: number) {
-  let current = BigInt(value);
   for (let index = 7; index >= 0; index -= 1) {
     bytes[offset + index] = Number(current & 255n);
     current >>= 8n;
@@ -394,7 +395,7 @@ function writeUint64BE(bytes: Uint8Array, offset: number, value: number) {
 function readUint64BE(bytes: Uint8Array, offset: number) {
   let value = 0n;
   for (let index = 0; index < 8; index += 1) value = (value << 8n) + BigInt(bytes[offset + index]);
-  return Number(value);
+  return value;
 }
 
 function textToBytes(value: string) {
@@ -434,6 +435,21 @@ async function requestCustomApi<T>(path: string, init?: RequestInit): Promise<T>
   return (await response.json()) as T;
 }
 
+function requestOperation<T>(token: string, operation: string, payload: unknown = null) {
+  return request<T>(joinUrl(MMWX_API_BASE_URL, "/api/v3"), token, {
+    method: "POST",
+    body: JSON.stringify({ op: operation, payload }),
+  });
+}
+
+function operationWithParams(hash: string, params: unknown[], suffix = "") {
+  const encoded = bytesToBase64(textToBytes(JSON.stringify([params, suffix])))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  return `${hash}!${encoded}`;
+}
+
 export async function login(username: string, password: string, rememberMe: boolean) {
   return request<LoginResponse>(joinUrl(MMWX_API_BASE_URL, "/api/login"), undefined, {
     method: "POST",
@@ -444,6 +460,133 @@ export async function login(username: string, password: string, rememberMe: bool
       turnstile_token: "",
     }),
   });
+}
+
+export function fetchPackages(token: string) {
+  return requestOperation<PackagesResponse>(token, "97e3e31737510104");
+}
+
+export function createPackage(token: string, body: PackagePayload) {
+  return requestOperation<PackageMutationResponse>(token, "e917e65c1964a8e3", body);
+}
+
+export function updatePackage(token: string, body: PackagePayload & { id: number }) {
+  return requestOperation<PackageMutationResponse>(token, "41cc1a7b5ae7df46", body);
+}
+
+export function deletePackage(token: string, packageId: number) {
+  return requestOperation<PackageMutationResponse>(
+    token,
+    operationWithParams("d73b8428778bd126", [packageId]),
+    { id: packageId },
+  );
+}
+
+export function fetchPackageTemplates(token: string) {
+  return requestOperation<PackageTemplatesResponse>(token, "25493fc5941face7");
+}
+
+export function fetchPackageForwardChains(token: string) {
+  return requestOperation<PackageForwardChainsResponse>(token, "d927e7f3010e60c9");
+}
+
+export function fetchForwardChains(token: string) {
+  return requestOperation<ForwardChainsResponse>(token, "d927e7f3010e60c9");
+}
+
+export function fetchForwardGroups(token: string) {
+  return requestOperation<ForwardGroupsResponse>(token, "ce24c9cd335994fe");
+}
+
+export async function fetchForwardServers(token: string) {
+  const result = await requestOperation<ForwardServersResponse | RemoteServer[]>(token, "b16e74baa40c6a77");
+  return Array.isArray(result) ? { success: true, servers: result } : result;
+}
+
+export function fetchForwardCertificates(token: string) {
+  return requestOperation<ForwardCertificatesResponse>(token, "4cb3efd640ac3fda");
+}
+
+export async function fetchForwardNodes(token: string) {
+  const result = await requestOperation<ForwardNodesResponse | XrayNode[]>(token, "b02ec184f40f46f3");
+  return Array.isArray(result) ? { success: true, nodes: result } : result;
+}
+
+export function probeForwardServers(token: string, fromServerId: number, toServerId: number) {
+  return requestOperation<ForwardProbeResponse>(token, "5f2a6b70ac6ce6c9", {
+    from_server_id: fromServerId,
+    to_server_id: toServerId,
+    timeout_ms: 3000,
+  });
+}
+
+export function probeForwardTargets(token: string, serverId: number, targets: string[]) {
+  return requestOperation<ForwardProbeResponse>(token, "9827bede7148e683", {
+    server_id: serverId,
+    targets,
+    timeout_ms: 3000,
+  });
+}
+
+export function createForwardGroup(token: string, body: Omit<ForwardGroup, "id">) {
+  return requestOperation<ForwardMutationResponse>(token, "c4d4cc7f618ee06e", body);
+}
+
+export function updateForwardGroup(token: string, groupId: number, body: Omit<ForwardGroup, "id">) {
+  return requestOperation<ForwardMutationResponse>(token, operationWithParams("f8fa871ba60b0eb1", [groupId]), body);
+}
+
+export function createForwardChain(token: string, body: {
+  name: string;
+  group_ids: number[];
+  port_range_start: number;
+  port_range_end: number;
+  dns_domain: string;
+  dns_domain_v6: string;
+  dns_provider_id: number;
+}) {
+  return requestOperation<ForwardMutationResponse>(token, "6a7a41a553bc180a", body);
+}
+
+export function updateForwardChain(token: string, chainId: number, body: {
+  port_range_start: number;
+  port_range_end: number;
+  dns_domain: string;
+  dns_domain_v6: string;
+  dns_provider_id: number;
+}) {
+  return requestOperation<ForwardMutationResponse>(token, operationWithParams("6f90132d4dc05c73", [chainId]), body);
+}
+
+export function updateForwardChainGroups(token: string, chainId: number, groupIds: number[]) {
+  return requestOperation<ForwardMutationResponse>(token, operationWithParams("0702ef1df2036182", [chainId]), {
+    group_ids: groupIds,
+  });
+}
+
+export function createForwardChainNode(token: string, chainId: number, body: {
+  node_name?: string;
+  relay_protocol: "tcp";
+  entry_separate: boolean;
+  exit_separate: boolean;
+} | {
+  existing_node_id: number;
+  port: number;
+  relay_protocol: "tcp";
+}) {
+  return requestOperation<ForwardMutationResponse>(token, operationWithParams("f88a43929a335dea", [chainId]), body);
+}
+
+export function deleteForwardChain(token: string, chainId: number) {
+  return requestOperation<ForwardMutationResponse>(token, operationWithParams("7dbacb2248bbdaf1", [chainId]));
+}
+
+export function publishCarpoolPackage(token: string, body: CarpoolPublishRequest) {
+  return requestOperation<PackageMutationResponse>(token, "8449163f7a3871b3", body);
+}
+
+export function unpublishCarpoolPackage(token: string, packageId: number) {
+  return requestOperation<PackageMutationResponse>(token, "8e84cec95bcf3f7e", { package_id: packageId });
 }
 
 export function fetchTrafficSummary(token: string) {
@@ -481,6 +624,10 @@ export function fetchMasterUrl(token: string) {
 
 export function fetchDNSProviders(token: string) {
   return request<DNSProvidersResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/dns-providers"), token);
+}
+
+export function resolveDNSHostname(token: string, hostname: string) {
+  return request<{ ips?: string[] }>(joinUrl(MMWX_API_BASE_URL, `/api/dns/resolve?hostname=${encodeURIComponent(hostname)}`), token);
 }
 
 export function fetchLocalSystemMetrics(_token: string, signal?: AbortSignal) {
@@ -732,6 +879,259 @@ export function fetchXrayInbounds(token: string, serverId: number) {
 
 export function fetchXrayNodes(token: string) {
   return request<XrayNodesResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes"), token);
+}
+
+export function fetchNodeTags(token: string) {
+  return request<NodeTagsResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes/tags"), token);
+}
+
+export function createNode(token: string, body: NodeMutationRequest) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes"), token, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function batchCreateNodes(token: string, nodes: NodeMutationRequest[]) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes/batch"), token, {
+    method: "POST",
+    body: JSON.stringify({ nodes }),
+  });
+}
+
+export function updateNode(token: string, nodeId: number, body: NodeMutationRequest) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/${encodeURIComponent(String(nodeId))}`), token, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteNode(token: string, nodeId: number, deleteInbound = false) {
+  const suffix = deleteInbound ? "?delete_inbound=true" : "";
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/${encodeURIComponent(String(nodeId))}${suffix}`), token, {
+    method: "DELETE",
+  });
+}
+
+export function clearNodes(token: string) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes/clear"), token, { method: "POST" });
+}
+
+export function batchDeleteNodes(token: string, nodeIds: number[]) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes/batch-delete"), token, {
+    method: "POST",
+    body: JSON.stringify({ node_ids: nodeIds }),
+  });
+}
+
+export function batchRenameNodes(token: string, updates: Array<{ node_id: number; new_name: string }>) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes/batch-rename"), token, {
+    method: "POST",
+    body: JSON.stringify({ updates }),
+  });
+}
+
+export function batchDisableNodeSkipCert(token: string, nodeIds: number[]) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes/batch-disable-skip-cert"), token, {
+    method: "POST",
+    body: JSON.stringify({ node_ids: nodeIds }),
+  });
+}
+
+export function batchUpdateSnellOptions(token: string, nodeIds: number[], options: { tfo?: boolean; udp_relay?: boolean }) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes/batch-snell-options"), token, {
+    method: "POST",
+    body: JSON.stringify({ node_ids: nodeIds, ...options }),
+  });
+}
+
+export function parseNodeURIs(token: string, content: string, forceNodeSkipCert: boolean) {
+  return request<NodeParseResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes/parse-uris"), token, {
+    method: "POST",
+    body: JSON.stringify({ content, force_node_skip_cert: forceNodeSkipCert }),
+  });
+}
+
+export function fetchNodeSubscription(token: string, url: string, userAgent: string, forceNodeSkipCert: boolean) {
+  return request<NodeParseResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes/fetch-subscription"), token, {
+    method: "POST",
+    body: JSON.stringify({ url, user_agent: userAgent, force_node_skip_cert: forceNodeSkipCert }),
+  });
+}
+
+export function fetchNodeURI(token: string, nodeId: number) {
+  return request<NodeURIResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/${encodeURIComponent(String(nodeId))}/uri`), token);
+}
+
+export function fetchNodeURIs(token: string) {
+  return request<{ items?: NodeURIItem[] }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/node-uris"), token);
+}
+
+export function fetchNodeTunnels(token: string) {
+  return request<{ success?: boolean; tunnels?: NodeTunnel[]; chains?: NodeTunnelChain[] }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/tunnels"), token);
+}
+
+export function createTunnelChain(token: string, body: { label: string; server_ids: number[]; entry_port: number; target_address: string; target_port: number }) {
+  return request<{ success?: boolean; entry_host?: string; entry_port?: number; message?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/tunnel-chains"), token, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function mutateRemoteInbound(token: string, serverId: number, body: Record<string, unknown>) {
+  return request<{ success?: boolean; message?: string }>(joinUrl(MMWX_API_BASE_URL, `/api/admin/remote/inbounds?server_id=${encodeURIComponent(String(serverId))}`), token, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function mutateRemoteOutbound(token: string, serverId: number, body: Record<string, unknown>) {
+  return request<{ success?: boolean; message?: string }>(joinUrl(MMWX_API_BASE_URL, `/api/admin/remote/outbounds?server_id=${encodeURIComponent(String(serverId))}`), token, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchRemoteRouting(token: string, serverId: number) {
+  return request<{ success?: boolean; routing?: { rules?: Array<Record<string, unknown>> } }>(joinUrl(MMWX_API_BASE_URL, `/api/admin/remote/routing?server_id=${encodeURIComponent(String(serverId))}`), token);
+}
+
+export function mutateRemoteRouting(token: string, serverId: number, body: Record<string, unknown>) {
+  return request<{ success?: boolean; message?: string }>(joinUrl(MMWX_API_BASE_URL, `/api/admin/remote/routing?server_id=${encodeURIComponent(String(serverId))}`), token, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchUserConfig(token: string) {
+  return request<UserConfigResponse>(joinUrl(MMWX_API_BASE_URL, "/api/user/config"), token);
+}
+
+export function updateUserConfig(token: string, body: UserConfigResponse) {
+  return request<UserConfigResponse>(joinUrl(MMWX_API_BASE_URL, "/api/user/config"), token, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function syncExternalSubscriptions(token: string, selection = true) {
+  return request<ExternalSyncResponse>(joinUrl(MMWX_API_BASE_URL, `/api/user/sync-external-subscriptions${selection ? "?selection=1" : ""}`), token, { method: "POST" });
+}
+
+export function confirmExternalSync(token: string, sessionId: string, candidateIds: string[]) {
+  return request<{ message?: string; created_count?: number }>(joinUrl(MMWX_API_BASE_URL, "/api/user/sync-external-subscriptions/confirm"), token, {
+    method: "POST",
+    body: JSON.stringify({ session_id: sessionId, candidate_ids: candidateIds }),
+  });
+}
+
+export function fetchPackageNodeTrafficName(token: string) {
+  return request<{ enabled?: boolean }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/system-settings/package-node-traffic-name"), token);
+}
+
+export function updatePackageNodeTrafficName(token: string, enabled: boolean) {
+  return request<{ enabled?: boolean }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/system-settings/package-node-traffic-name"), token, {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function fetchNodeRelatedInbounds(token: string, nodeId: number) {
+  return request<NodeRelatedInboundsResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/${encodeURIComponent(String(nodeId))}/related-inbounds`), token);
+}
+
+export function updateNodeServer(token: string, nodeId: number, server: string) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/${encodeURIComponent(String(nodeId))}/server`), token, {
+    method: "PUT",
+    body: JSON.stringify({ server }),
+  });
+}
+
+export function restoreNodeServer(token: string, nodeId: number) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/${encodeURIComponent(String(nodeId))}/restore-server`), token, {
+    method: "PUT",
+  });
+}
+
+export function updateNodeConfig(token: string, nodeId: number, clashConfig: string) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/${encodeURIComponent(String(nodeId))}/config`), token, {
+    method: "PUT",
+    body: JSON.stringify({ clash_config: clashConfig }),
+  });
+}
+
+export function setNodeRelay(token: string, nodeId: number, relayServer: string, relayPort: number) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/${encodeURIComponent(String(nodeId))}/relay`), token, {
+    method: "PUT",
+    body: JSON.stringify({ relay_server: relayServer, relay_port: relayPort }),
+  });
+}
+
+export function copyNodeWithRelay(token: string, nodeId: number, relayServer: string, relayPort: number, nameSuffix: string) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/${encodeURIComponent(String(nodeId))}/relay-copy`), token, {
+    method: "POST",
+    body: JSON.stringify({ relay_server: relayServer, relay_port: relayPort, name_suffix: nameSuffix }),
+  });
+}
+
+export function cancelNodeRelay(token: string, nodeId: number) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/${encodeURIComponent(String(nodeId))}/relay`), token, {
+    method: "DELETE",
+  });
+}
+
+export function tcpingNode(token: string, body: { host: string; port: number; timeout?: number; protocol?: string }) {
+  return request<NodeTCPingResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/tcping"), token, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function batchTcpingNodes(token: string, requests: Array<{ host: string; port: number; timeout?: number; protocol?: string }>) {
+  return request<NodeTCPingResponse[]>(joinUrl(MMWX_API_BASE_URL, "/api/admin/tcping/batch"), token, {
+    method: "POST",
+    body: JSON.stringify(requests),
+  });
+}
+
+export function fetchSpeedTestResults(token: string, nodeId?: number, latest = false) {
+  const query = latest ? "?latest=1" : nodeId ? `?node_id=${encodeURIComponent(String(nodeId))}&limit=20` : "?limit=50";
+  return request<SpeedTestResultsResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/speedtest/results${query}`), token);
+}
+
+export function runSpeedTest(token: string, body: { node_id: number; bytes?: number; url?: string; tester_id?: number; threads?: number; buf_size?: number; latency_only?: boolean }) {
+  return request<SpeedTestRunResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/speedtest/run"), token, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchSpeedTesters(token: string) {
+  return request<SpeedTestersResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/speedtest/testers"), token);
+}
+
+export function createNodeTempSubscription(token: string, proxies: Array<Record<string, unknown>>, maxAccess: number, expireSeconds: number) {
+  return request<NodeTempSubscriptionResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/temp-subscription"), token, {
+    method: "POST",
+    body: JSON.stringify({ proxies, max_access: maxAccess, expire_seconds: expireSeconds }),
+  });
+}
+
+export function fetchRoutedOutbounds(token: string, parentNodeId: number) {
+  return request<{ items?: Array<Record<string, unknown>> }>(joinUrl(MMWX_API_BASE_URL, `/api/admin/routed-outbound?parent_id=${encodeURIComponent(String(parentNodeId))}`), token);
+}
+
+export function createRoutedOutbound(token: string, body: { parent_node_id: number; target_node_id?: number; label: string; outbound: Record<string, unknown>; node_name?: string }) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/routed-outbound"), token, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteRoutedOutbound(token: string, id: number) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/routed-outbound?id=${encodeURIComponent(String(id))}`), token, {
+    method: "DELETE",
+  });
 }
 
 export function fetchXrayUsers(token: string) {
