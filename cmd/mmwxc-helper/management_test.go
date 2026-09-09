@@ -103,3 +103,30 @@ func TestCurrentTestBinaryMatchesELFArchitecture(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCopyRequiredCoreAssets(t *testing.T) {
+	source := t.TempDir()
+	destination := t.TempDir()
+	for _, name := range []string{"geoip.dat", "geosite.dat"} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte("fixture-"+name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := []byte(`{"routing":{"rules":[{"ip":["geoip:cn"]},{"domain":["geosite:cn"]}]}}`)
+	if err := copyRequiredCoreAssets(config, destination, []string{source}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"geoip.dat", "geosite.dat"} {
+		data, err := os.ReadFile(filepath.Join(destination, name))
+		if err != nil || string(data) != "fixture-"+name {
+			t.Fatalf("asset %s was not copied exactly: %q err=%v", name, data, err)
+		}
+	}
+}
+
+func TestCopyRequiredCoreAssetsFailsClosed(t *testing.T) {
+	config := []byte(`{"routing":{"rules":[{"ip":["geoip:cn"]}]}}`)
+	if err := copyRequiredCoreAssets(config, t.TempDir(), []string{t.TempDir()}); err == nil {
+		t.Fatal("missing required asset was accepted")
+	}
+}

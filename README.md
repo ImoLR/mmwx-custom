@@ -87,7 +87,7 @@ The following endpoints are available:
 
 ## Connections Helper
 
-`mmwxc-helper v0.3.1` is the Custom Agent. It is completely independent
+`mmwxc-helper v0.3.2` is the Custom Agent. It is completely independent
 from the official `mmw-agent`: it does not modify or replace the official
 Agent, and the official Agent can continue to follow upstream upgrades.
 
@@ -139,7 +139,7 @@ After registration, the controller can enqueue only these signed actions:
 
 ```text
 helper.status helper.version helper.update
-core.status core.version core.install core.update core.restart core.rollback core.config.apply
+core.status core.version core.install core.update core.restart core.stop core.rollback core.config.apply
 connection.status connection.settings
 ```
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"debug/elf"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -340,6 +342,9 @@ func (manager *lifecycleManager) applyCoreConfig(ctx context.Context, config jso
 	if err := os.MkdirAll(filepath.Dir(coreConfigPath), 0700); err != nil {
 		return err
 	}
+	if err := ensureCoreAssets(config); err != nil {
+		return err
+	}
 	staged, err := os.CreateTemp(filepath.Dir(coreConfigPath), "config-*.json")
 	if err != nil {
 		return err
@@ -406,6 +411,120 @@ func (manager *lifecycleManager) applyCoreConfig(ctx context.Context, config jso
 	return nil
 }
 
+func ensureCoreAssets(config []byte) error {
+	return copyRequiredCoreAssets(config, filepath.Dir(coreBinaryPath), coreAssetCandidates())
+}
+
+func copyRequiredCoreAssets(config []byte, destination string, candidates []string) error {
+	required := make([]string, 0, 2)
+	for _, asset := range []string{"geoip.dat", "geosite.dat"} {
+		prefix := strings.TrimSuffix(asset, ".dat") + ":"
+		if bytes.Contains(config, []byte(prefix)) {
+			required = append(required, asset)
+		}
+	}
+	for _, asset := range required {
+		target := filepath.Join(destination, asset)
+		if info, err := os.Stat(target); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+			continue
+		}
+		source := ""
+		for _, directory := range candidates {
+			candidate := filepath.Join(directory, asset)
+			if filepath.Clean(candidate) == filepath.Clean(target) {
+				continue
+			}
+			if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+				source = candidate
+				break
+			}
+		}
+		if source == "" {
+			return fmt.Errorf("required Xray asset %s was not found", asset)
+		}
+		if err := copyFile(source, target+".new", 0644); err != nil {
+			return fmt.Errorf("copy Xray asset %s: %w", asset, err)
+		}
+		if err := os.Rename(target+".new", target); err != nil {
+			_ = os.Remove(target + ".new")
+			return fmt.Errorf("install Xray asset %s: %w", asset, err)
+		}
+	}
+	return nil
+}
+
+func coreAssetCandidates() []string {
+	candidates := []string{
+		"/usr/local/share/xray", "/usr/share/xray", "/opt/share/xray",
+		"/usr/local/etc/xray", "/etc/xray", "/etc/mmwx/xray", "/etc/mmwx/data/xray",
+		"/etc/mmwx/data", "/etc/mmwx", "/var/lib/mmwx/xray", "/opt/mmwx/xray", "/opt/mmwx",
+	}
+	entries, err := os.ReadDir("/proc")
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			if _, err := strconv.Atoi(entry.Name()); err != nil {
+				continue
+			}
+			processRoot := filepath.Join("/proc", entry.Name())
+			cmdline, err := os.ReadFile(filepath.Join(processRoot, "cmdline"))
+			lowerCmdline := bytes.ToLower(cmdline)
+			if err != nil || (!bytes.Contains(lowerCmdline, []byte("xray")) && !bytes.Contains(lowerCmdline, []byte("mmw-agent"))) {
+				continue
+			}
+			if executable, err := os.Readlink(filepath.Join(processRoot, "exe")); err == nil {
+				candidates = append(candidates, filepath.Dir(executable))
+			}
+			if cwd, err := os.Readlink(filepath.Join(processRoot, "cwd")); err == nil {
+				candidates = append(candidates, cwd)
+			}
+			if environment, err := os.ReadFile(filepath.Join(processRoot, "environ")); err == nil {
+				for _, value := range bytes.Split(environment, []byte{0}) {
+					for _, prefix := range [][]byte{[]byte("XRAY_LOCATION_ASSET="), []byte("xray.location.asset=")} {
+						if bytes.HasPrefix(value, prefix) {
+							candidates = append(candidates, string(bytes.TrimPrefix(value, prefix)))
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, root := range []string{"/etc/mmwx", "/opt/mmwx", "/var/lib/mmwx", "/usr/local/etc/xray"} {
+		rootDepth := strings.Count(filepath.Clean(root), string(os.PathSeparator))
+		_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				if entry != nil && entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if entry.IsDir() && strings.Count(filepath.Clean(path), string(os.PathSeparator))-rootDepth > 5 {
+				return filepath.SkipDir
+			}
+			if !entry.IsDir() && (entry.Name() == "geoip.dat" || entry.Name() == "geosite.dat") {
+				candidates = append(candidates, filepath.Dir(path))
+			}
+			return nil
+		})
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	result := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = filepath.Clean(strings.TrimSpace(candidate))
+		if candidate == "." || candidate == "/" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		result = append(result, candidate)
+	}
+	return result
+}
+
 func (manager *lifecycleManager) restoreConfigAfterFailure(ctx context.Context, backup string, wasActive bool, cause error) error {
 	if backup == "" {
 		if !wasActive {
@@ -442,6 +561,16 @@ func (manager *lifecycleManager) restartCore(ctx context.Context) error {
 		return err
 	}
 	return manager.waitCoreReady(ctx, 20*time.Second)
+}
+
+func (manager *lifecycleManager) stopCore(ctx context.Context) error {
+	if err := systemctl(ctx, "disable", "--now", coreServiceName); err != nil {
+		return err
+	}
+	if serviceActive(ctx, coreServiceName) {
+		return errors.New("Custom Core remained active after stop")
+	}
+	return nil
 }
 
 func (manager *lifecycleManager) rollbackCore(ctx context.Context) error {

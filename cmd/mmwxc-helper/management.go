@@ -77,7 +77,7 @@ type managementReport struct {
 
 var helperCapabilities = []string{
 	"helper.status", "helper.version", "helper.update",
-	"core.status", "core.version", "core.install", "core.update", "core.restart", "core.rollback", "core.config.apply",
+	"core.status", "core.version", "core.install", "core.update", "core.restart", "core.stop", "core.rollback", "core.config.apply",
 	"connection.status", "connection.settings",
 }
 
@@ -180,6 +180,8 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 		}
 	case "core.restart":
 		err = executor.lifecycle.restartCore(ctx)
+	case "core.stop":
+		err = executor.lifecycle.stopCore(ctx)
 	case "core.rollback":
 		err = executor.lifecycle.rollbackCore(ctx)
 	case "core.config.apply":

@@ -103,6 +103,18 @@ func TestManagementRejectsUnsafeActionsAndArtifacts(t *testing.T) {
 	}
 }
 
+func TestCoreStopIsExplicitlyAllowlistedWithoutPayload(t *testing.T) {
+	if _, ok := managementActions["core.stop"]; !ok {
+		t.Fatal("core.stop is not allowlisted")
+	}
+	if err := validateManagementPayload("core.stop", nil); err != nil {
+		t.Fatalf("core.stop rejected empty payload: %v", err)
+	}
+	if err := validateManagementPayload("core.stop", json.RawMessage(`{"force":true}`)); err == nil {
+		t.Fatal("core.stop accepted an unexpected payload")
+	}
+}
+
 func TestAgentManagementEndpointRequiresIndependentOperatorToken(t *testing.T) {
 	state, err := openHelperState(filepath.Join(t.TempDir(), "helper-state.json"), time.Minute)
 	if err != nil {
