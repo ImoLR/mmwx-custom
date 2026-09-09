@@ -81,7 +81,7 @@ var helperCapabilities = []string{
 	"core.status", "core.version", "core.install", "core.update", "core.restart", "core.stop", "core.rollback", "core.config.apply",
 	"official.xray.stop", "official.xray.start",
 	"official.xray.attach-custom", "official.xray.detach-custom",
-	"external.ownership.status", "external.ownership.prepare", "external.ownership.activate", "external.ownership.rollback",
+	"external.ownership.status", "external.ownership.prepare", "external.ownership.arm", "external.ownership.activate", "external.ownership.rollback",
 	"connection.status", "connection.settings",
 }
 
@@ -218,6 +218,8 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 		data = executor.lifecycle.externalOwnershipStatus(ctx, &executor.state.ExternalOwnership)
 	case "external.ownership.prepare":
 		err = executor.lifecycle.prepareExternalOwnership(ctx, &executor.state.ExternalOwnership)
+	case "external.ownership.arm":
+		err = executor.lifecycle.armExternalOwnership(ctx, &executor.state.ExternalOwnership)
 	case "external.ownership.activate":
 		err = executor.lifecycle.activateExternalOwnership(ctx, &executor.state.ExternalOwnership)
 	case "external.ownership.rollback":

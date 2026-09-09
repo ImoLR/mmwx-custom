@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,7 +92,7 @@ func TestInboundPortsFromOfficialConfig(t *testing.T) {
 func TestExternalOwnershipStateRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	state := localState{ExternalOwnership: externalOwnershipState{
-		Prepared: true, Enabled: true, BackupDir: "/rollback/snapshot",
+		Prepared: true, Armed: true, Enabled: true, BackupDir: "/rollback/snapshot",
 		ExpectedCoreSHA: strings.Repeat("a", 64), LastGoodConfigSHA: strings.Repeat("b", 64),
 	}}
 	if err := saveLocalState(path, state); err != nil {
@@ -101,7 +102,33 @@ func TestExternalOwnershipStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reloaded.ExternalOwnership.Enabled || reloaded.ExternalOwnership.BackupDir != state.ExternalOwnership.BackupDir || reloaded.ExternalOwnership.ExpectedCoreSHA != state.ExternalOwnership.ExpectedCoreSHA {
+	if !reloaded.ExternalOwnership.Armed || !reloaded.ExternalOwnership.Enabled || reloaded.ExternalOwnership.BackupDir != state.ExternalOwnership.BackupDir || reloaded.ExternalOwnership.ExpectedCoreSHA != state.ExternalOwnership.ExpectedCoreSHA {
 		t.Fatalf("ownership state was not preserved: %#v", reloaded.ExternalOwnership)
+	}
+}
+
+func TestArmExternalOwnershipStopsBothServicesWithoutStartingXray(t *testing.T) {
+	var calls []string
+	active := map[string]bool{"xray.service": true, coreServiceName: true}
+	run := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		if len(args) >= 2 && args[0] == "stop" && args[1] == "xray.service" {
+			active["xray.service"] = false
+		}
+		if len(args) >= 3 && args[0] == "disable" && args[1] == "--now" && args[2] == coreServiceName {
+			active[coreServiceName] = false
+		}
+		return nil
+	}
+	probe := func(_ context.Context, service string) bool { return active[service] }
+	if err := armExternalOwnershipServices(context.Background(), run, probe); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(calls, "|")
+	if joined != "stop xray.service|disable --now mmwxc-core.service" {
+		t.Fatalf("unexpected handoff sequence: %s", joined)
+	}
+	if strings.Contains(joined, "start") || strings.Contains(joined, "restart") {
+		t.Fatalf("armed handoff must not start xray: %s", joined)
 	}
 }

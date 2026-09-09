@@ -30,7 +30,7 @@ var managementActions = map[string]struct{}{
 	"core.restart": {}, "core.stop": {}, "core.rollback": {}, "core.config.apply": {},
 	"official.xray.stop": {}, "official.xray.start": {},
 	"official.xray.attach-custom": {}, "official.xray.detach-custom": {},
-	"external.ownership.status": {}, "external.ownership.prepare": {}, "external.ownership.activate": {}, "external.ownership.rollback": {},
+	"external.ownership.status": {}, "external.ownership.prepare": {}, "external.ownership.arm": {}, "external.ownership.activate": {}, "external.ownership.rollback": {},
 	"connection.status": {}, "connection.settings": {},
 }
 
@@ -245,7 +245,7 @@ func validateManagementPayload(action string, payload json.RawMessage) error {
 		return errors.New("management payload too large")
 	}
 	switch action {
-	case "helper.status", "helper.version", "core.status", "core.version", "core.restart", "core.stop", "core.rollback", "official.xray.stop", "official.xray.start", "official.xray.attach-custom", "official.xray.detach-custom", "external.ownership.status", "external.ownership.prepare", "external.ownership.activate", "external.ownership.rollback", "connection.status", "connection.settings":
+	case "helper.status", "helper.version", "core.status", "core.version", "core.restart", "core.stop", "core.rollback", "official.xray.stop", "official.xray.start", "official.xray.attach-custom", "official.xray.detach-custom", "external.ownership.status", "external.ownership.prepare", "external.ownership.arm", "external.ownership.activate", "external.ownership.rollback", "connection.status", "connection.settings":
 		if len(strings.TrimSpace(string(payload))) > 0 && string(payload) != "{}" && string(payload) != "null" {
 			return errors.New("action does not accept payload")
 		}

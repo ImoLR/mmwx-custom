@@ -160,7 +160,7 @@ func TestOfficialXrayCutoverActionsAreAllowlistedWithoutPayload(t *testing.T) {
 }
 
 func TestExternalOwnershipActionsAreAllowlistedWithoutPayload(t *testing.T) {
-	for _, action := range []string{"external.ownership.status", "external.ownership.prepare", "external.ownership.activate", "external.ownership.rollback"} {
+	for _, action := range []string{"external.ownership.status", "external.ownership.prepare", "external.ownership.arm", "external.ownership.activate", "external.ownership.rollback"} {
 		if _, ok := managementActions[action]; !ok {
 			t.Fatalf("%s is not allowlisted", action)
 		}

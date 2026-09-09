@@ -61,6 +61,7 @@ LimitNOFILE=1048576
 
 type externalOwnershipState struct {
 	Prepared          bool      `json:"prepared,omitempty"`
+	Armed             bool      `json:"armed,omitempty"`
 	Enabled           bool      `json:"enabled,omitempty"`
 	BackupDir         string    `json:"backup_dir,omitempty"`
 	ExpectedCoreSHA   string    `json:"expected_core_sha256,omitempty"`
@@ -73,6 +74,7 @@ type externalOwnershipState struct {
 
 type externalOwnershipStatus struct {
 	Prepared         bool      `json:"prepared"`
+	Armed            bool      `json:"armed"`
 	Enabled          bool      `json:"enabled"`
 	ServiceOwned     bool      `json:"service_owned"`
 	RuntimeOwned     bool      `json:"runtime_owned"`
@@ -85,6 +87,51 @@ type externalOwnershipStatus struct {
 	LastRepairAt     time.Time `json:"last_repair_at,omitempty"`
 	LastRepairReason string    `json:"last_repair_reason,omitempty"`
 	Error            string    `json:"error,omitempty"`
+}
+
+// armExternalOwnership performs the downtime-bounded half of an external-mode
+// handoff. It installs the ownership drop-in and releases the production ports,
+// but deliberately leaves xray.service stopped. The controller can then ask the
+// official Agent to switch from embedded to external; the Agent's normal
+// systemd start will execute the pinned Fork Core. A failed controller switch
+// can be undone with external.ownership.rollback.
+func (manager *lifecycleManager) armExternalOwnership(ctx context.Context, state *externalOwnershipState) error {
+	if !state.Prepared || state.BackupDir == "" {
+		return errors.New("external ownership is not prepared")
+	}
+	if state.Enabled {
+		return errors.New("external ownership is already enabled")
+	}
+	if err := validateOwnedCoreAndConfig(ctx); err != nil {
+		return err
+	}
+	if _, _, err := ensureOwnershipFiles(); err != nil {
+		return err
+	}
+	if err := systemctl(ctx, "daemon-reload"); err != nil {
+		return err
+	}
+	if err := armExternalOwnershipServices(ctx, systemctl, serviceActive); err != nil {
+		return err
+	}
+	state.Armed = true
+	state.Enabled = true
+	state.LastRepairAt = time.Now().UTC()
+	state.LastRepairReason = "armed for official Agent external handoff"
+	return nil
+}
+
+func armExternalOwnershipServices(ctx context.Context, run systemctlRunner, active serviceActiveProbe) error {
+	if err := run(ctx, "stop", "xray.service"); err != nil && active(ctx, "xray.service") {
+		return err
+	}
+	if err := run(ctx, "disable", "--now", coreServiceName); err != nil && active(ctx, coreServiceName) {
+		return err
+	}
+	if active(ctx, coreServiceName) || active(ctx, "xray.service") {
+		return errors.New("external ownership handoff could not release the Core services")
+	}
+	return nil
 }
 
 type ownershipPathBackup struct {
@@ -186,6 +233,7 @@ func (manager *lifecycleManager) activateExternalOwnership(ctx context.Context, 
 		return fmt.Errorf("external ownership activation failed; previous local service state restored: %w", activationErr)
 	}
 	state.Enabled = true
+	state.Armed = false
 	state.LastRepairAt = time.Now().UTC()
 	state.LastRepairReason = "activated"
 	return nil
@@ -272,6 +320,12 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 		reasons = append(reasons, "last-good official config restored")
 	}
 	status := manager.externalOwnershipStatus(ctx, state)
+	if state.Armed && status.ServiceActive && status.RuntimeOwned && status.SingleCore && status.CoreReady {
+		state.Armed = false
+		state.LastRepairAt = time.Now().UTC()
+		state.LastRepairReason = "official Agent external handoff completed"
+		return nil
+	}
 	if status.ServiceActive && !status.RuntimeOwned {
 		reasons = append(reasons, "wrong runtime binary replaced")
 	}
@@ -298,7 +352,7 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 
 func (manager *lifecycleManager) externalOwnershipStatus(ctx context.Context, state *externalOwnershipState) externalOwnershipStatus {
 	status := externalOwnershipStatus{
-		Prepared: state.Prepared, Enabled: state.Enabled, LastRepairAt: state.LastRepairAt,
+		Prepared: state.Prepared, Armed: state.Armed, Enabled: state.Enabled, LastRepairAt: state.LastRepairAt,
 		LastRepairReason: state.LastRepairReason, OfficialConfig: false,
 	}
 	status.ServiceOwned = exactFileContents(ownershipDropInPath, ownershipDropIn)
