@@ -79,6 +79,7 @@ var helperCapabilities = []string{
 	"helper.status", "helper.version", "helper.update",
 	"core.status", "core.version", "core.install", "core.update", "core.restart", "core.stop", "core.rollback", "core.config.apply",
 	"official.xray.stop", "official.xray.start",
+	"official.xray.attach-custom", "official.xray.detach-custom",
 	"connection.status", "connection.settings",
 }
 
@@ -187,6 +188,10 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 		err = executor.lifecycle.stopOfficialXray(ctx)
 	case "official.xray.start":
 		err = executor.lifecycle.startOfficialXray(ctx)
+	case "official.xray.attach-custom":
+		err = executor.lifecycle.attachCustomCoreAsOfficialXray(ctx)
+	case "official.xray.detach-custom":
+		err = executor.lifecycle.detachCustomCoreAsOfficialXray(ctx)
 	case "core.rollback":
 		err = executor.lifecycle.rollbackCore(ctx)
 	case "core.config.apply":

@@ -45,6 +45,27 @@ func TestControlOfficialXrayUsesPersistentSystemdActions(t *testing.T) {
 	}
 }
 
+func TestServiceAliasLifecycleRejectsUnexpectedFiles(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "xray.service")
+	target := filepath.Join(directory, "mmwxc-core.service")
+	if err := ensureServiceAlias(path, target); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.Readlink(path); err != nil || got != target {
+		t.Fatalf("alias = %q, err=%v", got, err)
+	}
+	if err := removeServiceAlias(path, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("owned by another service"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureServiceAlias(path, target); err == nil {
+		t.Fatal("unexpected regular unit file was replaced")
+	}
+}
+
 func signedTestCommand(t *testing.T, token, action string, payload json.RawMessage) managementCommand {
 	t.Helper()
 	now := time.Now().UTC()

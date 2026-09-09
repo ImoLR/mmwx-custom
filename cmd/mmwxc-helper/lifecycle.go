@@ -30,6 +30,7 @@ const (
 	coreConfigPath    = "/etc/mmwxc/core/config.json"
 	coreServicePath   = "/etc/systemd/system/mmwxc-core.service"
 	coreServiceName   = "mmwxc-core.service"
+	officialXrayPath  = "/etc/systemd/system/xray.service"
 	rollbackRoot      = "/var/lib/mmwxc/rollback"
 	stagingRoot       = "/var/lib/mmwxc/staging"
 	maxRollbackFiles  = 2
@@ -622,6 +623,74 @@ func (manager *lifecycleManager) stopOfficialXray(ctx context.Context) error {
 
 func (manager *lifecycleManager) startOfficialXray(ctx context.Context) error {
 	return controlOfficialXray(ctx, "start", systemctl, serviceActive)
+}
+
+func ensureServiceAlias(path, target string) error {
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("refusing to replace non-symlink unit at %s", path)
+		}
+		current, err := os.Readlink(path)
+		if err != nil {
+			return err
+		}
+		if current == target {
+			return nil
+		}
+		if current != "/dev/null" {
+			return fmt.Errorf("refusing to replace unexpected unit symlink %s -> %s", path, current)
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.Symlink(target, path)
+}
+
+func removeServiceAlias(path, target string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("refusing to remove non-symlink unit at %s", path)
+	}
+	current, err := os.Readlink(path)
+	if err != nil {
+		return err
+	}
+	if current != target {
+		return fmt.Errorf("refusing to remove unexpected unit symlink %s -> %s", path, current)
+	}
+	return os.Remove(path)
+}
+
+func (manager *lifecycleManager) attachCustomCoreAsOfficialXray(ctx context.Context) error {
+	if _, err := os.Stat(coreServicePath); err != nil {
+		return errors.New("Custom Core service is not prepared")
+	}
+	if err := systemctl(ctx, "stop", "xray.service"); err != nil {
+		return err
+	}
+	if err := ensureServiceAlias(officialXrayPath, coreServicePath); err != nil {
+		return err
+	}
+	return systemctl(ctx, "daemon-reload")
+}
+
+func (manager *lifecycleManager) detachCustomCoreAsOfficialXray(ctx context.Context) error {
+	if err := systemctl(ctx, "stop", coreServiceName); err != nil {
+		return err
+	}
+	if err := removeServiceAlias(officialXrayPath, coreServicePath); err != nil {
+		return err
+	}
+	return systemctl(ctx, "daemon-reload")
 }
 
 func (manager *lifecycleManager) rollbackCore(ctx context.Context) error {

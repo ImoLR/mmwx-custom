@@ -146,7 +146,7 @@ func TestCoreStopIsExplicitlyAllowlistedWithoutPayload(t *testing.T) {
 }
 
 func TestOfficialXrayCutoverActionsAreAllowlistedWithoutPayload(t *testing.T) {
-	for _, action := range []string{"official.xray.stop", "official.xray.start"} {
+	for _, action := range []string{"official.xray.stop", "official.xray.start", "official.xray.attach-custom", "official.xray.detach-custom"} {
 		if _, ok := managementActions[action]; !ok {
 			t.Fatalf("%s is not allowlisted", action)
 		}
