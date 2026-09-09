@@ -145,6 +145,20 @@ func TestCoreStopIsExplicitlyAllowlistedWithoutPayload(t *testing.T) {
 	}
 }
 
+func TestOfficialXrayCutoverActionsAreAllowlistedWithoutPayload(t *testing.T) {
+	for _, action := range []string{"official.xray.stop", "official.xray.start"} {
+		if _, ok := managementActions[action]; !ok {
+			t.Fatalf("%s is not allowlisted", action)
+		}
+		if err := validateManagementPayload(action, nil); err != nil {
+			t.Fatalf("%s rejected empty payload: %v", action, err)
+		}
+		if err := validateManagementPayload(action, json.RawMessage(`{"force":true}`)); err == nil {
+			t.Fatalf("%s accepted an unexpected payload", action)
+		}
+	}
+}
+
 func TestAgentManagementEndpointRequiresIndependentOperatorToken(t *testing.T) {
 	state, err := openHelperState(filepath.Join(t.TempDir(), "helper-state.json"), time.Minute)
 	if err != nil {

@@ -28,6 +28,7 @@ var managementActions = map[string]struct{}{
 	"helper.status": {}, "helper.version": {}, "helper.update": {},
 	"core.status": {}, "core.version": {}, "core.install": {}, "core.update": {},
 	"core.restart": {}, "core.stop": {}, "core.rollback": {}, "core.config.apply": {},
+	"official.xray.stop": {}, "official.xray.start": {},
 	"connection.status": {}, "connection.settings": {},
 }
 
@@ -225,7 +226,7 @@ func validateManagementPayload(action string, payload json.RawMessage) error {
 		return errors.New("management payload too large")
 	}
 	switch action {
-	case "helper.status", "helper.version", "core.status", "core.version", "core.restart", "core.stop", "core.rollback", "connection.status", "connection.settings":
+	case "helper.status", "helper.version", "core.status", "core.version", "core.restart", "core.stop", "core.rollback", "official.xray.stop", "official.xray.start", "connection.status", "connection.settings":
 		if len(strings.TrimSpace(string(payload))) > 0 && string(payload) != "{}" && string(payload) != "null" {
 			return errors.New("action does not accept payload")
 		}
