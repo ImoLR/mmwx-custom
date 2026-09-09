@@ -1,14 +1,47 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestControlOfficialXrayUsesPersistentSystemdActions(t *testing.T) {
+	var calls [][]string
+	active := true
+	run := func(_ context.Context, args ...string) error {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) > 0 && args[0] == "disable" {
+			active = false
+		}
+		if len(args) > 0 && args[0] == "enable" {
+			active = true
+		}
+		return nil
+	}
+	probe := func(_ context.Context, service string) bool {
+		if service != "xray.service" {
+			t.Fatalf("unexpected service probe: %s", service)
+		}
+		return active
+	}
+	if err := controlOfficialXray(context.Background(), "stop", run, probe); err != nil {
+		t.Fatal(err)
+	}
+	if err := controlOfficialXray(context.Background(), "start", run, probe); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{{"disable", "--now", "xray.service"}, {"enable", "--now", "xray.service"}}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("systemctl calls = %#v, want %#v", calls, want)
+	}
+}
 
 func signedTestCommand(t *testing.T, token, action string, payload json.RawMessage) managementCommand {
 	t.Helper()

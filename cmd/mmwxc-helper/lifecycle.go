@@ -573,6 +573,39 @@ func (manager *lifecycleManager) stopCore(ctx context.Context) error {
 	return nil
 }
 
+type systemctlRunner func(context.Context, ...string) error
+type serviceActiveProbe func(context.Context, string) bool
+
+func controlOfficialXray(ctx context.Context, action string, run systemctlRunner, active serviceActiveProbe) error {
+	switch action {
+	case "stop":
+		if err := run(ctx, "disable", "--now", "xray.service"); err != nil {
+			return err
+		}
+		if active(ctx, "xray.service") {
+			return errors.New("official Xray remained active after disable --now")
+		}
+	case "start":
+		if err := run(ctx, "enable", "--now", "xray.service"); err != nil {
+			return err
+		}
+		if !active(ctx, "xray.service") {
+			return errors.New("official Xray remained inactive after enable --now")
+		}
+	default:
+		return errors.New("unsupported official Xray action")
+	}
+	return nil
+}
+
+func (manager *lifecycleManager) stopOfficialXray(ctx context.Context) error {
+	return controlOfficialXray(ctx, "stop", systemctl, serviceActive)
+}
+
+func (manager *lifecycleManager) startOfficialXray(ctx context.Context) error {
+	return controlOfficialXray(ctx, "start", systemctl, serviceActive)
+}
+
 func (manager *lifecycleManager) rollbackCore(ctx context.Context) error {
 	backup, err := latestRollback("core")
 	if err != nil {

@@ -78,6 +78,7 @@ type managementReport struct {
 var helperCapabilities = []string{
 	"helper.status", "helper.version", "helper.update",
 	"core.status", "core.version", "core.install", "core.update", "core.restart", "core.stop", "core.rollback", "core.config.apply",
+	"official.xray.stop", "official.xray.start",
 	"connection.status", "connection.settings",
 }
 
@@ -182,6 +183,10 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 		err = executor.lifecycle.restartCore(ctx)
 	case "core.stop":
 		err = executor.lifecycle.stopCore(ctx)
+	case "official.xray.stop":
+		err = executor.lifecycle.stopOfficialXray(ctx)
+	case "official.xray.start":
+		err = executor.lifecycle.startOfficialXray(ctx)
 	case "core.rollback":
 		err = executor.lifecycle.rollbackCore(ctx)
 	case "core.config.apply":
