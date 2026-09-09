@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,6 +23,7 @@ func TestControlOfficialXrayUsesPersistentSystemdActions(t *testing.T) {
 		}
 		if len(args) > 0 && args[0] == "start" {
 			active = true
+			return errors.New("generated unit is not visible yet")
 		}
 		return nil
 	}

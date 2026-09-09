@@ -589,11 +589,23 @@ func controlOfficialXray(ctx context.Context, action string, run systemctlRunner
 		if err := run(ctx, "unmask", "xray.service"); err != nil {
 			return err
 		}
-		if err := run(ctx, "start", "xray.service"); err != nil {
-			return err
-		}
-		if !active(ctx, "xray.service") {
-			return errors.New("official Xray remained inactive after unmask and start")
+		startErr := run(ctx, "start", "xray.service")
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			if active(ctx, "xray.service") {
+				return nil
+			}
+			if time.Now().After(deadline) {
+				if startErr != nil {
+					return fmt.Errorf("official Xray remained inactive after unmask: %w", startErr)
+				}
+				return errors.New("official Xray remained inactive after unmask and start")
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(500 * time.Millisecond):
+			}
 		}
 	default:
 		return errors.New("unsupported official Xray action")
