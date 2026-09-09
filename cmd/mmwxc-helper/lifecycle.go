@@ -674,7 +674,7 @@ func (manager *lifecycleManager) attachCustomCoreAsOfficialXray(ctx context.Cont
 	if _, err := os.Stat(coreServicePath); err != nil {
 		return errors.New("Custom Core service is not prepared")
 	}
-	if err := systemctl(ctx, "stop", "xray.service"); err != nil {
+	if err := systemctl(ctx, "stop", "xray.service"); err != nil && serviceActive(ctx, "xray.service") {
 		return err
 	}
 	if err := ensureServiceAlias(officialXrayPath, coreServicePath); err != nil {
