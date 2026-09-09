@@ -180,8 +180,20 @@ func (s *helperState) acceptManagementReport(serverID string, report *management
 		if report.Result != nil {
 			expected, err := signManagementResult(*report.Result, identity.HelperTokenHash)
 			if err != nil || subtle.ConstantTimeCompare([]byte(expected), []byte(report.Result.Signature)) != 1 {
-				return nil, errors.New("invalid management result signature")
+				queued := false
+				for _, command := range s.data.ManagementCommands[serverID] {
+					if command.ID == report.Result.CommandID {
+						queued = true
+						break
+					}
+				}
+				if queued {
+					return nil, errors.New("invalid management result signature")
+				}
+				report.Result = nil
 			}
+		}
+		if report.Result != nil {
 			commands := s.data.ManagementCommands[serverID]
 			if len(commands) > 0 && commands[0].ID == report.Result.CommandID && commands[0].Action == report.Result.Action {
 				s.data.ManagementCommands[serverID] = commands[1:]

@@ -87,6 +87,36 @@ func TestManagementCommandAndSignedResultRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStaleInvalidResultDoesNotBlockNextCommand(t *testing.T) {
+	state, err := openHelperState(filepath.Join(t.TempDir(), "helper-state.json"), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.recordLegacyReporter("7", "helper-token", "v0.1.0")
+	stale, err := state.enqueueManagementCommand("7", "core.config.apply", json.RawMessage(`{"config":{},"activate":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	state.data.ManagementCommands["7"] = nil
+	state.mu.Unlock()
+	next, err := state.enqueueManagementCommand("7", "helper.status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := &managementResult{CommandID: stale.ID, Action: stale.Action, Success: false, Message: "legacy result", CompletedAt: time.Now().UTC(), Signature: "invalid"}
+	delivered, err := state.acceptManagementReport("7", &managementReport{Result: corrupt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivered == nil || delivered.ID != next.ID {
+		t.Fatalf("next command was not delivered: %#v", delivered)
+	}
+	if len(state.data.ManagementResults["7"]) != 0 {
+		t.Fatal("stale invalid result was added to history")
+	}
+}
+
 func TestManagementRejectsUnsafeActionsAndArtifacts(t *testing.T) {
 	for _, action := range []string{"exec", "shell", "systemd.restart", "file.upload"} {
 		if _, ok := managementActions[action]; ok {
