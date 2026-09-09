@@ -98,17 +98,26 @@ verify_asset() {
   local name="$1" file="$2" expected actual
   expected="$(awk -v name="$name" '$2==name || $2=="*"name {print $1; exit}' "$tmp/checksums.txt")"
   [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "missing checksum for $name" >&2; exit 1; }
-  actual="$(sha256sum "$file" | awk '{print $1}')"
+  actual="$(sha256sum "$file")"
+  actual="${actual%%[[:space:]]*}"
   [[ "${actual,,}" == "${expected,,}" ]] || { echo "checksum mismatch for $name" >&2; exit 1; }
 }
 
 verify_elf() {
   local file="$1" expected_arch="$2" magic machine expected_machine
-  magic="$(od -An -tx1 -N4 "$file" | tr -d '[:space:]')"
+  magic="$(od -An -tx1 -N4 "$file")"
+  magic="${magic//[[:space:]]/}"
   [[ "$magic" == "7f454c46" ]] || { echo "artifact is not an ELF binary: $file" >&2; exit 1; }
-  machine="$(od -An -tu2 -j18 -N2 "$file" | tr -d '[:space:]')"
+  machine="$(od -An -tu2 -j18 -N2 "$file")"
+  machine="${machine//[[:space:]]/}"
   case "$expected_arch" in amd64) expected_machine=62 ;; arm64) expected_machine=183 ;; esac
   [[ "$machine" == "$expected_machine" ]] || { echo "artifact architecture mismatch: $file" >&2; exit 1; }
+}
+
+file_sha256() {
+  local output
+  output="$(sha256sum "$1")"
+  printf '%s\n' "${output%%[[:space:]]*}"
 }
 
 rotate_backups() {
@@ -143,8 +152,12 @@ verify_asset "mmwxc-core-linux-$ARCH" "$tmp/mmwxc-core"
 chmod 755 "$tmp/mmwxc-helper" "$tmp/mmwxc-core"
 verify_elf "$tmp/mmwxc-helper" "$ARCH"
 verify_elf "$tmp/mmwxc-core" "$ARCH"
-"$tmp/mmwxc-helper" --version | grep -q '^mmwxc-helper v'
-"$tmp/mmwxc-core" version | grep -qi '^Xray '
+helper_version_output="$("$tmp/mmwxc-helper" --version)"
+helper_version_line="${helper_version_output%%$'\n'*}"
+[[ "$helper_version_line" =~ ^mmwxc-helper[[:space:]]v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || { echo "invalid Helper version output" >&2; exit 1; }
+core_version_output="$("$tmp/mmwxc-core" version)"
+core_version_line="${core_version_output%%$'\n'*}"
+[[ "$core_version_line" =~ ^Xray[[:space:]][0-9]+\.[0-9]+\.[0-9]+([[:space:]].*)?$ ]] || { echo "invalid Custom Core version output" >&2; exit 1; }
 
 existing_config=false
 if [[ -f "$HELPER_CONFIG" ]]; then
@@ -160,11 +173,16 @@ fi
 
 old_helper=""
 had_helper=false
-if [[ -x "$HELPER_BINARY" ]]; then had_helper=true; old_helper="$($HELPER_BINARY --version 2>/dev/null | awk '{print $2}' || true)"; fi
-new_helper="$($tmp/mmwxc-helper --version | awk '{print $2}')"
+if [[ -x "$HELPER_BINARY" ]]; then
+  had_helper=true
+  old_helper_output="$($HELPER_BINARY --version 2>/dev/null || true)"
+  old_helper_line="${old_helper_output%%$'\n'*}"
+  if [[ "$old_helper_line" =~ ^mmwxc-helper[[:space:]]v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then old_helper="${old_helper_line#mmwxc-helper }"; fi
+fi
+new_helper="${helper_version_line#mmwxc-helper }"
 log_step "Helper version: ${old_helper:-not-installed} -> $new_helper"
 helper_changed=true
-if [[ -f "$HELPER_BINARY" ]] && [[ "$(sha256sum "$HELPER_BINARY" | awk '{print $1}')" == "$(sha256sum "$tmp/mmwxc-helper" | awk '{print $1}')" ]]; then helper_changed=false; fi
+if [[ -f "$HELPER_BINARY" ]] && [[ "$(file_sha256 "$HELPER_BINARY")" == "$(file_sha256 "$tmp/mmwxc-helper")" ]]; then helper_changed=false; fi
 if $helper_changed; then backup_file "$HELPER_BINARY" helper; atomic_install "$tmp/mmwxc-helper" "$HELPER_BINARY" 0755; fi
 
 if ! $existing_config; then
@@ -207,7 +225,7 @@ if [[ -z "$ROOT_PREFIX" ]] && "$SYSTEMCTL" is-active --quiet mmwxc-core.service;
 had_core=false
 if [[ -f "$CORE_BINARY" ]]; then had_core=true; fi
 core_changed=true
-if [[ -f "$CORE_BINARY" ]] && [[ "$(sha256sum "$CORE_BINARY" | awk '{print $1}')" == "$(sha256sum "$tmp/mmwxc-core" | awk '{print $1}')" ]]; then core_changed=false; fi
+if [[ -f "$CORE_BINARY" ]] && [[ "$(file_sha256 "$CORE_BINARY")" == "$(file_sha256 "$tmp/mmwxc-core")" ]]; then core_changed=false; fi
 if $core_changed; then backup_file "$CORE_BINARY" core; atomic_install "$tmp/mmwxc-core" "$CORE_BINARY" 0755; fi
 
 mkdir -p "$(dirname "$CORE_CONFIG")" "$(dirname "$CORE_UNIT")" "$ROLLBACK_ROOT/config"
@@ -235,17 +253,20 @@ EOF
 mv -f "$CORE_UNIT.new" "$CORE_UNIT"
 
 core_is_ready() {
+  local snapshot
   "$SYSTEMCTL" is-active --quiet mmwxc-core.service || return 1
   [[ -S /run/mmwxc/core-control.sock ]] || return 1
   if command -v curl >/dev/null 2>&1; then
-    curl -fsS --max-time 2 --unix-socket /run/mmwxc/core-control.sock http://localhost/v1/snapshot | grep -q '"version"[[:space:]]*:[[:space:]]*1'
+    snapshot="$(curl -fsS --max-time 2 --unix-socket /run/mmwxc/core-control.sock http://localhost/v1/snapshot)" || return 1
+    [[ "$snapshot" =~ \"version\"[[:space:]]*:[[:space:]]*1[[:space:]]*[,\}] ]]
   fi
 }
 
 helper_is_ready() {
-  local connected connected_epoch
+  local connected connected_epoch connected_matches
   grep -q "\"helper_version\"[[:space:]]*:[[:space:]]*\"$new_helper\"" "$HELPER_STATE" 2>/dev/null || return 1
-  connected="$(sed -n 's/.*"controller_connected_at"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$HELPER_STATE" | head -n1)"
+  connected_matches="$(sed -n 's/.*"controller_connected_at"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$HELPER_STATE")"
+  connected="${connected_matches%%$'\n'*}"
   [[ -n "$connected" ]] || return 1
   connected_epoch="$(date -u -d "$connected" +%s 2>/dev/null || true)"
   [[ "$connected_epoch" =~ ^[0-9]+$ && "$connected_epoch" -ge "$INSTALL_STARTED_AT" ]]
