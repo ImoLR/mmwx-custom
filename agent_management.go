@@ -30,6 +30,7 @@ var managementActions = map[string]struct{}{
 	"core.restart": {}, "core.stop": {}, "core.rollback": {}, "core.config.apply": {},
 	"official.xray.stop": {}, "official.xray.start": {},
 	"official.xray.attach-custom": {}, "official.xray.detach-custom": {},
+	"external.ownership.status": {}, "external.ownership.prepare": {}, "external.ownership.activate": {}, "external.ownership.rollback": {},
 	"connection.status": {}, "connection.settings": {},
 }
 
@@ -72,13 +73,30 @@ type componentStatus struct {
 }
 
 type agentStatus struct {
-	Helper        componentStatus   `json:"helper"`
-	Core          componentStatus   `json:"core"`
-	RunUser       string            `json:"run_user,omitempty"`
-	Architecture  string            `json:"architecture,omitempty"`
-	Capabilities  []string          `json:"capabilities"`
-	LastOperation *managementResult `json:"last_operation,omitempty"`
-	ReportedAt    time.Time         `json:"reported_at"`
+	Helper        componentStatus         `json:"helper"`
+	Core          componentStatus         `json:"core"`
+	RunUser       string                  `json:"run_user,omitempty"`
+	Architecture  string                  `json:"architecture,omitempty"`
+	Capabilities  []string                `json:"capabilities"`
+	LastOperation *managementResult       `json:"last_operation,omitempty"`
+	ReportedAt    time.Time               `json:"reported_at"`
+	Ownership     externalOwnershipStatus `json:"external_ownership"`
+}
+
+type externalOwnershipStatus struct {
+	Prepared         bool      `json:"prepared"`
+	Enabled          bool      `json:"enabled"`
+	ServiceOwned     bool      `json:"service_owned"`
+	RuntimeOwned     bool      `json:"runtime_owned"`
+	SingleCore       bool      `json:"single_core"`
+	OfficialConfig   bool      `json:"official_config"`
+	ServiceActive    bool      `json:"service_active"`
+	CoreReady        bool      `json:"core_ready"`
+	MainPID          int       `json:"main_pid,omitempty"`
+	RuntimeBinary    string    `json:"runtime_binary,omitempty"`
+	LastRepairAt     time.Time `json:"last_repair_at,omitempty"`
+	LastRepairReason string    `json:"last_repair_reason,omitempty"`
+	Error            string    `json:"error,omitempty"`
 }
 
 type managementReport struct {
@@ -227,7 +245,7 @@ func validateManagementPayload(action string, payload json.RawMessage) error {
 		return errors.New("management payload too large")
 	}
 	switch action {
-	case "helper.status", "helper.version", "core.status", "core.version", "core.restart", "core.stop", "core.rollback", "official.xray.stop", "official.xray.start", "official.xray.attach-custom", "official.xray.detach-custom", "connection.status", "connection.settings":
+	case "helper.status", "helper.version", "core.status", "core.version", "core.restart", "core.stop", "core.rollback", "official.xray.stop", "official.xray.start", "official.xray.attach-custom", "official.xray.detach-custom", "external.ownership.status", "external.ownership.prepare", "external.ownership.activate", "external.ownership.rollback", "connection.status", "connection.settings":
 		if len(strings.TrimSpace(string(payload))) > 0 && string(payload) != "{}" && string(payload) != "null" {
 			return errors.New("action does not accept payload")
 		}

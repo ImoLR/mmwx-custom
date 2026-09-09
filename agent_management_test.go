@@ -159,6 +159,20 @@ func TestOfficialXrayCutoverActionsAreAllowlistedWithoutPayload(t *testing.T) {
 	}
 }
 
+func TestExternalOwnershipActionsAreAllowlistedWithoutPayload(t *testing.T) {
+	for _, action := range []string{"external.ownership.status", "external.ownership.prepare", "external.ownership.activate", "external.ownership.rollback"} {
+		if _, ok := managementActions[action]; !ok {
+			t.Fatalf("%s is not allowlisted", action)
+		}
+		if err := validateManagementPayload(action, nil); err != nil {
+			t.Fatalf("%s rejected empty payload: %v", action, err)
+		}
+		if err := validateManagementPayload(action, json.RawMessage(`{"force":true}`)); err == nil {
+			t.Fatalf("%s accepted an unexpected payload", action)
+		}
+	}
+}
+
 func TestAgentManagementEndpointRequiresIndependentOperatorToken(t *testing.T) {
 	state, err := openHelperState(filepath.Join(t.TempDir(), "helper-state.json"), time.Minute)
 	if err != nil {

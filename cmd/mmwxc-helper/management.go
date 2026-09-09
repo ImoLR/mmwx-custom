@@ -61,13 +61,14 @@ type componentStatus struct {
 }
 
 type agentStatus struct {
-	Helper        componentStatus   `json:"helper"`
-	Core          componentStatus   `json:"core"`
-	RunUser       string            `json:"run_user,omitempty"`
-	Architecture  string            `json:"architecture,omitempty"`
-	Capabilities  []string          `json:"capabilities"`
-	LastOperation *managementResult `json:"last_operation,omitempty"`
-	ReportedAt    time.Time         `json:"reported_at"`
+	Helper        componentStatus         `json:"helper"`
+	Core          componentStatus         `json:"core"`
+	RunUser       string                  `json:"run_user,omitempty"`
+	Architecture  string                  `json:"architecture,omitempty"`
+	Capabilities  []string                `json:"capabilities"`
+	LastOperation *managementResult       `json:"last_operation,omitempty"`
+	ReportedAt    time.Time               `json:"reported_at"`
+	Ownership     externalOwnershipStatus `json:"external_ownership"`
 }
 
 type managementReport struct {
@@ -80,6 +81,7 @@ var helperCapabilities = []string{
 	"core.status", "core.version", "core.install", "core.update", "core.restart", "core.stop", "core.rollback", "core.config.apply",
 	"official.xray.stop", "official.xray.start",
 	"official.xray.attach-custom", "official.xray.detach-custom",
+	"external.ownership.status", "external.ownership.prepare", "external.ownership.activate", "external.ownership.rollback",
 	"connection.status", "connection.settings",
 }
 
@@ -145,10 +147,15 @@ func (executor *commandExecutor) status(ctx context.Context) agentStatus {
 	if current, err := user.Current(); err == nil {
 		username = current.Username
 	}
+	coreStatus := executor.lifecycle.coreStatus(ctx)
+	if executor.state.ExternalOwnership.Enabled {
+		coreStatus = executor.lifecycle.externalOwnedCoreStatus(ctx)
+	}
 	status := agentStatus{
 		Helper: componentStatus{Installed: true, Prepared: true, Version: helperVersion, BinaryPath: helperBinaryPath, ConfigPath: defaultConfigPath, Service: helperServiceName, Active: serviceActive(ctx, helperServiceName), Ready: true},
-		Core:   executor.lifecycle.coreStatus(ctx), RunUser: username, Architecture: runtime.GOARCH,
+		Core:   coreStatus, RunUser: username, Architecture: runtime.GOARCH,
 		Capabilities: append([]string(nil), helperCapabilities...), LastOperation: executor.state.LastOperation, ReportedAt: time.Now().UTC(),
+		Ownership: executor.lifecycle.externalOwnershipStatus(ctx, &executor.state.ExternalOwnership),
 	}
 	sort.Strings(status.Capabilities)
 	return status
@@ -173,7 +180,11 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 			err = executor.lifecycle.scheduleHelperUpdate(ctx, artifact)
 		}
 	case "core.status", "core.version":
-		data = executor.lifecycle.coreStatus(ctx)
+		if executor.state.ExternalOwnership.Enabled {
+			data = executor.lifecycle.externalOwnedCoreStatus(ctx)
+		} else {
+			data = executor.lifecycle.coreStatus(ctx)
+		}
 	case "core.install", "core.update":
 		var artifact managementArtifact
 		err = json.Unmarshal(command.Payload, &artifact)
@@ -181,9 +192,20 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 			err = executor.lifecycle.installOrUpdateCore(ctx, artifact)
 		}
 	case "core.restart":
-		err = executor.lifecycle.restartCore(ctx)
+		if executor.state.ExternalOwnership.Enabled {
+			err = systemctl(ctx, "restart", "xray.service")
+			if err == nil {
+				err = executor.lifecycle.waitOwnedCoreReady(ctx, 20*time.Second)
+			}
+		} else {
+			err = executor.lifecycle.restartCore(ctx)
+		}
 	case "core.stop":
-		err = executor.lifecycle.stopCore(ctx)
+		if executor.state.ExternalOwnership.Enabled {
+			err = systemctl(ctx, "stop", "xray.service")
+		} else {
+			err = executor.lifecycle.stopCore(ctx)
+		}
 	case "official.xray.stop":
 		err = executor.lifecycle.stopOfficialXray(ctx)
 	case "official.xray.start":
@@ -192,6 +214,14 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 		err = executor.lifecycle.attachCustomCoreAsOfficialXray(ctx)
 	case "official.xray.detach-custom":
 		err = executor.lifecycle.detachCustomCoreAsOfficialXray(ctx)
+	case "external.ownership.status":
+		data = executor.lifecycle.externalOwnershipStatus(ctx, &executor.state.ExternalOwnership)
+	case "external.ownership.prepare":
+		err = executor.lifecycle.prepareExternalOwnership(ctx, &executor.state.ExternalOwnership)
+	case "external.ownership.activate":
+		err = executor.lifecycle.activateExternalOwnership(ctx, &executor.state.ExternalOwnership)
+	case "external.ownership.rollback":
+		err = executor.lifecycle.rollbackExternalOwnership(ctx, &executor.state.ExternalOwnership)
 	case "core.rollback":
 		err = executor.lifecycle.rollbackCore(ctx)
 	case "core.config.apply":

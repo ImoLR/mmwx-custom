@@ -23,7 +23,7 @@ const (
 	detailedEndpoint  = "/api/custom/agent/connections"
 	defaultCoreSocket = "/run/mmwxc/core-control.sock"
 	defaultStatePath  = "/var/lib/mmwxc-helper/state.json"
-	helperVersion     = "v0.3.9"
+	helperVersion     = "v0.4.0"
 )
 
 type config struct {
@@ -101,6 +101,11 @@ func main() {
 	}
 
 	runOnce := func() {
+		reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := lifecycle.reconcileExternalOwnership(reconcileCtx, &state.ExternalOwnership); err != nil {
+			log.Printf("[mmwxc-helper] external ownership reconcile failed: %v", err)
+		}
+		cancelReconcile()
 		applyCtx, cancelApply := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := core.apply(applyCtx, state.Settings); err != nil {
 			log.Printf("[mmwxc-helper] core config unavailable: %v", err)

@@ -87,9 +87,15 @@ The following endpoints are available:
 
 ## Connections Helper
 
-`mmwxc-helper v0.3.9` is the Custom Agent. It is completely independent
+`mmwxc-helper v0.4.0` is the Custom Agent. It is completely independent
 from the official `mmw-agent`: it does not modify or replace the official
 Agent, and the official Agent can continue to follow upstream upgrades.
+
+For an external single-Core deployment, the optional ownership mode keeps the
+official Agent's `/usr/local/etc/xray/config.json` and `xray.service` lifecycle,
+while a systemd drop-in pins `ExecStart` to `/opt/mmwxc/core/xray`. The Helper
+repairs only binary/service ownership drift; normal Agent config writes and
+Xray restarts are left untouched.
 
 The helper reports server-level Connections for the Custom service management
 page. Its counting source matches the 3x-ui-style socket-table method by reading:
