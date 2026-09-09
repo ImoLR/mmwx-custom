@@ -39,7 +39,7 @@ func TestControlOfficialXrayUsesPersistentSystemdActions(t *testing.T) {
 	if err := controlOfficialXray(context.Background(), "start", run, probe); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"mask", "--now", "xray.service"}, {"unmask", "xray.service"}, {"start", "xray.service"}}
+	want := [][]string{{"mask", "--now", "xray.service"}, {"unmask", "xray.service"}, {"daemon-reload"}, {"start", "xray.service"}}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("systemctl calls = %#v, want %#v", calls, want)
 	}

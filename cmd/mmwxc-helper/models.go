@@ -29,6 +29,8 @@ type coreUserSnapshot struct {
 	OutboundNewTotal           uint64       `json:"outbound_new_total"`
 	OutboundNewRate            int          `json:"outbound_new_rate"`
 	OutboundRejectedTotal      uint64       `json:"outbound_rejected_total"`
+	RejectedActiveLimit        uint64       `json:"rejected_active_limit"`
+	RejectedNewRateLimit       uint64       `json:"rejected_new_rate_limit"`
 	MaxOutboundTCPActive       *int64       `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond *int         `json:"max_outbound_tcp_new_per_second"`
 	CloseWaitTimeoutSeconds    *int64       `json:"close_wait_timeout_seconds"`

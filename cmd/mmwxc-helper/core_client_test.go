@@ -35,6 +35,19 @@ func TestCoreClientMalformedResponse(t *testing.T) {
 	}
 }
 
+func TestCoreClientAcceptsCurrentRejectionCounters(t *testing.T) {
+	path := serveUnixHTTP(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"version":1,"started_at":"2026-09-08T00:00:00Z","proxy_users":[{"identity":{"inbound_tag":"in-a","user":"user-a"},"attributed":true,"inbound_active":1,"inbound_total":2,"outbound_active":1,"outbound_pending":0,"outbound_new_total":3,"outbound_new_rate":1,"outbound_rejected_total":2,"rejected_active_limit":1,"rejected_new_rate_limit":1,"max_outbound_tcp_active":null,"max_outbound_tcp_new_per_second":null,"close_wait_timeout_seconds":null}]}`))
+	}))
+	snapshot, err := newCoreClient(path).snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Users) != 1 || snapshot.Users[0].RejectedActiveLimit != 1 || snapshot.Users[0].RejectedNewRateLimit != 1 {
+		t.Fatalf("unexpected rejection counters: %#v", snapshot.Users)
+	}
+}
+
 func TestCoreClientUnavailable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.sock")
 	if _, err := newCoreClient(path).snapshot(context.Background()); err == nil {

@@ -589,6 +589,9 @@ func controlOfficialXray(ctx context.Context, action string, run systemctlRunner
 		if err := run(ctx, "unmask", "xray.service"); err != nil {
 			return err
 		}
+		if err := run(ctx, "daemon-reload"); err != nil {
+			return err
+		}
 		startErr := run(ctx, "start", "xray.service")
 		deadline := time.Now().Add(20 * time.Second)
 		for {
