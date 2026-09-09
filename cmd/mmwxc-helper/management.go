@@ -156,7 +156,7 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 	result := managementResult{CommandID: command.ID, Action: command.Action, CompletedAt: time.Now().UTC()}
 	if err := verifyManagementCommand(command, token, result.CompletedAt); err != nil {
 		result.Message = err.Error()
-		_ = signManagementResult(&result, token)
+		finalizeManagementResult(&result, token)
 		return result
 	}
 	var data any
@@ -217,9 +217,14 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 			result.Message = err.Error()
 		}
 	}
-	result.CompletedAt = time.Now().UTC()
-	_ = signManagementResult(&result, token)
+	finalizeManagementResult(&result, token)
 	return result
+}
+
+func finalizeManagementResult(result *managementResult, token string) {
+	result.Message = sanitizeManagementMessage(result.Message)
+	result.CompletedAt = time.Now().UTC()
+	_ = signManagementResult(result, token)
 }
 
 func hasCompletedCommand(state localState, id string) bool {

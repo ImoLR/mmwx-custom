@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -55,6 +56,21 @@ func TestCompletedCommandReplayWindow(t *testing.T) {
 	rememberCompletedCommand(&state, last)
 	if len(state.CompletedCommandIDs) != completedCommandMax {
 		t.Fatal("duplicate command id changed the replay window")
+	}
+}
+
+func TestManagementResultIsSanitizedBeforeSigning(t *testing.T) {
+	result := managementResult{CommandID: "command-1", Action: "core.config.apply", Message: strings.Repeat("x", 600)}
+	finalizeManagementResult(&result, "token")
+	if len(result.Message) != 512 {
+		t.Fatalf("message length = %d, want 512", len(result.Message))
+	}
+	expected, err := managementMAC(helperTokenHash("token"), resultSigningBytes(result))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Signature != expected {
+		t.Fatal("sanitized management result signature does not verify")
 	}
 }
 

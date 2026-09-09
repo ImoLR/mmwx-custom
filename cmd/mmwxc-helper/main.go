@@ -23,7 +23,7 @@ const (
 	detailedEndpoint  = "/api/custom/agent/connections"
 	defaultCoreSocket = "/run/mmwxc/core-control.sock"
 	defaultStatePath  = "/var/lib/mmwxc-helper/state.json"
-	helperVersion     = "v0.3.2"
+	helperVersion     = "v0.3.3"
 )
 
 type config struct {
@@ -130,7 +130,6 @@ func main() {
 			commandCtx, cancelCommand := context.WithTimeout(context.Background(), 5*time.Minute)
 			result := executor.execute(commandCtx, *response.Command, cfg.Token)
 			cancelCommand()
-			result.Message = sanitizeManagementMessage(result.Message)
 			state.PendingResult = &result
 			state.LastOperation = &result
 			rememberCompletedCommand(&state, response.Command.ID)
