@@ -17,10 +17,10 @@ func TestControlOfficialXrayUsesPersistentSystemdActions(t *testing.T) {
 	active := true
 	run := func(_ context.Context, args ...string) error {
 		calls = append(calls, append([]string(nil), args...))
-		if len(args) > 0 && args[0] == "disable" {
+		if len(args) > 0 && args[0] == "mask" {
 			active = false
 		}
-		if len(args) > 0 && args[0] == "enable" {
+		if len(args) > 0 && args[0] == "start" {
 			active = true
 		}
 		return nil
@@ -37,7 +37,7 @@ func TestControlOfficialXrayUsesPersistentSystemdActions(t *testing.T) {
 	if err := controlOfficialXray(context.Background(), "start", run, probe); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"disable", "--now", "xray.service"}, {"enable", "--now", "xray.service"}}
+	want := [][]string{{"mask", "--now", "xray.service"}, {"unmask", "xray.service"}, {"start", "xray.service"}}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("systemctl calls = %#v, want %#v", calls, want)
 	}

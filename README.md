@@ -87,7 +87,7 @@ The following endpoints are available:
 
 ## Connections Helper
 
-`mmwxc-helper v0.3.4` is the Custom Agent. It is completely independent
+`mmwxc-helper v0.3.5` is the Custom Agent. It is completely independent
 from the official `mmw-agent`: it does not modify or replace the official
 Agent, and the official Agent can continue to follow upstream upgrades.
 

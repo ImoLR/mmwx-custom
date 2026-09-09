@@ -579,18 +579,21 @@ type serviceActiveProbe func(context.Context, string) bool
 func controlOfficialXray(ctx context.Context, action string, run systemctlRunner, active serviceActiveProbe) error {
 	switch action {
 	case "stop":
-		if err := run(ctx, "disable", "--now", "xray.service"); err != nil {
+		if err := run(ctx, "mask", "--now", "xray.service"); err != nil {
 			return err
 		}
 		if active(ctx, "xray.service") {
-			return errors.New("official Xray remained active after disable --now")
+			return errors.New("official Xray remained active after mask --now")
 		}
 	case "start":
-		if err := run(ctx, "enable", "--now", "xray.service"); err != nil {
+		if err := run(ctx, "unmask", "xray.service"); err != nil {
+			return err
+		}
+		if err := run(ctx, "start", "xray.service"); err != nil {
 			return err
 		}
 		if !active(ctx, "xray.service") {
-			return errors.New("official Xray remained inactive after enable --now")
+			return errors.New("official Xray remained inactive after unmask and start")
 		}
 	default:
 		return errors.New("unsupported official Xray action")
