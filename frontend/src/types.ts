@@ -196,6 +196,7 @@ export type ConnectionIdentity = {
 export type UserConnectionSettings = {
   identity: ConnectionIdentity;
   max_inbound_online_ips: number | null;
+  max_total_connections: number | null;
   max_outbound_tcp_active: number | null;
   max_outbound_tcp_new_per_second: number | null;
   close_wait_timeout_seconds: number | null;
@@ -204,7 +205,24 @@ export type UserConnectionSettings = {
 export type ServerConnectionSettings = {
   default_close_wait_timeout_seconds: number | null;
   online_ip_grace_period_seconds: number;
+  global_total_limit_enabled: boolean;
+  max_global_total_connections: number | null;
   users: UserConnectionSettings[];
+};
+
+export type TCPStateCounts = {
+  tcp_total: number;
+  established: number;
+  syn_sent: number;
+  syn_recv: number;
+  fin_wait_1: number;
+  fin_wait_2: number;
+  time_wait: number;
+  close_wait: number;
+  last_ack: number;
+  closing: number;
+  close: number;
+  unknown: number;
 };
 
 export type DetailedConnectionResponse = {
@@ -218,23 +236,22 @@ export type DetailedConnectionResponse = {
     helper_version?: string;
     updated_at?: string;
     snapshot: {
-      system: {
-        tcp_total: number;
-        established: number;
-        time_wait: number;
-        close_wait: number;
-        syn_sent: number;
-        syn_recv: number;
-      };
+      system: TCPStateCounts;
       inbounds: Array<{
         port: number;
         inbound_tag: string;
         protocol?: string;
         user?: string;
-        attribution: "single_user_inbound" | "inbound_port" | string;
+        attribution: "core_identity_tuple" | "single_user_inbound" | "inbound_port" | string;
+        tcp: TCPStateCounts;
         established: number;
+        syn_recv: number;
+        fin_wait_1: number;
+        fin_wait_2: number;
         time_wait: number;
         close_wait: number;
+        last_ack: number;
+        closing: number;
         online_ip_count: number;
         online_ips: Array<{ ip: string; connections: number }>;
         max_online_ips: number | null;
@@ -244,17 +261,33 @@ export type DetailedConnectionResponse = {
         inbound_tag: string;
         user: string;
         inbound_port?: number;
+        current_total: number;
         inbound_active: number;
+        inbound_tcp: TCPStateCounts;
+        inbound_online_ips: Array<{ ip: string; connections: number }>;
         outbound_active: number;
+        outbound_pending: number;
+        outbound_tcp: TCPStateCounts;
         outbound_new_rate: number;
         outbound_new_total: number;
         outbound_rejected_total: number;
+        rejected_active_limit: number;
+        rejected_new_rate_limit: number;
+        rejected_user_total_limit: number;
+        rejected_online_ip_limit: number;
+        rejected_global_total_limit: number;
         max_inbound_online_ips: number | null;
+        max_total_connections: number | null;
         max_outbound_tcp_active: number | null;
         max_outbound_tcp_new_per_second: number | null;
         close_wait_timeout_seconds: number | null;
         source: string;
       }>;
+      global: {
+        current_total: number;
+        max_total: number | null;
+        rejected_global_total_limit: number;
+      };
       core: {
         available: boolean;
         interface_version?: number;

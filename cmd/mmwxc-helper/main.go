@@ -23,7 +23,7 @@ const (
 	detailedEndpoint  = "/api/custom/agent/connections"
 	defaultCoreSocket = "/run/mmwxc/core-control.sock"
 	defaultStatePath  = "/var/lib/mmwxc-helper/state.json"
-	helperVersion     = "v0.4.1"
+	helperVersion     = "v0.4.2"
 )
 
 type config struct {
@@ -165,6 +165,17 @@ func main() {
 }
 
 func applyNftables(manager *nftablesManager, snapshot detailedConnectionSnapshot, settings connectionSettings) {
+	if snapshot.Core.Version >= 2 {
+		// Interface v2 enforces authenticated per-user online-IP limits inside
+		// the Core so every rejection has an exact identity and reason. Remove
+		// the legacy per-port nftables approximation instead of double-limiting.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := manager.apply(ctx, nil, 0); err != nil {
+			log.Printf("[mmwxc-helper] legacy IP limiter removal failed: %v", err)
+		}
+		return
+	}
 	policies, warnings := deriveInboundIPPolicies(coreSnapshotFromDetailed(snapshot), settings)
 	for _, warning := range warnings {
 		log.Printf("[mmwxc-helper] IP limiter: %s", warning)
@@ -282,12 +293,13 @@ func collectDetailedSnapshot(ctx context.Context, core *coreClient, tracker *onl
 		return snapshot
 	}
 	snapshot.Core = coreStatus{Available: true, Version: coreSnapshot.Version, StartedAt: coreSnapshot.StartedAt}
+	snapshot.Global = coreSnapshot.Global
 	snapshot.Inbounds, snapshot.ProxyUsers = tracker.aggregate(sockets, coreSnapshot, settings)
 	return snapshot
 }
 
 func coreSnapshotFromDetailed(snapshot detailedConnectionSnapshot) coreSnapshotResponse {
-	core := coreSnapshotResponse{Version: snapshot.Core.Version, StartedAt: snapshot.Core.StartedAt}
+	core := coreSnapshotResponse{Version: snapshot.Core.Version, StartedAt: snapshot.Core.StartedAt, Global: snapshot.Global}
 	for _, user := range snapshot.ProxyUsers {
 		core.Users = append(core.Users, coreUserSnapshot{
 			Identity:      user.Identity,

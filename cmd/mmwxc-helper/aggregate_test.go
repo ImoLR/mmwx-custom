@@ -52,3 +52,35 @@ func TestMultipleUsersOnOnePortAreNotFalselyAttributed(t *testing.T) {
 		t.Fatalf("multi-user port was falsely attributed: %#v", inbounds)
 	}
 }
+
+func TestAggregateV2UsesCoreIdentityTupleStatesAndLimits(t *testing.T) {
+	tracker := newOnlineIPTracker()
+	identity := coreIdentity{InboundTag: "in-v2", User: "user-v2"}
+	totalLimit := int64(50)
+	globalLimit := int64(500)
+	core := coreSnapshotResponse{
+		Version: 2,
+		Global:  coreGlobalSnapshot{CurrentTotal: 7, MaxTotal: &globalLimit, RejectedGlobalTotalLimit: 2},
+		Users: []coreUserSnapshot{{
+			Identity: identity, Attributed: true, InboundName: "shadowsocks", InboundPort: 10022,
+			CurrentTotal: 7, InboundActive: 3, InboundTCP: tcpStateCounts{Total: 4, Established: 2, TimeWait: 1, CloseWait: 1},
+			InboundOnlineIPs: []onlineIP{{IP: "198.51.100.10", Connections: 2}},
+			OutboundActive:   4, OutboundTCP: tcpStateCounts{Total: 5, Established: 3, SynSent: 1, TimeWait: 1},
+			RejectedUserTotalLimit: 1, RejectedGlobalTotalLimit: 2,
+		}},
+	}
+	settings := connectionSettings{OnlineIPGracePeriodSeconds: 30, Users: []userConnectionSettings{{Identity: identity, MaxTotalConnections: &totalLimit}}}
+	// This unrelated kernel entry must not be guessed into a v2 identity.
+	entries := []socketEntry{{LocalPort: 10022, RemoteIP: netip.MustParseAddr("203.0.113.1"), State: tcpEstablished}}
+	inbounds, users := tracker.aggregate(entries, core, settings)
+	if len(inbounds) != 1 || inbounds[0].Attribution != "core_identity_tuple" || inbounds[0].TCP.TimeWait != 1 || inbounds[0].OnlineIPCount != 1 {
+		t.Fatalf("v2 inbound was not sourced from Core: %#v", inbounds)
+	}
+	if len(users) != 1 || users[0].CurrentTotal != 7 || users[0].OutboundTCP.SynSent != 1 || users[0].MaxTotalConnections == nil || *users[0].MaxTotalConnections != 50 {
+		t.Fatalf("v2 user snapshot mismatch: %#v", users)
+	}
+	config := connectionSettings{GlobalTotalLimitEnabled: true, MaxGlobalTotalConnections: &globalLimit, Users: settings.Users}.coreConfig()
+	if config.MaxGlobalTotalConnections == nil || *config.MaxGlobalTotalConnections != 500 || config.Limits[0].MaxTotalConnections == nil || *config.Limits[0].MaxTotalConnections != 50 {
+		t.Fatalf("limits were not propagated to Core config: %#v", config)
+	}
+}

@@ -31,51 +31,62 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 		}
 	}
 	type portStats struct {
-		established int64
-		timeWait    int64
-		closeWait   int64
+		tcp         tcpStateCounts
 		connections map[string]int64
 	}
 	byPort := make(map[uint32]*portStats, len(usersByPort))
 	for port := range usersByPort {
 		byPort[port] = &portStats{connections: make(map[string]int64)}
 	}
-	for _, entry := range entries {
-		stats := byPort[entry.LocalPort]
-		if stats == nil {
-			continue
+	if core.Version >= 2 {
+		for _, user := range core.Users {
+			stats := byPort[user.InboundPort]
+			if stats == nil || !user.Attributed {
+				continue
+			}
+			addTCPCounts(&stats.tcp, user.InboundTCP)
+			for _, source := range user.InboundOnlineIPs {
+				stats.connections[source.IP] += source.Connections
+			}
 		}
-		switch entry.State {
-		case tcpEstablished:
-			stats.established++
-		case tcpTimeWait:
-			stats.timeWait++
-		case tcpCloseWait:
-			stats.closeWait++
+		for port := range byPort {
+			delete(tracker.lastSeen, port)
 		}
-		if entry.State == tcpEstablished || entry.State == tcpSynRecv || entry.State == tcpCloseWait {
-			if ip := normalizeOnlineIP(entry.RemoteIP); ip != "" {
-				stats.connections[ip]++
-				if tracker.lastSeen[entry.LocalPort] == nil {
-					tracker.lastSeen[entry.LocalPort] = make(map[string]time.Time)
+	} else {
+		// Compatibility path for control interface v1. It can only attribute
+		// kernel states to an inbound port, never to a user.
+		for _, entry := range entries {
+			stats := byPort[entry.LocalPort]
+			if stats == nil {
+				continue
+			}
+			addSocketState(&stats.tcp, entry.State)
+			if entry.State == tcpEstablished || entry.State == tcpSynRecv || entry.State == tcpCloseWait {
+				if ip := normalizeOnlineIP(entry.RemoteIP); ip != "" {
+					stats.connections[ip]++
+					if tracker.lastSeen[entry.LocalPort] == nil {
+						tracker.lastSeen[entry.LocalPort] = make(map[string]time.Time)
+					}
+					tracker.lastSeen[entry.LocalPort][ip] = now
 				}
-				tracker.lastSeen[entry.LocalPort][ip] = now
 			}
 		}
 	}
-	for port, seen := range tracker.lastSeen {
-		stats := byPort[port]
-		if stats == nil {
-			delete(tracker.lastSeen, port)
-			continue
-		}
-		for ip, lastSeen := range seen {
-			if now.Sub(lastSeen) > grace {
-				delete(seen, ip)
+	if core.Version < 2 {
+		for port, seen := range tracker.lastSeen {
+			stats := byPort[port]
+			if stats == nil {
+				delete(tracker.lastSeen, port)
 				continue
 			}
-			if _, active := stats.connections[ip]; !active {
-				stats.connections[ip] = 0
+			for ip, lastSeen := range seen {
+				if now.Sub(lastSeen) > grace {
+					delete(seen, ip)
+					continue
+				}
+				if _, active := stats.connections[ip]; !active {
+					stats.connections[ip] = 0
+				}
 			}
 		}
 	}
@@ -87,15 +98,24 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 			Port:        port,
 			InboundTag:  users[0].Identity.InboundTag,
 			Protocol:    users[0].InboundName,
-			Established: stats.established,
-			TimeWait:    stats.timeWait,
-			CloseWait:   stats.closeWait,
+			TCP:         stats.tcp,
+			Established: stats.tcp.Established,
+			SynRecv:     stats.tcp.SynRecv,
+			FinWait1:    stats.tcp.FinWait1,
+			FinWait2:    stats.tcp.FinWait2,
+			TimeWait:    stats.tcp.TimeWait,
+			CloseWait:   stats.tcp.CloseWait,
+			LastAck:     stats.tcp.LastAck,
+			Closing:     stats.tcp.Closing,
 			Attribution: "inbound_port",
 		}
 		if len(users) == 1 {
 			inbound.User = users[0].Identity.User
 			inbound.Attribution = "single_user_inbound"
 			inbound.MaxOnlineIPs = settingsByIdentity[users[0].Identity].MaxInboundOnlineIPs
+		}
+		if core.Version >= 2 {
+			inbound.Attribution = "core_identity_tuple"
 		}
 		for ip, count := range stats.connections {
 			inbound.OnlineIPs = append(inbound.OnlineIPs, onlineIP{IP: ip, Connections: count})
@@ -123,11 +143,22 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 			User:                       user.Identity.User,
 			InboundPort:                user.InboundPort,
 			InboundActive:              user.InboundActive,
+			CurrentTotal:               user.CurrentTotal,
+			InboundTCP:                 user.InboundTCP,
+			InboundOnlineIPs:           append([]onlineIP(nil), user.InboundOnlineIPs...),
 			OutboundActive:             user.OutboundActive,
+			OutboundPending:            user.OutboundPending,
+			OutboundTCP:                user.OutboundTCP,
 			OutboundNewRate:            user.OutboundNewRate,
 			OutboundNewTotal:           user.OutboundNewTotal,
 			OutboundRejectedTotal:      user.OutboundRejectedTotal,
+			RejectedActiveLimit:        user.RejectedActiveLimit,
+			RejectedNewRateLimit:       user.RejectedNewRateLimit,
+			RejectedUserTotalLimit:     user.RejectedUserTotalLimit,
+			RejectedOnlineIPLimit:      user.RejectedOnlineIPLimit,
+			RejectedGlobalTotalLimit:   user.RejectedGlobalTotalLimit,
 			MaxInboundOnlineIPs:        limit.MaxInboundOnlineIPs,
+			MaxTotalConnections:        limit.MaxTotalConnections,
 			MaxOutboundTCPActive:       limit.MaxOutboundTCPActive,
 			MaxOutboundTCPNewPerSecond: limit.MaxOutboundTCPNewPerSecond,
 			CloseWaitTimeoutSeconds:    effectiveCloseWait(settings, limit),
@@ -135,6 +166,50 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 		})
 	}
 	return inbounds, proxyUsers
+}
+
+func addTCPCounts(target *tcpStateCounts, source tcpStateCounts) {
+	target.Total += source.Total
+	target.Established += source.Established
+	target.SynSent += source.SynSent
+	target.SynRecv += source.SynRecv
+	target.FinWait1 += source.FinWait1
+	target.FinWait2 += source.FinWait2
+	target.TimeWait += source.TimeWait
+	target.CloseWait += source.CloseWait
+	target.LastAck += source.LastAck
+	target.Closing += source.Closing
+	target.Close += source.Close
+	target.Unknown += source.Unknown
+}
+
+func addSocketState(target *tcpStateCounts, state string) {
+	target.Total++
+	switch state {
+	case tcpEstablished:
+		target.Established++
+	case tcpSynSent:
+		target.SynSent++
+	case tcpSynRecv, tcpNewSynRecv:
+		target.SynRecv++
+	case tcpFinWait1:
+		target.FinWait1++
+	case tcpFinWait2:
+		target.FinWait2++
+	case tcpTimeWait:
+		target.TimeWait++
+	case tcpCloseWait:
+		target.CloseWait++
+	case tcpLastAck:
+		target.LastAck++
+	case tcpClosing:
+		target.Closing++
+	case tcpClose:
+		target.Close++
+	case tcpListen:
+	default:
+		target.Unknown++
+	}
 }
 
 func effectiveCloseWait(settings connectionSettings, user userConnectionSettings) *int64 {

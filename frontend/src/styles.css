@@ -5740,6 +5740,18 @@ button {
   gap: 8px;
 }
 
+.connection-stat-grid.compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.connection-stat-grid.compact > div {
+  padding: 8px;
+}
+
+.connection-stat-grid.compact strong {
+  font-size: 16px;
+}
+
 .connection-stat-grid > div {
   min-width: 0;
   display: grid;
@@ -5799,6 +5811,49 @@ button {
   font-size: 14px;
 }
 
+.connection-subsection {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.connection-subsection > div:first-child,
+.connection-global-summary,
+.connection-rejection-grid {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.connection-subsection > div:first-child > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.connection-rejection-grid {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  padding: 9px 10px;
+  background: var(--fill);
+  border-radius: 6px;
+}
+
+.connection-rejection-grid span,
+.connection-global-summary span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.connection-rejection-grid strong,
+.connection-global-summary strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
 .connection-ip-list {
   display: grid;
   border: 1px solid var(--border);
@@ -5855,6 +5910,41 @@ button {
   color: var(--text);
   padding: 0 10px;
   font-size: 16px;
+}
+
+.connection-global-summary {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.connection-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.connection-toggle input {
+  width: 20px;
+  height: 20px;
+  margin: 1px 0 0;
+  flex: 0 0 auto;
+  accent-color: var(--text);
+}
+
+.connection-toggle > span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.connection-toggle small {
+  color: var(--muted);
+  line-height: 1.4;
 }
 
 .connection-save {
@@ -5919,6 +6009,17 @@ button {
   }
 
   .service-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .connection-stat-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 390px) {
+  .connection-stat-grid.compact,
+  .connection-limit-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

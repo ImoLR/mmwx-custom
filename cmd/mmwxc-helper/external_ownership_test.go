@@ -132,3 +132,25 @@ func TestArmExternalOwnershipStopsBothServicesWithoutStartingXray(t *testing.T) 
 		t.Fatalf("armed handoff must not start xray: %s", joined)
 	}
 }
+
+func TestReplaceFileFromAtomicallyReplacesOwnedImage(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "new-core")
+	target := filepath.Join(directory, "owned-core")
+	if err := os.WriteFile(source, []byte("new"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceFileFrom(source, target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "new" {
+		t.Fatalf("owned image was not replaced: %q err=%v", data, err)
+	}
+	if _, err := os.Stat(target + ".new"); !os.IsNotExist(err) {
+		t.Fatalf("staging file was left behind: %v", err)
+	}
+}

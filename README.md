@@ -87,7 +87,7 @@ The following endpoints are available:
 
 ## Connections Helper
 
-`mmwxc-helper v0.4.1` is the Custom Agent. It is completely independent
+`mmwxc-helper v0.4.2` is the Custom Agent. It is completely independent
 from the official `mmw-agent`: it does not modify or replace the official
 Agent, and the official Agent can continue to follow upstream upgrades.
 
@@ -111,6 +111,23 @@ page. Its counting source matches the 3x-ui-style socket-table method by reading
 /proc/net/udp
 /proc/net/udp6
 ```
+
+With control interface v2, the Fork Core propagates the authenticated
+`inbound_tag/user` identity into each physical outbound TCP dial and records
+the exact local/remote address and port tuple before close. The Core then
+matches that tuple against the kernel TCP tables, so per-user inbound and
+outbound `ESTABLISHED`, `SYN_*`, `FIN_WAIT*`, `TIME_WAIT`, `CLOSE_WAIT`,
+`LAST_ACK`, and `CLOSING` values are not inferred from a shared port. A socket
+that has not completed protocol authentication is intentionally not assigned
+to a user.
+
+Per-user total, online-IP, outbound-active, and outbound-NEW/s limits plus the
+optional global total limit are persisted by the Helper and enforced inside
+the Core. They reserve/reject only new authenticated inbound or physical
+outbound resources and never terminate connections that were already accepted.
+The total-limit definition is authenticated inbound active + physical outbound
+active + physical outbound pending; closed `TIME_WAIT` records are reported but
+do not consume a limit slot.
 
 Normal installation does not require users to type a server id or token. The
 recommended flow is:

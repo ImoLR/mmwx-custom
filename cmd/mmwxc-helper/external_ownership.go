@@ -350,6 +350,107 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 	return nil
 }
 
+// installOrUpdateExternalOwnedCore updates the only Core used by the official
+// Agent's external-mode xray.service. It never enables mmwxc-core.service. The
+// protected image and ownership hash move together with the runtime binary;
+// any validation, restart, or readiness failure restores the previous image.
+func (manager *lifecycleManager) installOrUpdateExternalOwnedCore(ctx context.Context, artifact managementArtifact, state *externalOwnershipState) error {
+	if state == nil || !state.Enabled {
+		return errors.New("external ownership is not enabled")
+	}
+	staged, err := manager.downloadArtifact(ctx, artifact, "mmwxc-core")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(staged)
+	if err := validateELFArchitecture(staged); err != nil {
+		return err
+	}
+	versionCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	version, versionErr := binaryVersion(versionCtx, staged, "version")
+	cancel()
+	if versionErr != nil || !strings.Contains(strings.ToLower(version), "xray") {
+		return errors.New("artifact is not a supported Xray Core")
+	}
+	if _, err := validateAndHashOfficialConfigWithBinary(ctx, staged); err != nil {
+		return fmt.Errorf("new Custom Core rejected the official config: %w", err)
+	}
+	newHash, err := sha256File(staged)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(ownershipImagePath), 0700); err != nil {
+		return err
+	}
+	backup, err := os.CreateTemp(filepath.Dir(ownershipImagePath), "xray-update-rollback-*")
+	if err != nil {
+		return err
+	}
+	backupPath := backup.Name()
+	defer os.Remove(backupPath)
+	if err := backup.Close(); err != nil {
+		return err
+	}
+	if err := copyFile(coreBinaryPath, backupPath, 0755); err != nil {
+		return fmt.Errorf("back up current owned Core: %w", err)
+	}
+	previousState := *state
+	applyErr := func() error {
+		if err := replaceFileFrom(staged, ownershipImagePath, 0755); err != nil {
+			return fmt.Errorf("update protected Core image: %w", err)
+		}
+		if err := replaceFileFrom(staged, coreBinaryPath, 0755); err != nil {
+			return fmt.Errorf("update owned Core binary: %w", err)
+		}
+		state.ExpectedCoreSHA = newHash
+		if err := systemctl(ctx, "restart", "xray.service"); err != nil {
+			return err
+		}
+		if err := manager.waitOwnedCoreReady(ctx, 25*time.Second); err != nil {
+			return err
+		}
+		status := manager.externalOwnershipStatus(ctx, state)
+		if !status.RuntimeOwned || !status.SingleCore || !status.CoreReady {
+			return fmt.Errorf("updated owned Core is unhealthy: runtime_owned=%t single_core=%t ready=%t", status.RuntimeOwned, status.SingleCore, status.CoreReady)
+		}
+		return nil
+	}()
+	if applyErr != nil {
+		*state = previousState
+		rollbackErr := func() error {
+			if err := replaceFileFrom(backupPath, ownershipImagePath, 0755); err != nil {
+				return err
+			}
+			if err := replaceFileFrom(backupPath, coreBinaryPath, 0755); err != nil {
+				return err
+			}
+			if err := systemctl(ctx, "restart", "xray.service"); err != nil {
+				return err
+			}
+			return manager.waitOwnedCoreReady(ctx, 25*time.Second)
+		}()
+		if rollbackErr != nil {
+			return fmt.Errorf("owned Core update failed (%v); rollback failed: %w", applyErr, rollbackErr)
+		}
+		return fmt.Errorf("owned Core update failed and previous Core was restored: %w", applyErr)
+	}
+	state.LastRepairAt = time.Now().UTC()
+	state.LastRepairReason = "owned Core updated atomically"
+	return nil
+}
+
+func replaceFileFrom(source, target string, mode os.FileMode) error {
+	temporary := target + ".new"
+	if err := copyFile(source, temporary, mode); err != nil {
+		return err
+	}
+	if err := os.Rename(temporary, target); err != nil {
+		_ = os.Remove(temporary)
+		return err
+	}
+	return nil
+}
+
 func (manager *lifecycleManager) externalOwnershipStatus(ctx context.Context, state *externalOwnershipState) externalOwnershipStatus {
 	status := externalOwnershipStatus{
 		Prepared: state.Prepared, Armed: state.Armed, Enabled: state.Enabled, LastRepairAt: state.LastRepairAt,
@@ -410,6 +511,10 @@ func validateOwnedCoreAndConfig(ctx context.Context) error {
 }
 
 func validateAndHashOfficialConfig(ctx context.Context) (string, error) {
+	return validateAndHashOfficialConfigWithBinary(ctx, coreBinaryPath)
+}
+
+func validateAndHashOfficialConfigWithBinary(ctx context.Context, binaryPath string) (string, error) {
 	data, err := os.ReadFile(officialConfigPath)
 	if err != nil {
 		return "", fmt.Errorf("read official Xray config: %w", err)
@@ -419,7 +524,7 @@ func validateAndHashOfficialConfig(ctx context.Context) (string, error) {
 	}
 	testCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	command := exec.CommandContext(testCtx, coreBinaryPath, "run", "-test", "-config", officialConfigPath)
+	command := exec.CommandContext(testCtx, binaryPath, "run", "-test", "-config", officialConfigPath)
 	if output, err := command.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("official Xray config validation failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}

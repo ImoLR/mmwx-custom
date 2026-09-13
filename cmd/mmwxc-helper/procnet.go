@@ -16,8 +16,15 @@ const (
 	tcpEstablished = "01"
 	tcpSynSent     = "02"
 	tcpSynRecv     = "03"
+	tcpFinWait1    = "04"
+	tcpFinWait2    = "05"
 	tcpTimeWait    = "06"
+	tcpClose       = "07"
 	tcpCloseWait   = "08"
+	tcpLastAck     = "09"
+	tcpListen      = "0A"
+	tcpClosing     = "0B"
+	tcpNewSynRecv  = "0C"
 )
 
 type socketEntry struct {
@@ -182,6 +189,23 @@ func summarizeTCP(entries []socketEntry) tcpStateCounts {
 			counts.SynSent++
 		case tcpSynRecv:
 			counts.SynRecv++
+		case tcpNewSynRecv:
+			counts.SynRecv++
+		case tcpFinWait1:
+			counts.FinWait1++
+		case tcpFinWait2:
+			counts.FinWait2++
+		case tcpLastAck:
+			counts.LastAck++
+		case tcpClosing:
+			counts.Closing++
+		case tcpClose:
+			counts.Close++
+		case tcpListen:
+			// LISTEN is part of the system TCP table total, but not a live
+			// client connection state.
+		default:
+			counts.Unknown++
 		}
 	}
 	return counts

@@ -189,7 +189,11 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 		var artifact managementArtifact
 		err = json.Unmarshal(command.Payload, &artifact)
 		if err == nil {
-			err = executor.lifecycle.installOrUpdateCore(ctx, artifact)
+			if executor.state.ExternalOwnership.Enabled {
+				err = executor.lifecycle.installOrUpdateExternalOwnedCore(ctx, artifact, &executor.state.ExternalOwnership)
+			} else {
+				err = executor.lifecycle.installOrUpdateCore(ctx, artifact)
+			}
 		}
 	case "core.restart":
 		if executor.state.ExternalOwnership.Enabled {

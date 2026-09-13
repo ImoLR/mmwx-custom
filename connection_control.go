@@ -22,6 +22,7 @@ type serverConnectionIdentity struct {
 type serverUserConnectionSettings struct {
 	Identity                   serverConnectionIdentity `json:"identity"`
 	MaxInboundOnlineIPs        *int                     `json:"max_inbound_online_ips"`
+	MaxTotalConnections        *int64                   `json:"max_total_connections"`
 	MaxOutboundTCPActive       *int64                   `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond *int                     `json:"max_outbound_tcp_new_per_second"`
 	CloseWaitTimeoutSeconds    *int64                   `json:"close_wait_timeout_seconds"`
@@ -30,16 +31,24 @@ type serverUserConnectionSettings struct {
 type serverConnectionSettings struct {
 	DefaultCloseWaitTimeoutSeconds *int64                         `json:"default_close_wait_timeout_seconds"`
 	OnlineIPGracePeriodSeconds     int64                          `json:"online_ip_grace_period_seconds"`
+	GlobalTotalLimitEnabled        bool                           `json:"global_total_limit_enabled"`
+	MaxGlobalTotalConnections      *int64                         `json:"max_global_total_connections"`
 	Users                          []serverUserConnectionSettings `json:"users"`
 }
 
 type serverTCPStateCounts struct {
 	Total       int64 `json:"tcp_total"`
 	Established int64 `json:"established"`
-	TimeWait    int64 `json:"time_wait"`
-	CloseWait   int64 `json:"close_wait"`
 	SynSent     int64 `json:"syn_sent"`
 	SynRecv     int64 `json:"syn_recv"`
+	FinWait1    int64 `json:"fin_wait_1"`
+	FinWait2    int64 `json:"fin_wait_2"`
+	TimeWait    int64 `json:"time_wait"`
+	CloseWait   int64 `json:"close_wait"`
+	LastAck     int64 `json:"last_ack"`
+	Closing     int64 `json:"closing"`
+	Close       int64 `json:"close"`
+	Unknown     int64 `json:"unknown"`
 }
 
 type serverOnlineIP struct {
@@ -48,17 +57,23 @@ type serverOnlineIP struct {
 }
 
 type serverInboundConnections struct {
-	Port          uint32           `json:"port"`
-	InboundTag    string           `json:"inbound_tag"`
-	Protocol      string           `json:"protocol,omitempty"`
-	User          string           `json:"user,omitempty"`
-	Attribution   string           `json:"attribution"`
-	Established   int64            `json:"established"`
-	TimeWait      int64            `json:"time_wait"`
-	CloseWait     int64            `json:"close_wait"`
-	OnlineIPCount int              `json:"online_ip_count"`
-	OnlineIPs     []serverOnlineIP `json:"online_ips"`
-	MaxOnlineIPs  *int             `json:"max_online_ips"`
+	Port          uint32               `json:"port"`
+	InboundTag    string               `json:"inbound_tag"`
+	Protocol      string               `json:"protocol,omitempty"`
+	User          string               `json:"user,omitempty"`
+	Attribution   string               `json:"attribution"`
+	TCP           serverTCPStateCounts `json:"tcp"`
+	Established   int64                `json:"established"`
+	SynRecv       int64                `json:"syn_recv"`
+	FinWait1      int64                `json:"fin_wait_1"`
+	FinWait2      int64                `json:"fin_wait_2"`
+	TimeWait      int64                `json:"time_wait"`
+	CloseWait     int64                `json:"close_wait"`
+	LastAck       int64                `json:"last_ack"`
+	Closing       int64                `json:"closing"`
+	OnlineIPCount int                  `json:"online_ip_count"`
+	OnlineIPs     []serverOnlineIP     `json:"online_ips"`
+	MaxOnlineIPs  *int                 `json:"max_online_ips"`
 }
 
 type serverProxyUserConnections struct {
@@ -66,16 +81,33 @@ type serverProxyUserConnections struct {
 	InboundTag                 string                   `json:"inbound_tag"`
 	User                       string                   `json:"user"`
 	InboundPort                uint32                   `json:"inbound_port,omitempty"`
+	CurrentTotal               int64                    `json:"current_total"`
 	InboundActive              int64                    `json:"inbound_active"`
+	InboundTCP                 serverTCPStateCounts     `json:"inbound_tcp"`
+	InboundOnlineIPs           []serverOnlineIP         `json:"inbound_online_ips"`
 	OutboundActive             int64                    `json:"outbound_active"`
+	OutboundPending            int64                    `json:"outbound_pending"`
+	OutboundTCP                serverTCPStateCounts     `json:"outbound_tcp"`
 	OutboundNewRate            int                      `json:"outbound_new_rate"`
 	OutboundNewTotal           uint64                   `json:"outbound_new_total"`
 	OutboundRejectedTotal      uint64                   `json:"outbound_rejected_total"`
+	RejectedActiveLimit        uint64                   `json:"rejected_active_limit"`
+	RejectedNewRateLimit       uint64                   `json:"rejected_new_rate_limit"`
+	RejectedUserTotalLimit     uint64                   `json:"rejected_user_total_limit"`
+	RejectedOnlineIPLimit      uint64                   `json:"rejected_online_ip_limit"`
+	RejectedGlobalTotalLimit   uint64                   `json:"rejected_global_total_limit"`
 	MaxInboundOnlineIPs        *int                     `json:"max_inbound_online_ips"`
+	MaxTotalConnections        *int64                   `json:"max_total_connections"`
 	MaxOutboundTCPActive       *int64                   `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond *int                     `json:"max_outbound_tcp_new_per_second"`
 	CloseWaitTimeoutSeconds    *int64                   `json:"close_wait_timeout_seconds"`
 	Source                     string                   `json:"source"`
+}
+
+type serverGlobalConnections struct {
+	CurrentTotal             int64  `json:"current_total"`
+	RejectedGlobalTotalLimit uint64 `json:"rejected_global_total_limit"`
+	MaxTotal                 *int64 `json:"max_total"`
 }
 
 type serverCoreConnectionStatus struct {
@@ -89,6 +121,7 @@ type serverDetailedConnectionSnapshot struct {
 	System     serverTCPStateCounts         `json:"system"`
 	Inbounds   []serverInboundConnections   `json:"inbounds"`
 	ProxyUsers []serverProxyUserConnections `json:"proxy_users"`
+	Global     serverGlobalConnections      `json:"global"`
 	Core       serverCoreConnectionStatus   `json:"core"`
 	SampledAt  time.Time                    `json:"sampled_at"`
 }
@@ -135,6 +168,12 @@ func validateServerConnectionSettings(settings serverConnectionSettings) error {
 	if settings.DefaultCloseWaitTimeoutSeconds != nil && *settings.DefaultCloseWaitTimeoutSeconds < 0 {
 		return errors.New("default_close_wait_timeout_seconds must be non-negative")
 	}
+	if settings.MaxGlobalTotalConnections != nil && *settings.MaxGlobalTotalConnections <= 0 {
+		return errors.New("max_global_total_connections must be positive when set")
+	}
+	if settings.GlobalTotalLimitEnabled && settings.MaxGlobalTotalConnections == nil {
+		return errors.New("max_global_total_connections is required when the global limit is enabled")
+	}
 	seen := make(map[serverConnectionIdentity]struct{}, len(settings.Users))
 	for _, user := range settings.Users {
 		if strings.TrimSpace(user.Identity.InboundTag) == "" || strings.TrimSpace(user.Identity.User) == "" {
@@ -146,6 +185,9 @@ func validateServerConnectionSettings(settings serverConnectionSettings) error {
 		seen[user.Identity] = struct{}{}
 		if user.MaxInboundOnlineIPs != nil && *user.MaxInboundOnlineIPs <= 0 {
 			return errors.New("max_inbound_online_ips must be positive when set")
+		}
+		if user.MaxTotalConnections != nil && *user.MaxTotalConnections <= 0 {
+			return errors.New("max_total_connections must be positive when set")
 		}
 		if user.MaxOutboundTCPActive != nil && *user.MaxOutboundTCPActive <= 0 {
 			return errors.New("max_outbound_tcp_active must be positive when set")
@@ -215,7 +257,7 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 }
 
 func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
-	counts := []int64{snapshot.System.Total, snapshot.System.Established, snapshot.System.TimeWait, snapshot.System.CloseWait, snapshot.System.SynSent, snapshot.System.SynRecv}
+	counts := tcpStateValues(snapshot.System)
 	for _, count := range counts {
 		if count < 0 {
 			return errors.New("negative system TCP count")
@@ -223,6 +265,50 @@ func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
 	}
 	if len(snapshot.Inbounds) > 10000 || len(snapshot.ProxyUsers) > 10000 {
 		return errors.New("too many connection records")
+	}
+	if snapshot.Global.CurrentTotal < 0 {
+		return errors.New("negative global connection count")
+	}
+	for _, inbound := range snapshot.Inbounds {
+		if err := validateTCPStateCounts(inbound.TCP, "inbound"); err != nil {
+			return err
+		}
+		if inbound.OnlineIPCount < 0 {
+			return errors.New("invalid inbound online IP count")
+		}
+		for _, item := range inbound.OnlineIPs {
+			if strings.TrimSpace(item.IP) == "" || item.Connections < 0 {
+				return errors.New("invalid inbound online IP record")
+			}
+		}
+	}
+	for _, user := range snapshot.ProxyUsers {
+		if user.CurrentTotal < 0 || user.InboundActive < 0 || user.OutboundActive < 0 || user.OutboundPending < 0 || user.OutboundNewRate < 0 {
+			return errors.New("negative proxy user connection count")
+		}
+		if err := validateTCPStateCounts(user.InboundTCP, "proxy user inbound"); err != nil {
+			return err
+		}
+		if err := validateTCPStateCounts(user.OutboundTCP, "proxy user outbound"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func tcpStateValues(counts serverTCPStateCounts) []int64 {
+	return []int64{
+		counts.Total, counts.Established, counts.SynSent, counts.SynRecv,
+		counts.FinWait1, counts.FinWait2, counts.TimeWait, counts.CloseWait,
+		counts.LastAck, counts.Closing, counts.Close, counts.Unknown,
+	}
+}
+
+func validateTCPStateCounts(counts serverTCPStateCounts, label string) error {
+	for _, count := range tcpStateValues(counts) {
+		if count < 0 {
+			return fmt.Errorf("negative %s TCP count", label)
+		}
 	}
 	return nil
 }
@@ -237,6 +323,11 @@ func normalizeDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) server
 	for index := range snapshot.Inbounds {
 		if snapshot.Inbounds[index].OnlineIPs == nil {
 			snapshot.Inbounds[index].OnlineIPs = []serverOnlineIP{}
+		}
+	}
+	for index := range snapshot.ProxyUsers {
+		if snapshot.ProxyUsers[index].InboundOnlineIPs == nil {
+			snapshot.ProxyUsers[index].InboundOnlineIPs = []serverOnlineIP{}
 		}
 	}
 	return snapshot
