@@ -502,14 +502,18 @@ func validateOwnedCoreAndConfig(ctx context.Context) error {
 	if err != nil || !strings.Contains(strings.ToLower(version), "xray") {
 		return errors.New("Custom Core version validation failed")
 	}
-	if _, err := validateAndHashOfficialConfig(ctx); err != nil {
-		return err
-	}
 	data, err := os.ReadFile(officialConfigPath)
 	if err != nil {
 		return err
 	}
-	return ensureCoreAssets(data)
+	if len(data) == 0 || len(data) > 8<<20 || !json.Valid(data) {
+		return errors.New("official Xray config is not valid JSON")
+	}
+	if err := ensureCoreAssets(data); err != nil {
+		return err
+	}
+	_, err = validateAndHashOfficialConfig(ctx)
+	return err
 }
 
 func validateAndHashOfficialConfig(ctx context.Context) (string, error) {
@@ -527,6 +531,7 @@ func validateAndHashOfficialConfigWithBinary(ctx context.Context, binaryPath str
 	testCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	command := exec.CommandContext(testCtx, binaryPath, "run", "-test", "-config", officialConfigPath)
+	command.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(coreBinaryPath))
 	if output, err := command.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("official Xray config validation failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}

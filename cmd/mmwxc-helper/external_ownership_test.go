@@ -79,6 +79,28 @@ func TestHashValidJSONFileFailsClosed(t *testing.T) {
 	}
 }
 
+func TestOwnershipValidationOrdersAssetsBeforeCoreTest(t *testing.T) {
+	// A config that references geosite/geoip cannot be tested by the Fork until
+	// those files are available under XRAY_LOCATION_ASSET. Keep this regression
+	// assertion close to validateOwnedCoreAndConfig so the order cannot silently
+	// regress to validate-then-copy after a fresh server reinstall.
+	source, err := os.ReadFile("external_ownership.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	functionStart := strings.Index(string(source), "func validateOwnedCoreAndConfig")
+	functionEnd := strings.Index(string(source)[functionStart:], "\nfunc validateAndHashOfficialConfig")
+	if functionStart < 0 || functionEnd < 0 {
+		t.Fatal("validation function not found")
+	}
+	body := string(source)[functionStart : functionStart+functionEnd]
+	assetIndex := strings.Index(body, "ensureCoreAssets(data)")
+	validationIndex := strings.LastIndex(body, "validateAndHashOfficialConfig(ctx)")
+	if assetIndex < 0 || validationIndex < 0 || assetIndex > validationIndex {
+		t.Fatalf("required assets are not installed before config validation: %s", body)
+	}
+}
+
 func TestInboundPortsFromOfficialConfig(t *testing.T) {
 	ports, err := inboundPortsFromConfig([]byte(`{"inbounds":[{"port":10022},{"port":"12968"},{"port":10022},{"port":"invalid"}]}`))
 	if err != nil {
