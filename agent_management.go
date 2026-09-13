@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	managementCommandTTL = 10 * time.Minute
+	managementCommandTTL = 15 * time.Minute
 	managementHistoryMax = 20
 	managementQueueMax   = 16
 	managementPayloadMax = 3 << 20
