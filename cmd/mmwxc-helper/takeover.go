@@ -100,6 +100,15 @@ func performExternalTakeover(ctx context.Context, client *http.Client, cfg confi
 	if err := systemctl(ctx, "restart", "mmw-agent.service"); err != nil {
 		return rollbackTakeover(ctx, client, cfg, lifecycle, state, fmt.Errorf("restart official Agent: %w", err))
 	}
+	// The official switch endpoint starts xray.service as part of the mode
+	// transition. A local Agent config restart reconnects in external mode but
+	// intentionally leaves an already-stopped service inactive, so bootstrap it
+	// exactly once during the armed handoff. Subsequent lifecycle operations are
+	// still performed by the official Agent; reconciliation never force-starts
+	// a deliberately stopped healthy service.
+	if err := bootstrapExternalOwnershipService(ctx, systemctl); err != nil {
+		return rollbackTakeover(ctx, client, cfg, lifecycle, state, fmt.Errorf("bootstrap external xray.service: %w", err))
+	}
 	if err := waitExternalTakeoverHealthy(ctx, client, cfg, lifecycle, state); err != nil {
 		return rollbackTakeover(ctx, client, cfg, lifecycle, state, err)
 	}
@@ -107,6 +116,16 @@ func performExternalTakeover(ctx context.Context, client *http.Client, cfg confi
 	state.ExternalOwnership.LastRepairAt = time.Now().UTC()
 	state.ExternalOwnership.LastRepairReason = "transactional official Agent external handoff completed"
 	return nil
+}
+
+func bootstrapExternalOwnershipService(ctx context.Context, run systemctlRunner) error {
+	if err := run(ctx, "unmask", "xray.service"); err != nil {
+		return err
+	}
+	if err := run(ctx, "enable", "xray.service"); err != nil {
+		return err
+	}
+	return run(ctx, "start", "xray.service")
 }
 
 func rollbackTakeover(_ context.Context, client *http.Client, cfg config, lifecycle *lifecycleManager, state *localState, cause error) error {

@@ -1,11 +1,30 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestBootstrapExternalOwnershipStartsOnceWithoutRestartLoop(t *testing.T) {
+	var calls []string
+	run := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+	if err := bootstrapExternalOwnershipService(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(calls, "|")
+	if joined != "unmask xray.service|enable xray.service|start xray.service" {
+		t.Fatalf("unexpected bootstrap sequence: %s", joined)
+	}
+	if strings.Contains(joined, "restart") {
+		t.Fatalf("handoff bootstrap must not create a restart loop: %s", joined)
+	}
+}
 
 func TestReplaceAgentXrayModePreservesUnrelatedConfig(t *testing.T) {
 	original := []byte("mode: remote\ntoken: secret-value\n  xray_mode: embedded\nlisten_port: \"23889\"\n")
