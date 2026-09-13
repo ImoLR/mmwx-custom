@@ -6,6 +6,7 @@ API_URL="${MMWXC_HELPER_API_URL:-https://mmwxc.imgamer.top}"
 SERVER_ID="${MMWXC_HELPER_SERVER_ID:-}"
 TOKEN="${MMWXC_HELPER_TOKEN:-}"
 INTERVAL="${MMWXC_HELPER_INTERVAL:-5s}"
+INSTALL_MODE="${MMWXC_INSTALL_MODE:-takeover}"
 RELEASE_TAG="${MMWXC_RELEASE_TAG:-latest}"
 ASSET_DIR="${MMWXC_ASSET_DIR:-}"
 ROOT_PREFIX="${MMWXC_INSTALL_ROOT:-}"
@@ -21,10 +22,11 @@ log_step "Custom Agent installer started"
 usage() {
   cat <<'EOF'
 Usage:
-  install-helper.sh [--server-id ID] [--token TOKEN] [--api-url URL]
+  install-helper.sh [--server-id ID] [--token TOKEN] [--api-url URL] [--takeover|--helper-only]
 
 The same installer upgrades an existing Helper in place or performs a fresh
 installation when registration values are supplied by a one-time install URL.
+The normal default is --takeover. Use --helper-only only for maintenance.
 EOF
 }
 
@@ -36,10 +38,14 @@ while [[ $# -gt 0 ]]; do
     --interval) INTERVAL="${2:-}"; shift 2 ;;
     --repo) REPO="${2:-}"; shift 2 ;;
     --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
+    --takeover) INSTALL_MODE=takeover; shift ;;
+    --helper-only|--no-takeover) INSTALL_MODE=helper-only; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+[[ "$INSTALL_MODE" == "takeover" || "$INSTALL_MODE" == "helper-only" ]] || { echo "invalid install mode: $INSTALL_MODE" >&2; exit 2; }
 
 if [[ "$(uname -s)" != "Linux" ]]; then echo "mmwxc-helper only supports Linux" >&2; exit 1; fi
 if [[ "${EUID:-$(id -u)}" -ne 0 && -z "$ROOT_PREFIX" ]]; then echo "please run as root" >&2; exit 1; fi
@@ -258,7 +264,7 @@ core_is_ready() {
   [[ -S /run/mmwxc/core-control.sock ]] || return 1
   if command -v curl >/dev/null 2>&1; then
     snapshot="$(curl -fsS --max-time 2 --unix-socket /run/mmwxc/core-control.sock http://localhost/v1/snapshot)" || return 1
-    [[ "$snapshot" =~ \"version\"[[:space:]]*:[[:space:]]*1[[:space:]]*[,\}] ]]
+    [[ "$snapshot" =~ \"version\"[[:space:]]*:[[:space:]]*[12][[:space:]]*[,\}] ]]
   fi
 }
 
@@ -306,6 +312,33 @@ if [[ -z "$ROOT_PREFIX" ]]; then
     fi
     exit 1
   fi
+  if [[ "$INSTALL_MODE" == "takeover" ]]; then
+    log_step "Starting transactional external single-Core takeover"
+    "$SYSTEMCTL" stop mmwxc-helper.service
+    if ! "$HELPER_BINARY" --config "$HELPER_CONFIG" --takeover-once; then
+      "$SYSTEMCTL" start mmwxc-helper.service || true
+      echo "Custom Core takeover failed; the Helper restored embedded mode" >&2
+      exit 1
+    fi
+    if ! "$SYSTEMCTL" start mmwxc-helper.service; then
+      "$HELPER_BINARY" --config "$HELPER_CONFIG" --rollback-takeover || true
+      "$SYSTEMCTL" start mmwxc-helper.service || true
+      echo "Helper restart after takeover failed; embedded rollback requested" >&2
+      exit 1
+    fi
+    deadline=$((SECONDS + 30))
+    while (( SECONDS < deadline )); do
+      if helper_is_ready && grep -q '"status"[[:space:]]*:[[:space:]]*"completed"' "$HELPER_STATE" && "$SYSTEMCTL" is-active --quiet xray.service && ! "$SYSTEMCTL" is-active --quiet mmwxc-core.service; then break; fi
+      sleep 1
+    done
+    if ! helper_is_ready || ! grep -q '"status"[[:space:]]*:[[:space:]]*"completed"' "$HELPER_STATE" || ! "$SYSTEMCTL" is-active --quiet xray.service || "$SYSTEMCTL" is-active --quiet mmwxc-core.service; then
+      "$SYSTEMCTL" stop mmwxc-helper.service || true
+      "$HELPER_BINARY" --config "$HELPER_CONFIG" --rollback-takeover || true
+      "$SYSTEMCTL" start mmwxc-helper.service || true
+      echo "Post-takeover Helper/single-Core health check failed" >&2
+      exit 1
+    fi
+  fi
   if $core_changed && $core_was_active; then
     core_ready=false
     if "$SYSTEMCTL" restart mmwxc-core.service; then
@@ -327,4 +360,9 @@ fi
 log_step "MMWXC Custom Agent installation complete"
 log_step "Helper service: mmwxc-helper.service"
 log_step "Custom Core prepared at /opt/mmwxc/core/xray"
-log_step "Custom Core remains stopped until an explicit config/cutover command is issued"
+if [[ "$INSTALL_MODE" == "takeover" && -z "$ROOT_PREFIX" ]]; then
+  log_step "Core mode: external / owned / single_core"
+  log_step "Official Agent: connected"
+else
+  log_step "Core mode: helper-only / not taken over"
+fi

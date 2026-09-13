@@ -54,6 +54,28 @@ func TestInstallTokenPreservesExistingIdentity(t *testing.T) {
 	}
 }
 
+func TestInstallTokenDefaultsToTakeoverAndAllowsExplicitHelperOnly(t *testing.T) {
+	state, err := openHelperState(filepath.Join(t.TempDir(), "helper-state.json"), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultRecord, _, err := state.createInstallToken("12")
+	if err != nil || defaultRecord.InstallMode != "takeover" {
+		t.Fatalf("default install mode=%q err=%v", defaultRecord.InstallMode, err)
+	}
+	helperOnly, _, err := state.createInstallTokenForMode("13", "helper-only")
+	if err != nil || helperOnly.InstallMode != "helper-only" {
+		t.Fatalf("helper-only install mode=%q err=%v", helperOnly.InstallMode, err)
+	}
+	if _, _, err := state.createInstallTokenForMode("14", "unsafe"); err == nil {
+		t.Fatal("invalid install mode was accepted")
+	}
+	script := renderHelperInstaller("https://controller.invalid", "uuid", "token", "takeover")
+	if !strings.Contains(script, "export MMWXC_INSTALL_MODE=\"takeover\"") {
+		t.Fatalf("rendered installer did not pin takeover mode: %q", script[:min(len(script), 256)])
+	}
+}
+
 func TestManagementCommandAndSignedResultRoundTrip(t *testing.T) {
 	state, err := openHelperState(filepath.Join(t.TempDir(), "helper-state.json"), time.Minute)
 	if err != nil {

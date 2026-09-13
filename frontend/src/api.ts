@@ -3,6 +3,7 @@ import type {
   AgentSyncNodesResponse,
   AgentVersionInfo,
   ConnectionMetricsResponse,
+  CustomAgentStatusResponse,
   DetailedConnectionResponse,
   ServerConnectionSettings,
   GeoLookupResponse,
@@ -661,14 +662,20 @@ export function updateDetailedConnectionSettings(token: string, serverId: number
   });
 }
 
-export function createHelperInstallToken(token: string, serverId: number) {
+export function createHelperInstallToken(token: string, serverId: number, mode: "takeover" | "helper-only" = "takeover") {
   return requestCustomApi<HelperInstallTokenResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/helper/install-token"), {
     method: "POST",
     headers: {
       "MM-Authorization": token,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ server_id: serverId }),
+    body: JSON.stringify({ server_id: serverId, mode }),
+  });
+}
+
+export function fetchCustomAgentStatus(token: string, serverId: number) {
+  return requestCustomApi<CustomAgentStatusResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/agent`), {
+    headers: { "MM-Authorization": token },
   });
 }
 

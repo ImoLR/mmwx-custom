@@ -12,6 +12,8 @@ type fakeAdminSessionStore struct {
 	authorized bool
 	server     bool
 	err        error
+	runtime    remoteServerRuntime
+	mode       string
 }
 
 func (s *fakeAdminSessionStore) AuthorizeAdmin(context.Context, string) (bool, error) {
@@ -23,6 +25,16 @@ func (s *fakeAdminSessionStore) RemoteServerExists(context.Context, string) (boo
 }
 
 func (s *fakeAdminSessionStore) Close() error { return nil }
+
+func (s *fakeAdminSessionStore) RemoteServerRuntime(context.Context, string) (remoteServerRuntime, error) {
+	return s.runtime, s.err
+}
+
+func (s *fakeAdminSessionStore) SetRemoteServerXrayMode(_ context.Context, _ string, mode string) error {
+	s.mode = mode
+	s.runtime.XrayMode = mode
+	return s.err
+}
 
 func TestOperatorAuthorizationUsesIndependentBearerToken(t *testing.T) {
 	app := &app{apiToken: "operator-token"}

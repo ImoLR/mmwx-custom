@@ -23,7 +23,7 @@ const (
 	detailedEndpoint  = "/api/custom/agent/connections"
 	defaultCoreSocket = "/run/mmwxc/core-control.sock"
 	defaultStatePath  = "/var/lib/mmwxc-helper/state.json"
-	helperVersion     = "v0.4.2"
+	helperVersion     = "v0.4.3"
 )
 
 type config struct {
@@ -57,6 +57,8 @@ func main() {
 	once := flag.Bool("once", false, "collect once, upload once, then exit")
 	printOnly := flag.Bool("print", false, "collect once and print JSON without uploading")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	takeoverOnce := flag.Bool("takeover-once", false, "perform one transactional external Core takeover and exit")
+	rollbackTakeoverOnce := flag.Bool("rollback-takeover", false, "restore the pre-takeover embedded state and exit")
 	managedHelperUpdate := flag.Bool("managed-helper-update", false, "run the internal managed update worker")
 	updateURL := flag.String("update-url", "", "managed update artifact URL")
 	updateSHA256 := flag.String("update-sha256", "", "managed update artifact SHA256")
@@ -93,7 +95,40 @@ func main() {
 	onlineTracker := newOnlineIPTracker()
 	nftables := newNftablesManager(cfg.EnableNft)
 	lifecycle := newLifecycleManager(core)
-	executor := &commandExecutor{lifecycle: lifecycle, core: core, state: &state}
+	executor := &commandExecutor{lifecycle: lifecycle, core: core, state: &state, client: client, config: cfg}
+	if *rollbackTakeoverOnce {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		err := restoreEmbeddedTakeover(ctx, client, cfg, lifecycle, &state)
+		cancel()
+		if err != nil {
+			log.Fatalf("[mmwxc-helper] takeover rollback failed: %v", err)
+		}
+		state.Takeover = takeoverState{Mode: "takeover", Status: "rolled_back", Message: "embedded state restored", CompletedAt: time.Now().UTC()}
+		if err := saveLocalState(cfg.StatePath, state); err != nil {
+			log.Fatalf("[mmwxc-helper] save rollback state: %v", err)
+		}
+		return
+	}
+	if *takeoverOnce {
+		state.Takeover = takeoverState{Mode: "takeover", Status: "in_progress"}
+		_ = saveLocalState(cfg.StatePath, state)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		err := performExternalTakeover(ctx, client, cfg, lifecycle, &state)
+		cancel()
+		if err != nil {
+			state.Takeover = takeoverState{Mode: "takeover", Status: "failed", Message: sanitizeManagementMessage(err.Error()), CompletedAt: time.Now().UTC()}
+			_ = saveLocalState(cfg.StatePath, state)
+			log.Fatalf("[mmwxc-helper] takeover failed: %v", err)
+		}
+		state.Takeover = takeoverState{Mode: "takeover", Status: "completed", Message: "external single-Core takeover complete", CompletedAt: time.Now().UTC()}
+		if err := saveLocalState(cfg.StatePath, state); err != nil {
+			rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			rollbackErr := restoreEmbeddedTakeover(rollbackCtx, client, cfg, lifecycle, &state)
+			rollbackCancel()
+			log.Fatalf("[mmwxc-helper] save takeover state failed: %v; rollback: %v", err, rollbackErr)
+		}
+		return
+	}
 	if *printOnly {
 		snapshot := collectDetailedSnapshot(context.Background(), core, onlineTracker, state.Settings)
 		_ = json.NewEncoder(os.Stdout).Encode(snapshot)

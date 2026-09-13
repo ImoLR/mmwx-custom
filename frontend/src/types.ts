@@ -308,6 +308,19 @@ export type HelperInstallTokenResponse = {
   command: string;
 };
 
+export type CustomAgentStatusResponse = {
+  success: boolean;
+  status?: {
+    helper?: { installed?: boolean; active?: boolean; ready?: boolean; version?: string };
+    core?: { installed?: boolean; active?: boolean; ready?: boolean; version?: string };
+    core_mode?: string;
+    single_core?: boolean;
+    official_agent?: string;
+    takeover?: { mode?: string; status?: string; message?: string; completed_at?: string };
+    external_ownership?: { prepared?: boolean; armed?: boolean; enabled?: boolean; service_owned?: boolean; runtime_owned?: boolean; single_core?: boolean; core_ready?: boolean };
+  };
+};
+
 export type GeoLookupResponse = {
   success?: boolean;
   country_code?: string;

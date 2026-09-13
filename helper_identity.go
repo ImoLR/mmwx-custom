@@ -63,10 +63,12 @@ type helperInstallToken struct {
 	CreatedAt        time.Time `json:"created_at"`
 	ExpiresAt        time.Time `json:"expires_at"`
 	PreserveExisting bool      `json:"preserve_existing,omitempty"`
+	InstallMode      string    `json:"install_mode"`
 }
 
 type helperInstallTokenRequest struct {
-	ServerID any `json:"server_id"`
+	ServerID any    `json:"server_id"`
+	Mode     string `json:"mode,omitempty"`
 }
 
 type helperInstallTokenResponse struct {
@@ -150,6 +152,16 @@ func (s *helperState) saveLocked() error {
 }
 
 func (s *helperState) createInstallToken(officialServerID string) (helperInstallToken, string, error) {
+	return s.createInstallTokenForMode(officialServerID, "takeover")
+}
+
+func (s *helperState) createInstallTokenForMode(officialServerID, installMode string) (helperInstallToken, string, error) {
+	if installMode == "" {
+		installMode = "takeover"
+	}
+	if installMode != "takeover" && installMode != "helper-only" {
+		return helperInstallToken{}, "", errors.New("invalid install mode")
+	}
 	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -193,6 +205,7 @@ func (s *helperState) createInstallToken(officialServerID string) (helperInstall
 		CreatedAt:        now,
 		ExpiresAt:        now.Add(s.ttl),
 		PreserveExisting: preserveExisting,
+		InstallMode:      installMode,
 	}
 	if !preserveExisting {
 		record.HelperTokenHash = hashSecret(helperToken)
@@ -332,11 +345,19 @@ func (a *app) createHelperInstallTokenHandler(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid server_id"})
 		return
 	}
+	installMode := strings.TrimSpace(req.Mode)
+	if installMode == "" {
+		installMode = "takeover"
+	}
+	if installMode != "takeover" && installMode != "helper-only" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid install mode"})
+		return
+	}
 	if err := a.authorizeOperatorServerRequest(r, serverID); err != nil {
 		writeOperatorAuthorizationError(w, err)
 		return
 	}
-	record, installToken, err := a.helperState.createInstallToken(serverID)
+	record, installToken, err := a.helperState.createInstallTokenForMode(serverID, installMode)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "failed to create install token"})
 		return
@@ -379,7 +400,7 @@ func (a *app) helperInstallScriptHandler(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = io.WriteString(w, renderHelperInstaller(a.externalBaseURL(r), record.CustomServerUUID, record.HelperToken))
+	_, _ = io.WriteString(w, renderHelperInstaller(a.externalBaseURL(r), record.CustomServerUUID, record.HelperToken, record.InstallMode))
 }
 
 func (a *app) externalBaseURL(r *http.Request) string {
@@ -404,8 +425,8 @@ func (a *app) externalBaseURL(r *http.Request) string {
 //go:embed scripts/install-helper.sh
 var helperInstallerScript string
 
-func renderHelperInstaller(apiURL, serverUUID, helperToken string) string {
-	prefix := fmt.Sprintf("#!/usr/bin/env bash\nexport MMWXC_HELPER_API_URL=%q\nexport MMWXC_HELPER_SERVER_ID=%q\nexport MMWXC_HELPER_TOKEN=%q\n", apiURL, serverUUID, helperToken)
+func renderHelperInstaller(apiURL, serverUUID, helperToken, installMode string) string {
+	prefix := fmt.Sprintf("#!/usr/bin/env bash\nexport MMWXC_HELPER_API_URL=%q\nexport MMWXC_HELPER_SERVER_ID=%q\nexport MMWXC_HELPER_TOKEN=%q\nexport MMWXC_INSTALL_MODE=%q\n", apiURL, serverUUID, helperToken, installMode)
 	return prefix + strings.TrimPrefix(helperInstallerScript, "#!/usr/bin/env bash\n")
 }
 

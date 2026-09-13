@@ -17,13 +17,14 @@ import (
 )
 
 const (
-	officialConfigPath    = "/usr/local/etc/xray/config.json"
-	ownershipDropInDir    = "/etc/systemd/system/xray.service.d"
-	ownershipDropInPath   = "/etc/systemd/system/xray.service.d/90-mmwxc-owner.conf"
-	ownershipImagePath    = "/var/lib/mmwxc/ownership/xray"
-	ownershipConfigBackup = "/var/lib/mmwxc/ownership/config.last-good.json"
-	ownershipBackupRoot   = "/var/lib/mmwxc/rollback/external-ownership"
-	invalidConfigGrace    = 30 * time.Second
+	officialConfigPath      = "/usr/local/etc/xray/config.json"
+	officialAgentConfigPath = "/etc/mmw-agent/config.yaml"
+	ownershipDropInDir      = "/etc/systemd/system/xray.service.d"
+	ownershipDropInPath     = "/etc/systemd/system/xray.service.d/90-mmwxc-owner.conf"
+	ownershipImagePath      = "/var/lib/mmwxc/ownership/xray"
+	ownershipConfigBackup   = "/var/lib/mmwxc/ownership/config.last-good.json"
+	ownershipBackupRoot     = "/var/lib/mmwxc/rollback/external-ownership"
+	invalidConfigGrace      = 30 * time.Second
 )
 
 const ownershipBaseUnit = `[Unit]
@@ -143,13 +144,14 @@ type ownershipPathBackup struct {
 }
 
 type ownershipBackupManifest struct {
-	CreatedAt       time.Time           `json:"created_at"`
-	OfficialUnit    ownershipPathBackup `json:"official_unit"`
-	OwnershipDropIn ownershipPathBackup `json:"ownership_drop_in"`
-	CustomActive    bool                `json:"custom_active"`
-	CustomEnabled   bool                `json:"custom_enabled"`
-	OfficialActive  bool                `json:"official_active"`
-	OfficialEnabled bool                `json:"official_enabled"`
+	CreatedAt       time.Time            `json:"created_at"`
+	OfficialUnit    ownershipPathBackup  `json:"official_unit"`
+	OwnershipDropIn ownershipPathBackup  `json:"ownership_drop_in"`
+	AgentConfig     *ownershipPathBackup `json:"agent_config,omitempty"`
+	CustomActive    bool                 `json:"custom_active"`
+	CustomEnabled   bool                 `json:"custom_enabled"`
+	OfficialActive  bool                 `json:"official_active"`
+	OfficialEnabled bool                 `json:"official_enabled"`
 }
 
 func (manager *lifecycleManager) prepareExternalOwnership(ctx context.Context, state *externalOwnershipState) error {
@@ -612,6 +614,11 @@ func createOwnershipBackup(ctx context.Context, directory string) error {
 	if manifest.OwnershipDropIn, err = backupOwnershipPath(ownershipDropInPath, directory, "owner.dropin"); err != nil {
 		return err
 	}
+	agentConfig, err := backupOwnershipPath(officialAgentConfigPath, directory, "mmw-agent-config.yaml")
+	if err != nil {
+		return err
+	}
+	manifest.AgentConfig = &agentConfig
 	manifest.CustomActive = serviceActive(ctx, coreServiceName)
 	manifest.CustomEnabled = serviceEnabled(ctx, coreServiceName)
 	manifest.OfficialActive = serviceActive(ctx, "xray.service")
@@ -659,6 +666,11 @@ func restoreOwnershipBackup(ctx context.Context, directory string) error {
 	}
 	if err := restoreOwnershipPath(ownershipDropInPath, directory, manifest.OwnershipDropIn); err != nil {
 		return err
+	}
+	if manifest.AgentConfig != nil {
+		if err := restoreOwnershipPath(officialAgentConfigPath, directory, *manifest.AgentConfig); err != nil {
+			return err
+		}
 	}
 	if err := systemctl(ctx, "daemon-reload"); err != nil {
 		return err

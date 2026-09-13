@@ -32,6 +32,17 @@ type adminSessionStore interface {
 	Close() error
 }
 
+type remoteServerModeStore interface {
+	RemoteServerRuntime(context.Context, string) (remoteServerRuntime, error)
+	SetRemoteServerXrayMode(context.Context, string, string) error
+}
+
+type remoteServerRuntime struct {
+	XrayMode      string     `json:"xray_mode"`
+	Status        string     `json:"status"`
+	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
+}
+
 type postgresAdminSessionStore struct {
 	db *sql.DB
 }
@@ -125,6 +136,50 @@ func (s *postgresAdminSessionStore) RemoteServerExists(ctx context.Context, serv
 	var exists bool
 	err = s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM remote_servers WHERE id = $1)`, parsed).Scan(&exists)
 	return exists, err
+}
+
+func (s *postgresAdminSessionStore) RemoteServerRuntime(ctx context.Context, serverID string) (remoteServerRuntime, error) {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(serverID), 10, 64)
+	if err != nil || parsed <= 0 {
+		return remoteServerRuntime{}, errOperatorServerNotFound
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var runtime remoteServerRuntime
+	var heartbeat sql.NullTime
+	err = s.db.QueryRowContext(ctx, `SELECT COALESCE(xray_mode, 'external'), COALESCE(status, ''), last_heartbeat FROM remote_servers WHERE id = $1`, parsed).Scan(&runtime.XrayMode, &runtime.Status, &heartbeat)
+	if errors.Is(err, sql.ErrNoRows) {
+		return remoteServerRuntime{}, errOperatorServerNotFound
+	}
+	if err != nil {
+		return remoteServerRuntime{}, err
+	}
+	if heartbeat.Valid {
+		value := heartbeat.Time.UTC()
+		runtime.LastHeartbeat = &value
+	}
+	return runtime, nil
+}
+
+func (s *postgresAdminSessionStore) SetRemoteServerXrayMode(ctx context.Context, serverID, mode string) error {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(serverID), 10, 64)
+	if err != nil || parsed <= 0 || (mode != "embedded" && mode != "external") {
+		return errors.New("invalid xray mode update")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	result, err := s.db.ExecContext(ctx, `UPDATE remote_servers SET xray_mode = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, mode, parsed)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return errOperatorServerNotFound
+	}
+	return nil
 }
 
 func (s *postgresAdminSessionStore) Close() error {

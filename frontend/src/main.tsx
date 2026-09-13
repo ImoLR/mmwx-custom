@@ -60,6 +60,7 @@ import {
   controlRemoteService,
   createRemoteServer,
   createHelperInstallToken,
+  fetchCustomAgentStatus,
   deleteRemoteWebsite,
   deployRemoteDefaultConfig,
   expectXrayRecovery,
@@ -100,6 +101,7 @@ import type {
   ConnectionMetric,
   AgentVersionInfo,
   HelperInstallTokenResponse,
+  CustomAgentStatusResponse,
   DNSProvider,
   NodeTrafficItem,
   PeriodUserTrafficItem,
@@ -1723,7 +1725,16 @@ function HelperInstallDialog({ server, sessionToken, connectionMetric }: { serve
   const [install, setInstall] = useState<HelperInstallTokenResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+	const [agentStatus, setAgentStatus] = useState<CustomAgentStatusResponse["status"]>();
   const helper = helperStatus(connectionMetric);
+
+	useEffect(() => {
+		let active = true;
+		void fetchCustomAgentStatus(sessionToken, server.id).then((response) => {
+			if (active) setAgentStatus(response.status);
+		}).catch(() => undefined);
+		return () => { active = false; };
+	}, [server.id, sessionToken]);
 
   const generate = useCallback(async () => {
     setBusy(true);
@@ -1744,10 +1755,16 @@ function HelperInstallDialog({ server, sessionToken, connectionMetric }: { serve
         <InfoBlock label="状态" value={helper.label} />
         <InfoBlock label="版本" value={helper.version || "--"} />
         <InfoBlock label="最近上报" value={helper.updatedAt ? formatRelativeTime(helper.updatedAt) : "--"} />
+		<InfoBlock label="Custom Core" value={agentStatus?.core?.installed ? `${agentStatus.core.version || "installed"} / ${agentStatus.core.ready ? "ready" : "not ready"}` : "未安装"} />
+		<InfoBlock label="Core 模式" value={agentStatus?.core_mode || "--"} />
+		<InfoBlock label="Ownership" value={agentStatus?.external_ownership?.enabled && agentStatus.external_ownership.runtime_owned ? "owned" : "--"} />
+		<InfoBlock label="Single Core" value={agentStatus?.single_core ? "true" : "false"} />
+		<InfoBlock label="官方 Agent" value={agentStatus?.official_agent || "--"} />
+		<InfoBlock label="Takeover" value={agentStatus?.takeover?.status || "--"} />
       </div>
       <div className="service-dialog-section">
         <h4>安装 Connections Helper</h4>
-        <p>该命令只绑定当前服务器：{server.name}。安装链接短期有效且只能使用一次，不会修改官方 mmw-agent。</p>
+        <p>该命令只绑定当前服务器：{server.name}。安装链接短期有效且只能使用一次；默认事务式切换为 external 单 Core，失败自动恢复 embedded。</p>
         <button className="helper-generate-button" type="button" disabled={busy} onClick={() => void generate()}>
           {busy ? "生成中..." : "生成安装命令"}
         </button>

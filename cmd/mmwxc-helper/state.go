@@ -18,6 +18,14 @@ type localState struct {
 	ControllerConnectedAt time.Time              `json:"controller_connected_at,omitempty"`
 	HelperVersion         string                 `json:"helper_version,omitempty"`
 	ExternalOwnership     externalOwnershipState `json:"external_ownership,omitempty"`
+	Takeover              takeoverState          `json:"takeover,omitempty"`
+}
+
+type takeoverState struct {
+	Mode        string    `json:"mode,omitempty"`
+	Status      string    `json:"status,omitempty"`
+	Message     string    `json:"message,omitempty"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
 }
 
 func loadLocalState(path string) (localState, error) {

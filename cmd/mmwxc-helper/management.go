@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os/user"
 	"runtime"
 	"sort"
@@ -69,6 +70,10 @@ type agentStatus struct {
 	LastOperation *managementResult       `json:"last_operation,omitempty"`
 	ReportedAt    time.Time               `json:"reported_at"`
 	Ownership     externalOwnershipStatus `json:"external_ownership"`
+	CoreMode      string                  `json:"core_mode"`
+	SingleCore    bool                    `json:"single_core"`
+	OfficialAgent string                  `json:"official_agent"`
+	Takeover      takeoverState           `json:"takeover"`
 }
 
 type managementReport struct {
@@ -82,6 +87,7 @@ var helperCapabilities = []string{
 	"official.xray.stop", "official.xray.start",
 	"official.xray.attach-custom", "official.xray.detach-custom",
 	"external.ownership.status", "external.ownership.prepare", "external.ownership.arm", "external.ownership.activate", "external.ownership.rollback",
+	"external.takeover",
 	"connection.status", "connection.settings",
 }
 
@@ -140,6 +146,8 @@ type commandExecutor struct {
 	lifecycle *lifecycleManager
 	core      *coreClient
 	state     *localState
+	client    *http.Client
+	config    config
 }
 
 func (executor *commandExecutor) status(ctx context.Context) agentStatus {
@@ -156,6 +164,22 @@ func (executor *commandExecutor) status(ctx context.Context) agentStatus {
 		Core:   coreStatus, RunUser: username, Architecture: runtime.GOARCH,
 		Capabilities: append([]string(nil), helperCapabilities...), LastOperation: executor.state.LastOperation, ReportedAt: time.Now().UTC(),
 		Ownership: executor.lifecycle.externalOwnershipStatus(ctx, &executor.state.ExternalOwnership),
+		Takeover:  executor.state.Takeover,
+	}
+	if status.Ownership.Enabled {
+		status.CoreMode = "external"
+		status.SingleCore = status.Ownership.SingleCore
+	} else {
+		status.CoreMode = "embedded"
+	}
+	if serviceActive(ctx, "mmw-agent.service") {
+		if status.Takeover.Status == "completed" {
+			status.OfficialAgent = "connected"
+		} else {
+			status.OfficialAgent = "active"
+		}
+	} else {
+		status.OfficialAgent = "inactive"
 	}
 	sort.Strings(status.Capabilities)
 	return status
@@ -228,6 +252,14 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 		err = executor.lifecycle.activateExternalOwnership(ctx, &executor.state.ExternalOwnership)
 	case "external.ownership.rollback":
 		err = executor.lifecycle.rollbackExternalOwnership(ctx, &executor.state.ExternalOwnership)
+	case "external.takeover":
+		executor.state.Takeover = takeoverState{Mode: "takeover", Status: "in_progress"}
+		err = performExternalTakeover(ctx, executor.client, executor.config, executor.lifecycle, executor.state)
+		if err == nil {
+			executor.state.Takeover = takeoverState{Mode: "takeover", Status: "completed", Message: "external single-Core takeover complete", CompletedAt: time.Now().UTC()}
+		} else {
+			executor.state.Takeover = takeoverState{Mode: "takeover", Status: "failed", Message: sanitizeManagementMessage(err.Error()), CompletedAt: time.Now().UTC()}
+		}
 	case "core.rollback":
 		err = executor.lifecycle.rollbackCore(ctx)
 	case "core.config.apply":

@@ -87,9 +87,10 @@ The following endpoints are available:
 
 ## Connections Helper
 
-`mmwxc-helper v0.4.2` is the Custom Agent. It is completely independent
-from the official `mmw-agent`: it does not modify or replace the official
-Agent, and the official Agent can continue to follow upstream upgrades.
+`mmwxc-helper v0.4.3` is the Custom Agent. The normal installer defaults to a
+transactional external single-Core takeover; `--helper-only` keeps the
+diagnostic-only maintenance mode. The official `mmw-agent` remains responsible
+for config generation and the `xray.service` lifecycle.
 
 For an external single-Core deployment, the optional ownership mode keeps the
 official Agent's `/usr/local/etc/xray/config.json` and `xray.service` lifecycle,

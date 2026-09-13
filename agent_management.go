@@ -31,6 +31,7 @@ var managementActions = map[string]struct{}{
 	"official.xray.stop": {}, "official.xray.start": {},
 	"official.xray.attach-custom": {}, "official.xray.detach-custom": {},
 	"external.ownership.status": {}, "external.ownership.prepare": {}, "external.ownership.arm": {}, "external.ownership.activate": {}, "external.ownership.rollback": {},
+	"external.takeover": {},
 	"connection.status": {}, "connection.settings": {},
 }
 
@@ -81,10 +82,22 @@ type agentStatus struct {
 	LastOperation *managementResult       `json:"last_operation,omitempty"`
 	ReportedAt    time.Time               `json:"reported_at"`
 	Ownership     externalOwnershipStatus `json:"external_ownership"`
+	CoreMode      string                  `json:"core_mode"`
+	SingleCore    bool                    `json:"single_core"`
+	OfficialAgent string                  `json:"official_agent"`
+	Takeover      takeoverState           `json:"takeover"`
+}
+
+type takeoverState struct {
+	Mode        string    `json:"mode,omitempty"`
+	Status      string    `json:"status,omitempty"`
+	Message     string    `json:"message,omitempty"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
 }
 
 type externalOwnershipStatus struct {
 	Prepared         bool      `json:"prepared"`
+	Armed            bool      `json:"armed"`
 	Enabled          bool      `json:"enabled"`
 	ServiceOwned     bool      `json:"service_owned"`
 	RuntimeOwned     bool      `json:"runtime_owned"`
@@ -245,7 +258,7 @@ func validateManagementPayload(action string, payload json.RawMessage) error {
 		return errors.New("management payload too large")
 	}
 	switch action {
-	case "helper.status", "helper.version", "core.status", "core.version", "core.restart", "core.stop", "core.rollback", "official.xray.stop", "official.xray.start", "official.xray.attach-custom", "official.xray.detach-custom", "external.ownership.status", "external.ownership.prepare", "external.ownership.arm", "external.ownership.activate", "external.ownership.rollback", "connection.status", "connection.settings":
+	case "helper.status", "helper.version", "core.status", "core.version", "core.restart", "core.stop", "core.rollback", "official.xray.stop", "official.xray.start", "official.xray.attach-custom", "official.xray.detach-custom", "external.ownership.status", "external.ownership.prepare", "external.ownership.arm", "external.ownership.activate", "external.ownership.rollback", "external.takeover", "connection.status", "connection.settings":
 		if len(strings.TrimSpace(string(payload))) > 0 && string(payload) != "{}" && string(payload) != "null" {
 			return errors.New("action does not accept payload")
 		}

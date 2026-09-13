@@ -181,6 +181,7 @@ func main() {
 	mux.HandleFunc("/api/custom/geo/lookup", api.withCORS(api.geoLookup))
 	mux.HandleFunc("/api/custom/agent/metrics", api.withCORS(api.connectionMetricsHandler))
 	mux.HandleFunc("/api/custom/agent/connections", api.withCORS(api.helperDetailedConnectionsHandler))
+	mux.HandleFunc("/api/custom/agent/takeover", api.withCORS(api.helperTakeoverHandler))
 	mux.HandleFunc("/api/custom/servers/", api.withCORS(api.serverConnectionsHandler))
 	mux.HandleFunc("/api/custom/helper/install-token", api.withCORS(api.createHelperInstallTokenHandler))
 	mux.HandleFunc("/api/custom/helper/install/", api.withCORS(api.helperInstallScriptHandler))
