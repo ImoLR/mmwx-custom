@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -141,9 +142,13 @@ func restoreEmbeddedTakeover(ctx context.Context, client *http.Client, cfg confi
 
 func waitExternalTakeoverHealthy(ctx context.Context, client *http.Client, cfg config, lifecycle *lifecycleManager, state *localState) error {
 	deadline := time.Now().Add(75 * time.Second)
+	var lastRuntime takeoverRuntime
+	var lastRuntimeErr error
+	var lastStatus externalOwnershipStatus
 	for time.Now().Before(deadline) {
 		runtime, runtimeErr := requestTakeoverRuntime(ctx, client, cfg, "")
 		status := lifecycle.externalOwnershipStatus(ctx, &state.ExternalOwnership)
+		lastRuntime, lastRuntimeErr, lastStatus = runtime, runtimeErr, status
 		if runtimeErr == nil && runtime.XrayMode == "external" && runtime.Status == "connected" && runtime.LastHeartbeat != nil && time.Since(*runtime.LastHeartbeat) < 45*time.Second && serviceActive(ctx, "mmw-agent.service") && status.ServiceActive && status.RuntimeOwned && status.SingleCore && status.OfficialConfig && status.CoreReady {
 			return nil
 		}
@@ -153,7 +158,16 @@ func waitExternalTakeoverHealthy(ctx context.Context, client *http.Client, cfg c
 		case <-time.After(time.Second):
 		}
 	}
-	return errors.New("external single-Core health check timed out")
+	return fmt.Errorf("external health timeout: controller_mode=%s controller_status=%s controller_error=%v agent_active=%t service_active=%t service_owned=%t runtime_owned=%t single_core=%t official_config=%t core_ready=%t main_pid=%d service_state=%s", lastRuntime.XrayMode, lastRuntime.Status, lastRuntimeErr, serviceActive(ctx, "mmw-agent.service"), lastStatus.ServiceActive, lastStatus.ServiceOwned, lastStatus.RuntimeOwned, lastStatus.SingleCore, lastStatus.OfficialConfig, lastStatus.CoreReady, lastStatus.MainPID, serviceStateSummary(ctx, "xray.service"))
+}
+
+func serviceStateSummary(ctx context.Context, service string) string {
+	command := exec.CommandContext(ctx, "systemctl", "show", "--property=ActiveState,SubState,Result,ExecMainStatus", "--value", service)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return "unavailable"
+	}
+	return strings.Join(strings.Fields(string(output)), "/")
 }
 
 func waitEmbeddedTakeoverHealthy(ctx context.Context, client *http.Client, cfg config) error {

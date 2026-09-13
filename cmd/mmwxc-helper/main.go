@@ -23,7 +23,7 @@ const (
 	detailedEndpoint  = "/api/custom/agent/connections"
 	defaultCoreSocket = "/run/mmwxc/core-control.sock"
 	defaultStatePath  = "/var/lib/mmwxc-helper/state.json"
-	helperVersion     = "v0.4.5"
+	helperVersion     = "v0.4.6"
 )
 
 type config struct {
