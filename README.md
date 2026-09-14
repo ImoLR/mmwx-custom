@@ -123,6 +123,11 @@ Helper and Core upgrades post authenticated phase transitions (`dispatching`,
 terminal success/failure/rollback state) to the Custom controller. A normal
 Helper heartbeat preserves the most recent phase instead of erasing it.
 
+Core API v2 registers supported data-plane inbounds and their configured user
+identities when Xray instantiates the configuration, so zero-traffic users are
+reported immediately. Internal control-plane handlers such as the local Xray
+API inbound are intentionally excluded from connection statistics.
+
 The `external.ownership.arm` management step installs that drop-in and releases
 the old Custom service ports before the controller asks the official Agent to
 switch modes. This keeps the Agent's asynchronous external-mode startup from
