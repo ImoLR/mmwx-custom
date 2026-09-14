@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -110,6 +111,7 @@ type app struct {
 	geoIPToken     string
 	helperTokens   map[string]string
 	helperState    *helperState
+	releaseCache   *releaseCache
 	mmwxAPITarget  *url.URL
 	publicURL      string
 
@@ -129,6 +131,10 @@ type app struct {
 }
 
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Printf("mmwx-custom %s\n", customVersion)
+		return
+	}
 	listenAddr := getenv("MMWXC_API_LISTEN_ADDR", defaultListenAddr)
 	mmwxAPITarget, err := url.Parse(getenv("MMWX_API_TARGET", defaultMMWXAPITarget))
 	if err != nil {
@@ -162,6 +168,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("[mmwx-custom] helper state failed: %v", err)
 	}
+	api.releaseCache = newReleaseCache(getenv("MMWXC_RELEASE_CACHE_FILE", defaultReleaseCachePath))
 	if first, err := readProcStatCPU(); err == nil {
 		api.lastCPU = first
 		api.hasCPU = true
@@ -185,6 +192,8 @@ func main() {
 	mux.HandleFunc("/api/custom/servers/", api.withCORS(api.serverConnectionsHandler))
 	mux.HandleFunc("/api/custom/helper/install-token", api.withCORS(api.createHelperInstallTokenHandler))
 	mux.HandleFunc("/api/custom/helper/install/", api.withCORS(api.helperInstallScriptHandler))
+	mux.HandleFunc("/api/custom/helper/rebind", api.withCORS(api.helperRebindHandler))
+	mux.HandleFunc("/api/custom/releases", api.withCORS(api.releaseInfoHandler))
 	mux.Handle("/api/", api.withCORSHandler(mmwxAPIProxy(mmwxAPITarget)))
 	mux.Handle("/", spaHandler(getenv("MMWXC_FRONTEND_DIR", defaultFrontendDir)))
 
@@ -199,6 +208,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go api.releaseCache.run(ctx, defaultReleaseRefreshInterval)
 
 	go func() {
 		log.Printf("[mmwx-custom] listening on %s", listenAddr)

@@ -253,6 +253,20 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
 		return
 	}
+	if request.Management != nil {
+		if store, ok := a.adminStore.(remoteServerModeStore); ok && store != nil {
+			if runtime, runtimeErr := store.RemoteServerRuntime(r.Context(), officialID); runtimeErr == nil {
+				autoCommand, reconcileErr := a.helperState.reconcileCoreMode(officialID, request.Management.Status, runtime, request.Management.Result)
+				if reconcileErr != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "desired core mode reconciliation failed"})
+					return
+				}
+				if command == nil && autoCommand != nil {
+					command = autoCommand
+				}
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "settings": sortedConnectionSettings(a.helperState.connectionSettings(officialID)), "command": command})
 }
 
@@ -334,6 +348,10 @@ func normalizeDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) server
 }
 
 func (a *app) serverConnectionsHandler(w http.ResponseWriter, r *http.Request) {
+	if serverID, ok := parseCoreModePath(r.URL.Path); ok {
+		a.coreModeHandler(w, r, serverID)
+		return
+	}
 	if serverID, ok := parseAgentManagementPath(r.URL.Path); ok {
 		a.agentManagementHandler(w, r, serverID)
 		return

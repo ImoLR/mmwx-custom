@@ -78,7 +78,7 @@ popd >/dev/null
 for arch in amd64 arm64; do
   stage="$TEMP_DIR/mmwx-custom-linux-$arch"
   mkdir -p "$stage/frontend"
-  GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o "$stage/mmwx-custom" "$ROOT_DIR"
+  GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.customVersion=$TAG" -o "$stage/mmwx-custom" "$ROOT_DIR"
   GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o "$RELEASE_DIR/mmwxc-helper-linux-$arch" "$ROOT_DIR/cmd/mmwxc-helper"
   (
     cd "$CORE_SOURCE_DIR"
@@ -94,6 +94,13 @@ repository=https://github.com/ImoLR/Xray-core-mmwx
 branch=custom-connection-control
 commit=$(git -C "$CORE_SOURCE_DIR" rev-parse HEAD)
 EOF
+cat >"$RELEASE_DIR/component-versions.json" <<EOF
+{
+  "custom_version": "$TAG",
+  "helper_version": "v0.5.0",
+  "core_version": "$(git -C "$CORE_SOURCE_DIR" rev-parse --short=7 HEAD)"
+}
+EOF
 
 pushd "$RELEASE_DIR" >/dev/null
 sha256sum \
@@ -104,7 +111,8 @@ sha256sum \
   mmwxc-core-linux-amd64 \
   mmwxc-core-linux-arm64 \
   install-helper.sh \
-  core-build-info.txt > checksums.txt
+  core-build-info.txt \
+  component-versions.json > checksums.txt
 popd >/dev/null
 
 gh release create "$TAG" \
@@ -119,4 +127,5 @@ gh release create "$TAG" \
   "$RELEASE_DIR/mmwxc-core-linux-arm64" \
   "$RELEASE_DIR/install-helper.sh" \
   "$RELEASE_DIR/core-build-info.txt" \
+  "$RELEASE_DIR/component-versions.json" \
   "$RELEASE_DIR/checksums.txt"

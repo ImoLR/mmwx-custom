@@ -55,6 +55,14 @@ func requestTakeoverRuntime(ctx context.Context, client *http.Client, cfg config
 }
 
 func performExternalTakeover(ctx context.Context, client *http.Client, cfg config, lifecycle *lifecycleManager, state *localState) error {
+	return ensureExternalDesiredState(ctx, client, cfg, lifecycle, state)
+}
+
+// ensureExternalDesiredState is the only automatic embedded -> external repair
+// path. It validates and arms ownership before changing either controller or
+// Agent mode, performs one bounded handoff, and rolls back to embedded on any
+// failed joint health check.
+func ensureExternalDesiredState(ctx context.Context, client *http.Client, cfg config, lifecycle *lifecycleManager, state *localState) error {
 	runtime, err := requestTakeoverRuntime(ctx, client, cfg, "")
 	if err != nil {
 		return err
@@ -71,10 +79,6 @@ func performExternalTakeover(ctx context.Context, client *http.Client, cfg confi
 		if status.RuntimeOwned && status.SingleCore && status.CoreReady && serviceActive(ctx, "mmw-agent.service") {
 			return nil
 		}
-		return errors.New("existing external ownership is not healthy")
-	}
-	if runtime.XrayMode != "embedded" || localMode != "embedded" {
-		return fmt.Errorf("refusing inconsistent handoff: controller=%s agent=%s", runtime.XrayMode, localMode)
 	}
 	if runtime.Status != "connected" || runtime.LastHeartbeat == nil || time.Since(*runtime.LastHeartbeat) > 90*time.Second {
 		return errors.New("official Agent is not freshly connected")
@@ -82,14 +86,38 @@ func performExternalTakeover(ctx context.Context, client *http.Client, cfg confi
 	if !serviceActive(ctx, "mmw-agent.service") {
 		return errors.New("mmw-agent.service is not active")
 	}
-	if err := lifecycle.prepareExternalOwnership(ctx, &state.ExternalOwnership); err != nil {
-		if state.ExternalOwnership.BackupDir != "" {
-			return rollbackTakeover(ctx, client, cfg, lifecycle, state, fmt.Errorf("prepare ownership: %w", err))
+	if state.ExternalOwnership.Enabled {
+		if state.ExternalOwnership.BackupDir == "" {
+			return errors.New("external ownership has no rollback snapshot")
 		}
-		return err
-	}
-	if err := lifecycle.armExternalOwnership(ctx, &state.ExternalOwnership); err != nil {
-		return rollbackTakeover(ctx, client, cfg, lifecycle, state, fmt.Errorf("arm ownership: %w", err))
+		if err := validateOwnedCoreAndConfig(ctx); err != nil {
+			return fmt.Errorf("validate existing ownership: %w", err)
+		}
+		if err := lifecycle.reconcileExternalOwnership(ctx, &state.ExternalOwnership); err != nil {
+			return fmt.Errorf("reconcile existing ownership: %w", err)
+		}
+		if _, _, err := ensureOwnershipFiles(); err != nil {
+			return fmt.Errorf("restore ownership files: %w", err)
+		}
+		if err := systemctl(ctx, "daemon-reload"); err != nil {
+			return err
+		}
+		if err := armExternalOwnershipServices(ctx, systemctl, serviceActive); err != nil {
+			return fmt.Errorf("re-arm ownership: %w", err)
+		}
+		state.ExternalOwnership.Armed = true
+		state.ExternalOwnership.LastRepairAt = time.Now().UTC()
+		state.ExternalOwnership.LastRepairReason = "desired external drift repair armed"
+	} else {
+		if err := lifecycle.prepareExternalOwnership(ctx, &state.ExternalOwnership); err != nil {
+			if state.ExternalOwnership.BackupDir != "" {
+				return rollbackTakeover(ctx, client, cfg, lifecycle, state, fmt.Errorf("prepare ownership: %w", err))
+			}
+			return err
+		}
+		if err := lifecycle.armExternalOwnership(ctx, &state.ExternalOwnership); err != nil {
+			return rollbackTakeover(ctx, client, cfg, lifecycle, state, fmt.Errorf("arm ownership: %w", err))
+		}
 	}
 	if _, err := requestTakeoverRuntime(ctx, client, cfg, "external"); err != nil {
 		return rollbackTakeover(ctx, client, cfg, lifecycle, state, fmt.Errorf("set controller mode external: %w", err))
@@ -115,6 +143,54 @@ func performExternalTakeover(ctx context.Context, client *http.Client, cfg confi
 	state.ExternalOwnership.Armed = false
 	state.ExternalOwnership.LastRepairAt = time.Now().UTC()
 	state.ExternalOwnership.LastRepairReason = "transactional official Agent external handoff completed"
+	return nil
+}
+
+func ensureEmbeddedDesiredState(ctx context.Context, client *http.Client, cfg config, lifecycle *lifecycleManager, state *localState) error {
+	runtime, err := requestTakeoverRuntime(ctx, client, cfg, "")
+	if err != nil {
+		return err
+	}
+	localMode, err := readAgentXrayMode(officialAgentConfigPath)
+	if err != nil {
+		return err
+	}
+	if runtime.XrayMode == "embedded" && localMode == "embedded" && !state.ExternalOwnership.Enabled {
+		return waitEmbeddedTakeoverHealthy(ctx, client, cfg)
+	}
+	if state.ExternalOwnership.Enabled || state.ExternalOwnership.BackupDir != "" {
+		if err := restoreEmbeddedTakeover(ctx, client, cfg, lifecycle, state); err != nil {
+			return err
+		}
+		state.Takeover = takeoverState{Mode: "desired-state", Status: "completed", Message: "official embedded desired state is healthy", CompletedAt: time.Now().UTC()}
+		return nil
+	}
+	previousMode := localMode
+	if _, err := requestTakeoverRuntime(ctx, client, cfg, "embedded"); err != nil {
+		return err
+	}
+	rollback := func(cause error) error {
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		_, _ = requestTakeoverRuntime(rollbackCtx, client, cfg, previousMode)
+		_ = writeAgentXrayMode(officialAgentConfigPath, previousMode)
+		_ = systemctl(rollbackCtx, "restart", "mmw-agent.service")
+		if previousMode == "external" {
+			_ = bootstrapExternalOwnershipService(rollbackCtx, systemctl)
+		}
+		return fmt.Errorf("%v; previous %s mode restoration attempted", cause, previousMode)
+	}
+	if err := writeAgentXrayMode(officialAgentConfigPath, "embedded"); err != nil {
+		return rollback(err)
+	}
+	_ = systemctl(ctx, "stop", "xray.service")
+	if err := systemctl(ctx, "restart", "mmw-agent.service"); err != nil {
+		return rollback(err)
+	}
+	if err := waitEmbeddedTakeoverHealthy(ctx, client, cfg); err != nil {
+		return rollback(err)
+	}
+	state.Takeover = takeoverState{Mode: "desired-state", Status: "completed", Message: "official embedded desired state is healthy", CompletedAt: time.Now().UTC()}
 	return nil
 }
 

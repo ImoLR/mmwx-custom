@@ -317,7 +317,47 @@ export type CustomAgentStatusResponse = {
     single_core?: boolean;
     official_agent?: string;
     takeover?: { mode?: string; status?: string; message?: string; completed_at?: string };
-    external_ownership?: { prepared?: boolean; armed?: boolean; enabled?: boolean; service_owned?: boolean; runtime_owned?: boolean; single_core?: boolean; core_ready?: boolean };
+    external_ownership?: { prepared?: boolean; armed?: boolean; enabled?: boolean; service_owned?: boolean; runtime_owned?: boolean; single_core?: boolean; service_active?: boolean; core_ready?: boolean; last_repair_at?: string; last_repair_reason?: string; error?: string };
+    machine_id?: string;
+    architecture?: string;
+  };
+  pending?: Array<{ id: string; action: string; created_at: string }>;
+  results?: Array<{ action: string; success: boolean; message?: string; completed_at: string }>;
+};
+
+export type CoreModeResponse = {
+  success: boolean;
+  configured: boolean;
+  current_mode?: string;
+  controller_mode?: string;
+  controller_status?: string;
+  intent: {
+    desired_core_mode?: "external" | "embedded";
+    custom_core_owned?: boolean;
+    machine_id?: string;
+    repair_status?: "healthy" | "drift_detected" | "repairing" | "degraded" | "disabled" | string;
+    repair_attempts?: number;
+    last_repair_at?: string;
+    last_repair_reason?: string;
+    last_repair_error?: string;
+    next_repair_at?: string;
+  };
+  agent_status?: CustomAgentStatusResponse["status"];
+};
+
+export type CustomReleaseInfoResponse = {
+  success: boolean;
+  current_custom_version: string;
+  cached: boolean;
+  last_error?: string;
+  release: {
+    tag?: string;
+    latest_custom_version?: string;
+    latest_helper_version?: string;
+    latest_core_version?: string;
+    fetched_at?: string;
+    helper_artifacts?: Record<string, { url: string; sha256: string }>;
+    core_artifacts?: Record<string, { url: string; sha256: string }>;
   };
 };
 

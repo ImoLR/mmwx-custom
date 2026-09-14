@@ -37,6 +37,7 @@ mmwxc-core-linux-amd64
 mmwxc-core-linux-arm64
 install-helper.sh
 core-build-info.txt
+component-versions.json
 ```
 
 `install-helper.sh` is the single idempotent installer for both a first install
@@ -72,6 +73,7 @@ npm run dev
 | `MMWXC_FRONTEND_DIR` | `frontend/dist` | Built Custom UI directory |
 | `MMWX_API_TARGET` | `http://127.0.0.1:12891` | Fork Backend target for `/api/*` proxy |
 | `MMWXC_HELPER_STATE_FILE` | `/etc/mmwx-custom/helper-state.json` | Persistent Custom server identity state |
+| `MMWXC_RELEASE_CACHE_FILE` | `/etc/mmwx-custom/release-cache.json` | Last successful GitHub component metadata cache |
 
 The following endpoints are available:
 
@@ -81,22 +83,39 @@ The following endpoints are available:
 - `GET /api/custom/agent/metrics`
 - `POST /api/custom/helper/install-token`
 - `GET /api/custom/helper/install/<install-token>`
+- `POST /api/custom/helper/rebind`
 - `GET /api/custom/servers/:id/agent`
 - `POST /api/custom/servers/:id/agent`
+- `GET /api/custom/servers/:id/core-mode`
+- `POST /api/custom/servers/:id/core-mode`
+- `GET /api/custom/releases`
 - `/api/*` proxied to `MMWX_API_TARGET`
 
 ## Connections Helper
 
-`mmwxc-helper v0.4.7` is the Custom Agent. The normal installer defaults to a
+`mmwxc-helper v0.5.0` is the Custom Agent. The normal installer defaults to a
 transactional external single-Core takeover; `--helper-only` keeps the
 diagnostic-only maintenance mode. The official `mmw-agent` remains responsible
 for config generation and the `xray.service` lifecycle.
+
+The Custom controller persists `desired_core_mode` separately from the formal
+controller's current `xray_mode`. Normal installation records Fork Core /
+external as the desired state. Only the dedicated administrator core-mode API
+can change that intent; ordinary server edits never do. A fresh Helper report
+that disagrees with the desired state queues one signed transactional repair.
+Failures use 1, 5, 15, and 30 minute backoff intervals instead of repeatedly
+starting or stopping Xray.
 
 For an external single-Core deployment, the optional ownership mode keeps the
 official Agent's `/usr/local/etc/xray/config.json` and `xray.service` lifecycle,
 while a systemd drop-in pins `ExecStart` to `/opt/mmwxc/core/xray`. The Helper
 repairs only binary/service ownership drift; normal Agent config writes and
 Xray restarts are left untouched.
+
+The Helper persists a stable machine identity in `/var/lib/mmwxc/machine-id`.
+An existing Helper installation can use a one-time rebind token to move its
+controller association, desired mode, connection settings, and status to a new
+formal server id without exposing or replacing the long-lived Helper token.
 
 The `external.ownership.arm` management step installs that drop-in and releases
 the old Custom service ports before the controller asks the official Agent to
@@ -169,6 +188,7 @@ After registration, the controller can enqueue only these signed actions:
 ```text
 helper.status helper.version helper.update
 core.status core.version core.install core.update core.restart core.stop core.rollback core.config.apply
+core.mode.apply
 connection.status connection.settings
 ```
 

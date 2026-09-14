@@ -60,7 +60,10 @@ import {
   controlRemoteService,
   createRemoteServer,
   createHelperInstallToken,
+  dispatchCustomAgentAction,
   fetchCustomAgentStatus,
+  fetchCoreMode,
+  fetchCustomReleaseInfo,
   deleteRemoteWebsite,
   deployRemoteDefaultConfig,
   expectXrayRecovery,
@@ -88,6 +91,7 @@ import {
   revealRemoteServerToken,
   restoreXraySnapshot,
   saveSession,
+  setCoreMode,
   streamAgentAction,
   syncRemoteNodeAddress,
   syncRemoteNodes,
@@ -102,6 +106,8 @@ import type {
   AgentVersionInfo,
   HelperInstallTokenResponse,
   CustomAgentStatusResponse,
+  CoreModeResponse,
+  CustomReleaseInfoResponse,
   DNSProvider,
   NodeTrafficItem,
   PeriodUserTrafficItem,
@@ -1721,6 +1727,125 @@ function ServiceMetricLine({
   );
 }
 
+function CoreControlPanel({ server, sessionToken, compact = false }: { server: RemoteServer; sessionToken: string; compact?: boolean }) {
+  const [mode, setMode] = useState<CoreModeResponse | null>(null);
+  const [release, setRelease] = useState<CustomReleaseInfoResponse | null>(null);
+  const [agent, setAgent] = useState<CustomAgentStatusResponse | null>(null);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [modeResponse, releaseResponse, agentResponse] = await Promise.all([
+        fetchCoreMode(sessionToken, server.id), fetchCustomReleaseInfo(sessionToken), fetchCustomAgentStatus(sessionToken, server.id),
+      ]);
+      setMode(modeResponse);
+      setRelease(releaseResponse);
+      setAgent(agentResponse);
+      setError("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "读取核心控制状态失败");
+    }
+  }, [server.id, sessionToken]);
+
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => void load(), 5000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
+  const status = mode?.intent.repair_status || (mode?.configured ? "drift_detected" : "disabled");
+  const desired = mode?.intent.desired_core_mode || "external";
+  const currentHelper = agent?.status?.helper?.version || "";
+  const currentCore = agent?.status?.core?.version || "";
+  const latestHelper = release?.release.latest_helper_version || "";
+  const latestCore = release?.release.latest_core_version || "";
+  const helperUpdate = Boolean(latestHelper && currentHelper !== latestHelper);
+  const helperNeedsFirstUpgrade = !currentHelper || /^v?0\.1(?:\.|$)/.test(currentHelper);
+  const coreUpdate = Boolean(latestCore && !currentCore.includes(latestCore));
+  const architecture = agent?.status?.architecture || "amd64";
+  const helperPending = Boolean(agent?.pending?.some((item) => item.action === "helper.update"));
+  const corePending = Boolean(agent?.pending?.some((item) => item.action === "core.update"));
+  const helperResult = [...(agent?.results || [])].reverse().find((item) => item.action === "helper.update");
+  const coreResult = [...(agent?.results || [])].reverse().find((item) => item.action === "core.update");
+  const serverOffline = !isServerOnline(server);
+  const helperUpgradeState = serverOffline ? "offline" : componentUpgradeState(helperPending, helperResult, helperUpdate);
+  const coreUpgradeState = serverOffline ? "offline" : componentUpgradeState(corePending, coreResult, coreUpdate);
+
+  async function changeMode(next: "external" | "embedded") {
+    if (next === desired && mode?.configured) return;
+    const prompt = next === "external"
+      ? "将启用 Custom Fork Core，并切换为 External 单 Core。失败时会回滚到切换前业务状态。"
+      : "切换为官方 Core 后，将停止 Fork Core 接管并恢复 Embedded；系统不会再自动拉回 External，直到再次手动选择。";
+    if (!window.confirm(prompt)) return;
+    setBusy("mode");
+    setError("");
+    try {
+      setMode(await setCoreMode(sessionToken, server.id, next));
+      window.setTimeout(() => void load(), 1000);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "核心控制方式切换失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function upgrade(component: "helper" | "core") {
+    const artifact = component === "helper" ? release?.release.helper_artifacts?.[architecture] : release?.release.core_artifacts?.[architecture];
+    const version = component === "helper" ? latestHelper : latestCore;
+    if (!artifact || !version) {
+      setError("最新版本缓存缺少当前架构的升级产物");
+      return;
+    }
+    setBusy(component);
+    setError("");
+    try {
+      await dispatchCustomAgentAction(sessionToken, server.id, `${component}.update`, { ...artifact, version, activate: false });
+      window.setTimeout(() => void load(), 1000);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "升级任务下发失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <section className={`core-control-panel${compact ? " compact" : ""}`}>
+      <div className="core-control-heading"><div><h4>核心控制</h4><p>长期 desired state；普通服务器保存不会修改此设置。</p></div><button type="button" onClick={() => void load()} aria-label="刷新核心控制状态"><RefreshCw /></button></div>
+      <label className="agent-field"><span>核心控制方式</span><select value={desired} disabled={busy === "mode"} onChange={(event) => void changeMode(event.target.value as "external" | "embedded")}><option value="external">Fork Core（External）</option><option value="embedded">官方 Core（Embedded）</option></select></label>
+      <div className="core-control-state-grid">
+        <InfoBlock label="期望模式" value={desired === "external" ? "External" : "Embedded"} />
+        <InfoBlock label="主控记录" value={mode?.controller_mode || "--"} />
+        <InfoBlock label="当前运行" value={mode?.current_mode || "--"} />
+        <InfoBlock label="状态" value={status === "healthy" ? "正常" : status === "repairing" ? "模式漂移，正在自动恢复" : status === "degraded" ? "自动恢复失败" : status === "disabled" ? "尚未配置" : "检测到模式漂移"} />
+      </div>
+      {mode?.intent.last_repair_error && <div className="agent-notice error">{mode.intent.last_repair_error}</div>}
+      {status !== "healthy" && mode?.configured && <p className="agent-note">尝试次数：{mode.intent.repair_attempts || 0}{mode.intent.next_repair_at ? ` · 下次尝试 ${formatDateTime(mode.intent.next_repair_at)}` : ""}</p>}
+      <div className="component-upgrade-grid">
+        <article><div><strong>Helper {currentHelper || "未安装"}</strong>{helperUpdate && <span className="update-dot" title="Helper 有更新" />}</div><small>最新：{latestHelper || (release?.last_error ? "缓存暂不可用" : "读取中")}</small>{helperNeedsFirstUpgrade && <small>需要首次升级</small>}<small>状态：{helperUpgradeState}</small><button type="button" disabled={!currentHelper || !helperUpdate || helperPending || busy !== ""} onClick={() => void upgrade("helper")}>{helperPending ? "正在下载 / 校验 / 安装" : helperNeedsFirstUpgrade ? "首次升级 Helper" : "升级 Helper"}</button></article>
+        <article><div><strong>Fork Core {coreVersionLabel(currentCore)}</strong>{coreUpdate && <span className="update-dot" title="Core 有更新" />}</div><small>最新：{latestCore || (release?.last_error ? "缓存暂不可用" : "读取中")}</small><small>状态：{coreUpgradeState}</small><button type="button" disabled={!coreUpdate || corePending || busy !== ""} onClick={() => void upgrade("core")}>{corePending ? "正在下载 / 校验 / 安装" : "升级 Core"}</button></article>
+      </div>
+      {release?.last_error && release.cached && <p className="agent-note">GitHub 暂时不可达，继续使用 {formatDateTime(release.release.fetched_at)} 的上次成功缓存。</p>}
+      {error && <div className="agent-notice error">{error}</div>}
+    </section>
+  );
+}
+
+function coreVersionLabel(value: string) {
+  if (!value) return "未安装";
+  return value.match(/\b[0-9a-f]{7,40}\b/i)?.[0]?.slice(0, 7) || value.split(" ")[1] || value;
+}
+
+function componentUpgradeState(pending: boolean, result: { success: boolean; message?: string; completed_at: string } | undefined, updateAvailable: boolean) {
+  if (pending) return "dispatching / downloading / verifying / installing";
+  if (result && Date.now() - new Date(result.completed_at).getTime() < 10 * 60 * 1000) {
+    if (!result.success) return result.message?.toLowerCase().includes("rollback") ? "rolled_back" : "failed";
+    if (updateAvailable) return "reconnecting";
+    return "success";
+  }
+  return updateAvailable ? "update_available" : "idle";
+}
+
 function HelperInstallDialog({ server, sessionToken, connectionMetric }: { server: RemoteServer; sessionToken: string; connectionMetric?: ConnectionMetric }) {
   const [install, setInstall] = useState<HelperInstallTokenResponse | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1762,6 +1887,7 @@ function HelperInstallDialog({ server, sessionToken, connectionMetric }: { serve
 		<InfoBlock label="官方 Agent" value={agentStatus?.official_agent || "--"} />
 		<InfoBlock label="Takeover" value={agentStatus?.takeover?.status || "--"} />
       </div>
+      <CoreControlPanel server={server} sessionToken={sessionToken} />
       <div className="service-dialog-section">
         <h4>安装 Connections Helper</h4>
         <p>该命令只绑定当前服务器：{server.name}。安装链接短期有效且只能使用一次；默认事务式切换为 external 单 Core，失败自动恢复 embedded。</p>
@@ -2417,6 +2543,7 @@ function ServiceDialog({
                 <input value={formatXrayMode(server?.xray_mode)} readOnly placeholder="Xray Mode" />
               </label>
             </div>
+            {dialog.kind === "edit" && server && <CoreControlPanel server={server} sessionToken={sessionToken} compact />}
           </div>
         )}
 

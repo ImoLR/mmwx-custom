@@ -7,6 +7,7 @@ SERVER_ID="${MMWXC_HELPER_SERVER_ID:-}"
 TOKEN="${MMWXC_HELPER_TOKEN:-}"
 INTERVAL="${MMWXC_HELPER_INTERVAL:-5s}"
 INSTALL_MODE="${MMWXC_INSTALL_MODE:-takeover}"
+REBIND_TOKEN="${MMWXC_REBIND_TOKEN:-}"
 RELEASE_TAG="${MMWXC_RELEASE_TAG:-latest}"
 ASSET_DIR="${MMWXC_ASSET_DIR:-}"
 ROOT_PREFIX="${MMWXC_INSTALL_ROOT:-}"
@@ -60,6 +61,7 @@ HELPER_BINARY="${ROOT_PREFIX}/usr/local/bin/mmwxc-helper"
 HELPER_CONFIG="${ROOT_PREFIX}/etc/mmwxc-helper.env"
 HELPER_UNIT="${ROOT_PREFIX}/etc/systemd/system/mmwxc-helper.service"
 HELPER_STATE="${ROOT_PREFIX}/var/lib/mmwxc-helper/state.json"
+MACHINE_ID_FILE="${ROOT_PREFIX}/var/lib/mmwxc/machine-id"
 CORE_BINARY="${ROOT_PREFIX}/opt/mmwxc/core/xray"
 CORE_CONFIG="${ROOT_PREFIX}/etc/mmwxc/core/config.json"
 CORE_UNIT="${ROOT_PREFIX}/etc/systemd/system/mmwxc-core.service"
@@ -177,6 +179,37 @@ elif [[ -z "$SERVER_ID" || -z "$TOKEN" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$MACHINE_ID_FILE" ]]; then
+  machine_id="$SERVER_ID"
+  if $existing_config; then
+    machine_id="$(sed -n -E 's/^(MMWXC_HELPER_SERVER_ID|SERVER_ID)=(.*)$/\2/p' "$HELPER_CONFIG")"
+    machine_id="${machine_id%%$'\n'*}"
+    machine_id="${machine_id%\"}"; machine_id="${machine_id#\"}"
+    machine_id="${machine_id%\'}"; machine_id="${machine_id#\'}"
+  fi
+  if [[ ! "$machine_id" =~ ^[A-Za-z0-9_-]{8,128}$ ]]; then
+    machine_id="$(tr -d '-' </proc/sys/kernel/random/uuid 2>/dev/null || true)"
+  fi
+  [[ "$machine_id" =~ ^[A-Za-z0-9_-]{8,128}$ ]] || { echo "unable to create persistent machine identity" >&2; exit 1; }
+  mkdir -p "$(dirname "$MACHINE_ID_FILE")"
+  chmod 700 "$(dirname "$MACHINE_ID_FILE")"
+  printf '%s\n' "$machine_id" >"$MACHINE_ID_FILE.new"
+  chmod 600 "$MACHINE_ID_FILE.new"
+  mv -f "$MACHINE_ID_FILE.new" "$MACHINE_ID_FILE"
+fi
+
+if $existing_config && [[ -z "$ROOT_PREFIX" && -n "$REBIND_TOKEN" ]]; then
+  existing_server_id="$(sed -n -E 's/^(MMWXC_HELPER_SERVER_ID|SERVER_ID)=(.*)$/\2/p' "$HELPER_CONFIG")"
+  existing_server_id="${existing_server_id%%$'\n'*}"; existing_server_id="${existing_server_id%\"}"; existing_server_id="${existing_server_id#\"}"
+  existing_helper_token="$(sed -n -E 's/^(MMWXC_HELPER_TOKEN|TOKEN)=(.*)$/\2/p' "$HELPER_CONFIG")"
+  existing_helper_token="${existing_helper_token%%$'\n'*}"; existing_helper_token="${existing_helper_token%\"}"; existing_helper_token="${existing_helper_token#\"}"
+  machine_id="$(tr -d '\r\n' <"$MACHINE_ID_FILE")"
+  [[ "$existing_server_id" =~ ^[A-Za-z0-9_-]{1,128}$ && "$existing_helper_token" =~ ^[A-Za-z0-9_-]{16,256}$ && "$machine_id" =~ ^[A-Za-z0-9_-]{8,128}$ ]] || { echo "existing Helper identity cannot be rebound safely" >&2; exit 1; }
+  rebind_body="$(printf '{\"install_token\":\"%s\",\"machine_id\":\"%s\",\"helper_token\":\"%s\"}' "$REBIND_TOKEN" "$machine_id" "$existing_helper_token")"
+  rebind_response="$(curl --fail --show-error --silent --location --connect-timeout 10 --max-time 30 -H 'Content-Type: application/json' --data "$rebind_body" "${API_URL%/}/api/custom/helper/rebind")" || { echo "Helper machine identity rebind failed" >&2; exit 1; }
+  [[ "$rebind_response" =~ \"success\"[[:space:]]*:[[:space:]]*true ]] || { echo "Helper machine identity rebind was rejected" >&2; exit 1; }
+fi
+
 old_helper=""
 had_helper=false
 if [[ -x "$HELPER_BINARY" ]]; then
@@ -201,6 +234,7 @@ MMWXC_HELPER_TOKEN=${TOKEN}
 MMWXC_HELPER_INTERVAL=${INTERVAL}
 MMWXC_HELPER_CORE_SOCKET=/run/mmwxc/core-control.sock
 MMWXC_HELPER_STATE_FILE=/var/lib/mmwxc-helper/state.json
+MMWXC_HELPER_MACHINE_ID_FILE=/var/lib/mmwxc/machine-id
 MMWXC_HELPER_ENABLE_NFTABLES=false
 EOF
 fi

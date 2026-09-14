@@ -42,6 +42,8 @@ type helperStateData struct {
 	ManagementCommands map[string][]managementCommand      `json:"management_commands,omitempty"`
 	ManagementResults  map[string][]managementResult       `json:"management_results,omitempty"`
 	AgentStatuses      map[string]agentStatus              `json:"agent_statuses,omitempty"`
+	CoreModeIntents    map[string]coreModeIntent           `json:"core_mode_intents,omitempty"`
+	RebindTokens       map[string]helperRebindToken        `json:"rebind_tokens,omitempty"`
 }
 
 type helperServerIdentity struct {
@@ -52,6 +54,7 @@ type helperServerIdentity struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 	LastSeenAt        time.Time `json:"last_seen_at,omitempty"`
 	LastHelperVersion string    `json:"last_helper_version,omitempty"`
+	MachineID         string    `json:"machine_id,omitempty"`
 }
 
 type helperInstallToken struct {
@@ -64,6 +67,17 @@ type helperInstallToken struct {
 	ExpiresAt        time.Time `json:"expires_at"`
 	PreserveExisting bool      `json:"preserve_existing,omitempty"`
 	InstallMode      string    `json:"install_mode"`
+}
+
+type helperRebindToken struct {
+	OfficialServerID string    `json:"official_remote_server_id"`
+	ExpiresAt        time.Time `json:"expires_at"`
+}
+
+type helperRebindRequest struct {
+	InstallToken string `json:"install_token"`
+	MachineID    string `json:"machine_id"`
+	HelperToken  string `json:"helper_token"`
 }
 
 type helperInstallTokenRequest struct {
@@ -95,6 +109,8 @@ func openHelperState(statePath string, ttl time.Duration) (*helperState, error) 
 	store.data.ManagementCommands = make(map[string][]managementCommand)
 	store.data.ManagementResults = make(map[string][]managementResult)
 	store.data.AgentStatuses = make(map[string]agentStatus)
+	store.data.CoreModeIntents = make(map[string]coreModeIntent)
+	store.data.RebindTokens = make(map[string]helperRebindToken)
 	if err := store.load(); err != nil {
 		return nil, err
 	}
@@ -132,6 +148,12 @@ func (s *helperState) load() error {
 	}
 	if s.data.AgentStatuses == nil {
 		s.data.AgentStatuses = make(map[string]agentStatus)
+	}
+	if s.data.CoreModeIntents == nil {
+		s.data.CoreModeIntents = make(map[string]coreModeIntent)
+	}
+	if s.data.RebindTokens == nil {
+		s.data.RebindTokens = make(map[string]helperRebindToken)
 	}
 	return nil
 }
@@ -176,6 +198,7 @@ func (s *helperState) createInstallTokenForMode(officialServerID, installMode st
 		identity = helperServerIdentity{
 			OfficialServerID: officialServerID,
 			CustomServerUUID: uuid,
+			MachineID:        uuid,
 			CreatedAt:        now,
 		}
 	}
@@ -191,6 +214,13 @@ func (s *helperState) createInstallTokenForMode(officialServerID, installMode st
 	}
 	identity.UpdatedAt = now
 	s.data.Servers[officialServerID] = identity
+	if _, exists := s.data.CoreModeIntents[officialServerID]; !exists {
+		if installMode == "takeover" {
+			s.data.CoreModeIntents[officialServerID] = newCoreModeIntent("external", now)
+		} else {
+			s.data.CoreModeIntents[officialServerID] = newCoreModeIntent("embedded", now)
+		}
+	}
 
 	installToken, err := randomSecret(32)
 	if err != nil {
@@ -242,6 +272,7 @@ func (s *helperState) consumeInstallToken(rawToken string) (helperInstallToken, 
 	}
 	identity.UpdatedAt = now
 	s.data.Servers[record.OfficialServerID] = identity
+	s.data.RebindTokens[tokenHash] = helperRebindToken{OfficialServerID: record.OfficialServerID, ExpiresAt: record.ExpiresAt}
 	delete(s.data.InstallTokens, tokenHash)
 	if err := s.saveLocked(); err != nil {
 		return helperInstallToken{}, false, err
@@ -328,6 +359,73 @@ func (s *helperState) pruneExpiredLocked(now time.Time) {
 			delete(s.data.InstallTokens, key)
 		}
 	}
+	for key, record := range s.data.RebindTokens {
+		if now.After(record.ExpiresAt) {
+			delete(s.data.RebindTokens, key)
+		}
+	}
+}
+
+func (s *helperState) rebindMachine(rawInstallToken, machineID, helperToken string) (string, string, error) {
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneExpiredLocked(now)
+	key := hashSecret(strings.TrimSpace(rawInstallToken))
+	rebind, ok := s.data.RebindTokens[key]
+	if !ok || now.After(rebind.ExpiresAt) {
+		return "", "", errors.New("invalid or expired rebind token")
+	}
+	machineID = strings.TrimSpace(machineID)
+	helperHash := hashSecret(strings.TrimSpace(helperToken))
+	sourceID := ""
+	var identity helperServerIdentity
+	for officialID, candidate := range s.data.Servers {
+		if (candidate.MachineID == machineID || candidate.CustomServerUUID == machineID) && candidate.HelperTokenHash == helperHash {
+			sourceID, identity = officialID, candidate
+			break
+		}
+	}
+	if sourceID == "" {
+		return "", "", errors.New("existing machine identity is not authorized")
+	}
+	targetID := rebind.OfficialServerID
+	identity.OfficialServerID = targetID
+	identity.MachineID = machineID
+	identity.UpdatedAt = now
+	s.data.Servers[targetID] = identity
+	if sourceID != targetID {
+		delete(s.data.Servers, sourceID)
+		if settings, exists := s.data.ConnectionSettings[sourceID]; exists {
+			s.data.ConnectionSettings[targetID] = settings
+			delete(s.data.ConnectionSettings, sourceID)
+		}
+		if status, exists := s.data.AgentStatuses[sourceID]; exists {
+			s.data.AgentStatuses[targetID] = status
+			delete(s.data.AgentStatuses, sourceID)
+		}
+		if results, exists := s.data.ManagementResults[sourceID]; exists {
+			s.data.ManagementResults[targetID] = results
+			delete(s.data.ManagementResults, sourceID)
+		}
+		delete(s.data.ManagementCommands, sourceID)
+		if intent, exists := s.data.CoreModeIntents[sourceID]; exists {
+			intent.MachineID = machineID
+			intent.UpdatedAt = now
+			s.data.CoreModeIntents[targetID] = intent
+			delete(s.data.CoreModeIntents, sourceID)
+		}
+	}
+	if intent, exists := s.data.CoreModeIntents[targetID]; exists {
+		intent.MachineID = machineID
+		intent.UpdatedAt = now
+		s.data.CoreModeIntents[targetID] = intent
+	}
+	delete(s.data.RebindTokens, key)
+	if err := s.saveLocked(); err != nil {
+		return "", "", err
+	}
+	return targetID, identity.CustomServerUUID, nil
 }
 
 func (a *app) createHelperInstallTokenHandler(w http.ResponseWriter, r *http.Request) {
@@ -400,7 +498,27 @@ func (a *app) helperInstallScriptHandler(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = io.WriteString(w, renderHelperInstaller(a.externalBaseURL(r), record.CustomServerUUID, record.HelperToken, record.InstallMode))
+	_, _ = io.WriteString(w, renderHelperInstaller(a.externalBaseURL(r), record.CustomServerUUID, record.HelperToken, record.InstallMode, rawToken))
+}
+
+func (a *app) helperRebindHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"success": false, "message": "method not allowed"})
+		return
+	}
+	var request helperRebindRequest
+	decoder := json.NewDecoder(io.LimitReader(r.Body, maxInstallTokenRequestBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid request"})
+		return
+	}
+	officialID, machineID, err := a.helperState.rebindMachine(request.InstallToken, request.MachineID, request.HelperToken)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "server_id": officialID, "machine_id": machineID})
 }
 
 func (a *app) externalBaseURL(r *http.Request) string {
@@ -425,8 +543,8 @@ func (a *app) externalBaseURL(r *http.Request) string {
 //go:embed scripts/install-helper.sh
 var helperInstallerScript string
 
-func renderHelperInstaller(apiURL, serverUUID, helperToken, installMode string) string {
-	prefix := fmt.Sprintf("#!/usr/bin/env bash\nexport MMWXC_HELPER_API_URL=%q\nexport MMWXC_HELPER_SERVER_ID=%q\nexport MMWXC_HELPER_TOKEN=%q\nexport MMWXC_INSTALL_MODE=%q\n", apiURL, serverUUID, helperToken, installMode)
+func renderHelperInstaller(apiURL, serverUUID, helperToken, installMode, rebindToken string) string {
+	prefix := fmt.Sprintf("#!/usr/bin/env bash\nexport MMWXC_HELPER_API_URL=%q\nexport MMWXC_HELPER_SERVER_ID=%q\nexport MMWXC_HELPER_TOKEN=%q\nexport MMWXC_INSTALL_MODE=%q\nexport MMWXC_REBIND_TOKEN=%q\n", apiURL, serverUUID, helperToken, installMode, rebindToken)
 	return prefix + strings.TrimPrefix(helperInstallerScript, "#!/usr/bin/env bash\n")
 }
 

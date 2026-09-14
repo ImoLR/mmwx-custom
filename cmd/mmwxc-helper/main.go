@@ -17,23 +17,25 @@ import (
 )
 
 const (
-	defaultConfigPath = "/etc/mmwxc-helper.env"
-	defaultInterval   = 5 * time.Second
-	defaultEndpoint   = "/api/custom/agent/metrics"
-	detailedEndpoint  = "/api/custom/agent/connections"
-	defaultCoreSocket = "/run/mmwxc/core-control.sock"
-	defaultStatePath  = "/var/lib/mmwxc-helper/state.json"
-	helperVersion     = "v0.4.7"
+	defaultConfigPath    = "/etc/mmwxc-helper.env"
+	defaultInterval      = 5 * time.Second
+	defaultEndpoint      = "/api/custom/agent/metrics"
+	detailedEndpoint     = "/api/custom/agent/connections"
+	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
+	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
+	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
+	helperVersion        = "v0.5.0"
 )
 
 type config struct {
-	CustomAPIURL string
-	ServerID     string
-	Token        string
-	Interval     time.Duration
-	CoreSocket   string
-	StatePath    string
-	EnableNft    bool
+	CustomAPIURL  string
+	ServerID      string
+	Token         string
+	Interval      time.Duration
+	CoreSocket    string
+	StatePath     string
+	MachineIDPath string
+	EnableNft     bool
 }
 
 type connectionSnapshot struct {
@@ -92,6 +94,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("[mmwxc-helper] state error: %v", err)
 	}
+	machineID, err := loadOrCreateMachineID(cfg.MachineIDPath, cfg.ServerID)
+	if err != nil {
+		log.Fatalf("[mmwxc-helper] machine identity error: %v", err)
+	}
+	state.MachineID = machineID
 	onlineTracker := newOnlineIPTracker()
 	nftables := newNftablesManager(cfg.EnableNft)
 	lifecycle := newLifecycleManager(core)
@@ -270,18 +277,22 @@ func loadConfig(path string) (config, error) {
 	}
 
 	cfg := config{
-		CustomAPIURL: strings.TrimRight(getLegacy("MMWXC_HELPER_API_URL", "CUSTOM_API_URL"), "/"),
-		ServerID:     getLegacy("MMWXC_HELPER_SERVER_ID", "SERVER_ID"),
-		Token:        getLegacy("MMWXC_HELPER_TOKEN", "TOKEN"),
-		Interval:     interval,
-		CoreSocket:   get("MMWXC_HELPER_CORE_SOCKET"),
-		StatePath:    get("MMWXC_HELPER_STATE_FILE"),
+		CustomAPIURL:  strings.TrimRight(getLegacy("MMWXC_HELPER_API_URL", "CUSTOM_API_URL"), "/"),
+		ServerID:      getLegacy("MMWXC_HELPER_SERVER_ID", "SERVER_ID"),
+		Token:         getLegacy("MMWXC_HELPER_TOKEN", "TOKEN"),
+		Interval:      interval,
+		CoreSocket:    get("MMWXC_HELPER_CORE_SOCKET"),
+		StatePath:     get("MMWXC_HELPER_STATE_FILE"),
+		MachineIDPath: get("MMWXC_HELPER_MACHINE_ID_FILE"),
 	}
 	if cfg.CoreSocket == "" {
 		cfg.CoreSocket = defaultCoreSocket
 	}
 	if cfg.StatePath == "" {
 		cfg.StatePath = defaultStatePath
+	}
+	if cfg.MachineIDPath == "" {
+		cfg.MachineIDPath = defaultMachineIDPath
 	}
 	if raw := get("MMWXC_HELPER_ENABLE_NFTABLES"); raw != "" {
 		enabled, err := strconv.ParseBool(raw)

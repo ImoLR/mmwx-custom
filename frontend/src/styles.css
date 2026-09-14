@@ -2125,6 +2125,100 @@ button {
   gap: 12px;
 }
 
+.core-control-panel {
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 16px;
+  background: var(--card-background, #fff);
+}
+
+.core-control-panel.compact {
+  grid-column: 1 / -1;
+}
+
+.core-control-heading,
+.core-control-heading > div,
+.component-upgrade-grid article > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.core-control-heading > div {
+  display: block;
+}
+
+.core-control-heading h4,
+.core-control-heading p {
+  margin: 0;
+}
+
+.core-control-heading p,
+.component-upgrade-grid small {
+  color: var(--muted-color, #6b7280);
+}
+
+.core-control-heading button {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+  background: transparent;
+}
+
+.core-control-heading svg {
+  width: 18px;
+}
+
+.core-control-state-grid,
+.component-upgrade-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.component-upgrade-grid article {
+  padding: 14px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.component-upgrade-grid button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 10px;
+  background: #1f2937;
+  color: #fff;
+  font-weight: 650;
+}
+
+.component-upgrade-grid button:disabled {
+  opacity: .45;
+}
+
+.update-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, .14);
+}
+
+@media (max-width: 640px) {
+  .core-control-state-grid,
+  .component-upgrade-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .agent-info-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

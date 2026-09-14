@@ -32,6 +32,7 @@ var managementActions = map[string]struct{}{
 	"official.xray.attach-custom": {}, "official.xray.detach-custom": {},
 	"external.ownership.status": {}, "external.ownership.prepare": {}, "external.ownership.arm": {}, "external.ownership.activate": {}, "external.ownership.rollback": {},
 	"external.takeover": {},
+	"core.mode.apply":   {},
 	"connection.status": {}, "connection.settings": {},
 }
 
@@ -86,6 +87,7 @@ type agentStatus struct {
 	SingleCore    bool                    `json:"single_core"`
 	OfficialAgent string                  `json:"official_agent"`
 	Takeover      takeoverState           `json:"takeover"`
+	MachineID     string                  `json:"machine_id,omitempty"`
 }
 
 type takeoverState struct {
@@ -210,6 +212,11 @@ func (s *helperState) acceptManagementReport(serverID string, report *management
 		report.Status.Capabilities = append([]string(nil), report.Status.Capabilities...)
 		sort.Strings(report.Status.Capabilities)
 		s.data.AgentStatuses[serverID] = report.Status
+		if machineID := strings.TrimSpace(report.Status.MachineID); validPersistentMachineID(machineID) {
+			identity.MachineID = machineID
+			identity.UpdatedAt = now
+			s.data.Servers[serverID] = identity
+		}
 		if report.Result != nil {
 			expected, err := signManagementResult(*report.Result, identity.HelperTokenHash)
 			if err != nil || subtle.ConstantTimeCompare([]byte(expected), []byte(report.Result.Signature)) != 1 {
@@ -253,6 +260,19 @@ func (s *helperState) acceptManagementReport(serverID string, report *management
 	return &command, nil
 }
 
+func validPersistentMachineID(value string) bool {
+	if len(value) < 8 || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func validateManagementPayload(action string, payload json.RawMessage) error {
 	if len(payload) > managementPayloadMax {
 		return errors.New("management payload too large")
@@ -284,6 +304,13 @@ func validateManagementPayload(action string, payload json.RawMessage) error {
 		}
 		if err := json.Unmarshal(payload, &body); err != nil || len(body.Config) == 0 || !json.Valid(body.Config) {
 			return errors.New("valid Xray config is required")
+		}
+	case "core.mode.apply":
+		var body struct {
+			DesiredMode string `json:"desired_mode"`
+		}
+		if err := json.Unmarshal(payload, &body); err != nil || (body.DesiredMode != "external" && body.DesiredMode != "embedded") {
+			return errors.New("valid desired_mode is required")
 		}
 	}
 	return nil

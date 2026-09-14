@@ -70,7 +70,7 @@ func TestInstallTokenDefaultsToTakeoverAndAllowsExplicitHelperOnly(t *testing.T)
 	if _, _, err := state.createInstallTokenForMode("14", "unsafe"); err == nil {
 		t.Fatal("invalid install mode was accepted")
 	}
-	script := renderHelperInstaller("https://controller.invalid", "uuid", "token", "takeover")
+	script := renderHelperInstaller("https://controller.invalid", "uuid", "token", "takeover", "rebind-token")
 	if !strings.Contains(script, "export MMWXC_INSTALL_MODE=\"takeover\"") {
 		t.Fatalf("rendered installer did not pin takeover mode: %q", script[:min(len(script), 256)])
 	}

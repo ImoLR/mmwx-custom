@@ -74,6 +74,7 @@ type agentStatus struct {
 	SingleCore    bool                    `json:"single_core"`
 	OfficialAgent string                  `json:"official_agent"`
 	Takeover      takeoverState           `json:"takeover"`
+	MachineID     string                  `json:"machine_id,omitempty"`
 }
 
 type managementReport struct {
@@ -88,6 +89,7 @@ var helperCapabilities = []string{
 	"official.xray.attach-custom", "official.xray.detach-custom",
 	"external.ownership.status", "external.ownership.prepare", "external.ownership.arm", "external.ownership.activate", "external.ownership.rollback",
 	"external.takeover",
+	"core.mode.apply",
 	"connection.status", "connection.settings",
 }
 
@@ -164,13 +166,17 @@ func (executor *commandExecutor) status(ctx context.Context) agentStatus {
 		Core:   coreStatus, RunUser: username, Architecture: runtime.GOARCH,
 		Capabilities: append([]string(nil), helperCapabilities...), LastOperation: executor.state.LastOperation, ReportedAt: time.Now().UTC(),
 		Ownership: executor.lifecycle.externalOwnershipStatus(ctx, &executor.state.ExternalOwnership),
-		Takeover:  executor.state.Takeover,
+		Takeover:  executor.state.Takeover, MachineID: executor.state.MachineID,
 	}
-	if status.Ownership.Enabled {
+	if actualMode, err := readAgentXrayMode(officialAgentConfigPath); err == nil {
+		status.CoreMode = actualMode
+	} else if status.Ownership.Enabled {
 		status.CoreMode = "external"
-		status.SingleCore = status.Ownership.SingleCore
 	} else {
 		status.CoreMode = "embedded"
+	}
+	if status.Ownership.Enabled {
+		status.SingleCore = status.Ownership.SingleCore
 	}
 	if serviceActive(ctx, "mmw-agent.service") {
 		if status.Takeover.Status == "completed" {
@@ -259,6 +265,24 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 			executor.state.Takeover = takeoverState{Mode: "takeover", Status: "completed", Message: "external single-Core takeover complete", CompletedAt: time.Now().UTC()}
 		} else {
 			executor.state.Takeover = takeoverState{Mode: "takeover", Status: "failed", Message: sanitizeManagementMessage(err.Error()), CompletedAt: time.Now().UTC()}
+		}
+	case "core.mode.apply":
+		var payload struct {
+			DesiredMode string `json:"desired_mode"`
+		}
+		err = json.Unmarshal(command.Payload, &payload)
+		if err == nil && payload.DesiredMode == "external" {
+			executor.state.Takeover = takeoverState{Mode: "desired-state", Status: "in_progress"}
+			err = ensureExternalDesiredState(ctx, executor.client, executor.config, executor.lifecycle, executor.state)
+			if err == nil {
+				executor.state.Takeover = takeoverState{Mode: "desired-state", Status: "completed", Message: "external single-Core desired state is healthy", CompletedAt: time.Now().UTC()}
+			} else {
+				executor.state.Takeover = takeoverState{Mode: "desired-state", Status: "failed", Message: sanitizeManagementMessage(err.Error()), CompletedAt: time.Now().UTC()}
+			}
+		} else if err == nil && payload.DesiredMode == "embedded" {
+			err = ensureEmbeddedDesiredState(ctx, executor.client, executor.config, executor.lifecycle, executor.state)
+		} else if err == nil {
+			err = errors.New("invalid desired core mode")
 		}
 	case "core.rollback":
 		err = executor.lifecycle.rollbackCore(ctx)

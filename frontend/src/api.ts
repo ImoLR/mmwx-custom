@@ -4,6 +4,8 @@ import type {
   AgentVersionInfo,
   ConnectionMetricsResponse,
   CustomAgentStatusResponse,
+  CoreModeResponse,
+  CustomReleaseInfoResponse,
   DetailedConnectionResponse,
   ServerConnectionSettings,
   GeoLookupResponse,
@@ -679,6 +681,34 @@ export function fetchCustomAgentStatus(token: string, serverId: number) {
   });
 }
 
+export function fetchCoreMode(token: string, serverId: number) {
+  return requestCustomApi<CoreModeResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/core-mode`), {
+    headers: { "MM-Authorization": token },
+  });
+}
+
+export function setCoreMode(token: string, serverId: number, desiredMode: "external" | "embedded") {
+  return requestCustomApi<CoreModeResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/core-mode`), {
+    method: "POST",
+    headers: { "MM-Authorization": token, "Content-Type": "application/json" },
+    body: JSON.stringify({ desired_mode: desiredMode }),
+  });
+}
+
+export function fetchCustomReleaseInfo(token: string) {
+  return requestCustomApi<CustomReleaseInfoResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/releases"), {
+    headers: { "MM-Authorization": token },
+  });
+}
+
+export function dispatchCustomAgentAction(token: string, serverId: number, action: string, payload?: Record<string, unknown>) {
+  return requestCustomApi<{ success: boolean; command?: { id: string; action: string } }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/agent`), {
+    method: "POST",
+    headers: { "MM-Authorization": token, "Content-Type": "application/json" },
+    body: JSON.stringify({ action, payload }),
+  });
+}
+
 export function fetchGeoLookup(host: string, signal?: AbortSignal) {
   return requestCustomApi<GeoLookupResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/geo/lookup?host=${encodeURIComponent(host)}`), { signal });
 }
@@ -1222,7 +1252,6 @@ export function updateRemoteServerDomain(token: string, server: RemoteServer, do
       listen_port: server.listen_port ?? 0,
       pull_address: server.pull_address || "",
       pull_port: server.pull_port ?? 0,
-      xray_mode: server.xray_mode,
       fallback_to_pull: Boolean(server.fallback_to_pull),
     }),
   });

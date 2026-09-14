@@ -19,6 +19,7 @@ type localState struct {
 	HelperVersion         string                 `json:"helper_version,omitempty"`
 	ExternalOwnership     externalOwnershipState `json:"external_ownership,omitempty"`
 	Takeover              takeoverState          `json:"takeover,omitempty"`
+	MachineID             string                 `json:"machine_id,omitempty"`
 }
 
 type takeoverState struct {

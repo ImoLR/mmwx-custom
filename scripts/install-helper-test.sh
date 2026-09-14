@@ -74,6 +74,7 @@ grep -q '^\[mmwxc\] MMWXC Custom Agent installation complete$' <<<"$legacy_outpu
 [[ "$($legacy_root/usr/local/bin/mmwxc-helper --version)" == "mmwxc-helper v0.4.2" ]]
 [[ "$config_before" == "$(sha256sum "$legacy_root/etc/mmwxc-helper.env" | awk '{print $1}')" ]]
 [[ "$state_before" == "$(sha256sum "$legacy_root/var/lib/mmwxc-helper/state.json" | awk '{print $1}')" ]]
+[[ "$(tr -d '\n' <"$legacy_root/var/lib/mmwxc/machine-id")" == "preserved-server-id" ]]
 [[ -f "$legacy_root/etc/systemd/system/mmwxc-helper.service" ]]
 [[ -f "$legacy_root/etc/systemd/system/mmwxc-core.service" ]]
 [[ ! -e "$legacy_root/etc/mmwxc/core/config.json" ]]
@@ -92,6 +93,7 @@ MMWXC_INSTALL_ROOT="$fresh_root" MMWXC_ASSET_DIR="$assets" \
   "$ROOT_DIR/scripts/install-helper.sh" >/dev/null
 grep -q '^MMWXC_HELPER_SERVER_ID=new-server-id$' "$fresh_root/etc/mmwxc-helper.env"
 grep -q '^MMWXC_HELPER_TOKEN=new-token$' "$fresh_root/etc/mmwxc-helper.env"
+[[ "$(tr -d '\n' <"$fresh_root/var/lib/mmwxc/machine-id")" == "new-server-id" ]]
 [[ -x "$fresh_root/usr/local/bin/mmwxc-helper" ]]
 [[ -x "$fresh_root/opt/mmwxc/core/xray" ]]
 
