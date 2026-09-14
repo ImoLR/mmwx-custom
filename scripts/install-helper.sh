@@ -92,11 +92,24 @@ asset_url() {
 }
 
 fetch_asset() {
-  local name="$1" destination="$2"
+  local name="$1" destination="$2" partial url attempt
+  local -a resume
   log_step "Downloading $name"
   if [[ -n "$ASSET_DIR" ]]; then cp "$ASSET_DIR/$name" "$destination"
-  elif command -v curl >/dev/null 2>&1; then curl --fail --show-error --silent --location --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 10 --max-time 180 -o "$destination" "$(asset_url "$name")"
-  elif command -v wget >/dev/null 2>&1; then wget -q --connect-timeout=10 --read-timeout=180 -O "$destination" "$(asset_url "$name")"
+  elif command -v curl >/dev/null 2>&1; then
+    partial="${destination}.part"
+    url="$(asset_url "$name")"
+    for attempt in 1 2 3 4; do
+      resume=()
+      [[ -s "$partial" ]] && resume=(--continue-at -)
+      if curl --fail --show-error --silent --location --connect-timeout 10 --max-time 900 "${resume[@]}" -o "$partial" "$url"; then
+        mv -f "$partial" "$destination"
+        break
+      fi
+      [[ $attempt -lt 4 ]] || return 1
+      sleep 2
+    done
+  elif command -v wget >/dev/null 2>&1; then wget -q --connect-timeout=10 --read-timeout=900 -O "$destination" "$(asset_url "$name")"
   else echo "curl or wget is required" >&2; exit 1
   fi
   [[ -s "$destination" ]] || { echo "downloaded empty asset: $name" >&2; exit 1; }

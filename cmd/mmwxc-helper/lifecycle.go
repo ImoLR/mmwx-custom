@@ -68,7 +68,7 @@ type lifecycleManager struct {
 
 func newLifecycleManager(core *coreClient) *lifecycleManager {
 	return &lifecycleManager{httpClient: &http.Client{
-		Timeout: 10 * time.Minute,
+		Timeout: 15 * time.Minute,
 		CheckRedirect: func(request *http.Request, _ []*http.Request) error {
 			if request.URL.Scheme != "https" || !allowedArtifactRedirectHost(request.URL.Hostname()) {
 				return errors.New("artifact redirect is not allowed")

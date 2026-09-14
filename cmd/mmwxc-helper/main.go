@@ -24,7 +24,7 @@ const (
 	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
 	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
 	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
-	helperVersion        = "v0.5.1"
+	helperVersion        = "v0.5.2"
 )
 
 type config struct {
@@ -74,7 +74,7 @@ func main() {
 	if *managedHelperUpdate {
 		defer cleanupManagedUpdateWorker()
 		time.Sleep(2 * time.Second)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 17*time.Minute)
 		defer cancel()
 		artifact := managementArtifact{URL: *updateURL, SHA256: *updateSHA256, Version: *updateVersion}
 		if err := runManagedHelperUpdate(ctx, artifact, *configPath); err != nil {
@@ -175,7 +175,7 @@ func main() {
 		state.ControllerConnectedAt = time.Now().UTC()
 		state.Settings = response.Settings
 		if response.Command != nil && !completedCommand(state.CompletedCommandIDs, response.Command.ID) {
-			commandCtx, cancelCommand := context.WithTimeout(context.Background(), 12*time.Minute)
+			commandCtx, cancelCommand := context.WithTimeout(context.Background(), 17*time.Minute)
 			result := executor.execute(commandCtx, *response.Command, cfg.Token)
 			cancelCommand()
 			state.PendingResult = &result

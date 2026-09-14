@@ -19,11 +19,11 @@ trap 'rm -rf "$tmp"' EXIT
 base="https://github.com/${REPO}/releases/latest/download"
 
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL --connect-timeout 10 --max-time 180 -o "$tmp/checksums.txt" "$base/checksums.txt"
-  curl -fsSL --connect-timeout 10 --max-time 180 -o "$tmp/install-helper.sh" "$base/install-helper.sh"
+  curl -fsSL --connect-timeout 10 --max-time 900 -o "$tmp/checksums.txt" "$base/checksums.txt"
+  curl -fsSL --connect-timeout 10 --max-time 900 -o "$tmp/install-helper.sh" "$base/install-helper.sh"
 elif command -v wget >/dev/null 2>&1; then
-  wget -q --connect-timeout=10 --read-timeout=180 -O "$tmp/checksums.txt" "$base/checksums.txt"
-  wget -q --connect-timeout=10 --read-timeout=180 -O "$tmp/install-helper.sh" "$base/install-helper.sh"
+  wget -q --connect-timeout=10 --read-timeout=900 -O "$tmp/checksums.txt" "$base/checksums.txt"
+  wget -q --connect-timeout=10 --read-timeout=900 -O "$tmp/install-helper.sh" "$base/install-helper.sh"
 else
   echo "curl or wget is required" >&2
   exit 1
