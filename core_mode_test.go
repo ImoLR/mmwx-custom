@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,7 +18,7 @@ func newCoreModeTestState(t *testing.T) *helperState {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.recordLegacyReporter("12", "helper-token", "v0.5.0")
+	state.recordLegacyReporter("12", "helper-token", "v0.5.1")
 	return state
 }
 
@@ -34,6 +36,26 @@ func TestCoreModeEndpointIsDedicatedAndPersistsExplicitChoice(t *testing.T) {
 	intent, ok := state.coreModeIntent("12")
 	if !ok || intent.DesiredMode != "external" || !intent.CustomCoreOwned {
 		t.Fatalf("explicit core intent=%#v configured=%v", intent, ok)
+	}
+}
+
+func TestOrdinaryRemoteServerSaveDoesNotSendXrayMode(t *testing.T) {
+	source, err := os.ReadFile("frontend/src/api.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	start := strings.Index(text, "export function updateRemoteServerDomain")
+	if start < 0 {
+		t.Fatal("ordinary remote server update function was not found")
+	}
+	end := strings.Index(text[start:], "export function mutateXrayInbound")
+	if end < 0 {
+		t.Fatal("ordinary remote server update function was not found")
+	}
+	functionBody := text[start : start+end]
+	if strings.Contains(functionBody, "xray_mode") || strings.Contains(functionBody, "desired_core_mode") {
+		t.Fatalf("ordinary server save can modify core mode: %s", functionBody)
 	}
 }
 

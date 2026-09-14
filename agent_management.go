@@ -75,19 +75,20 @@ type componentStatus struct {
 }
 
 type agentStatus struct {
-	Helper        componentStatus         `json:"helper"`
-	Core          componentStatus         `json:"core"`
-	RunUser       string                  `json:"run_user,omitempty"`
-	Architecture  string                  `json:"architecture,omitempty"`
-	Capabilities  []string                `json:"capabilities"`
-	LastOperation *managementResult       `json:"last_operation,omitempty"`
-	ReportedAt    time.Time               `json:"reported_at"`
-	Ownership     externalOwnershipStatus `json:"external_ownership"`
-	CoreMode      string                  `json:"core_mode"`
-	SingleCore    bool                    `json:"single_core"`
-	OfficialAgent string                  `json:"official_agent"`
-	Takeover      takeoverState           `json:"takeover"`
-	MachineID     string                  `json:"machine_id,omitempty"`
+	Helper        componentStatus          `json:"helper"`
+	Core          componentStatus          `json:"core"`
+	RunUser       string                   `json:"run_user,omitempty"`
+	Architecture  string                   `json:"architecture,omitempty"`
+	Capabilities  []string                 `json:"capabilities"`
+	LastOperation *managementResult        `json:"last_operation,omitempty"`
+	ReportedAt    time.Time                `json:"reported_at"`
+	Ownership     externalOwnershipStatus  `json:"external_ownership"`
+	CoreMode      string                   `json:"core_mode"`
+	SingleCore    bool                     `json:"single_core"`
+	OfficialAgent string                   `json:"official_agent"`
+	Takeover      takeoverState            `json:"takeover"`
+	MachineID     string                   `json:"machine_id,omitempty"`
+	Update        *componentUpdateProgress `json:"update,omitempty"`
 }
 
 type takeoverState struct {
@@ -193,6 +194,17 @@ func (s *helperState) enqueueManagementCommand(serverID, action string, payload 
 		return managementCommand{}, err
 	}
 	s.data.ManagementCommands[serverID] = append(s.data.ManagementCommands[serverID], command)
+	if action == "helper.update" || action == "core.update" || action == "core.install" {
+		var artifact managementArtifact
+		_ = json.Unmarshal(payload, &artifact)
+		component := "core"
+		if action == "helper.update" {
+			component = "helper"
+		}
+		status := s.data.AgentStatuses[serverID]
+		status.Update = &componentUpdateProgress{Component: component, Phase: "dispatching", TargetVersion: artifact.Version, UpdatedAt: now}
+		s.data.AgentStatuses[serverID] = status
+	}
 	if err := s.saveLocked(); err != nil {
 		return managementCommand{}, err
 	}
@@ -208,7 +220,11 @@ func (s *helperState) acceptManagementReport(serverID string, report *management
 		return nil, errors.New("helper is not registered")
 	}
 	if report != nil {
+		previousUpdate := s.data.AgentStatuses[serverID].Update
 		report.Status.ReportedAt = now
+		if report.Status.Update == nil {
+			report.Status.Update = completeObservedUpdate(previousUpdate, report.Status, now)
+		}
 		report.Status.Capabilities = append([]string(nil), report.Status.Capabilities...)
 		sort.Strings(report.Status.Capabilities)
 		s.data.AgentStatuses[serverID] = report.Status
@@ -258,6 +274,26 @@ func (s *helperState) acceptManagementReport(serverID string, report *management
 	}
 	command := commands[0]
 	return &command, nil
+}
+
+func completeObservedUpdate(progress *componentUpdateProgress, status agentStatus, now time.Time) *componentUpdateProgress {
+	if progress == nil || progress.TargetVersion == "" || progress.Phase == "success" || progress.Phase == "failed" || progress.Phase == "rolled_back" {
+		return progress
+	}
+	installed := ""
+	if progress.Component == "helper" {
+		installed = status.Helper.Version
+	} else if progress.Component == "core" {
+		installed = status.Core.Version
+	}
+	if installed == progress.TargetVersion || (progress.Component == "core" && strings.Contains(installed, progress.TargetVersion)) {
+		completed := *progress
+		completed.Phase = "success"
+		completed.Message = ""
+		completed.UpdatedAt = now
+		return &completed
+	}
+	return progress
 }
 
 func validPersistentMachineID(value string) bool {

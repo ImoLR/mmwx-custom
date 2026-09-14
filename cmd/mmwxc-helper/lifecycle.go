@@ -63,6 +63,7 @@ type lifecycleManager struct {
 	versionMu   sync.Mutex
 	coreMTime   time.Time
 	coreVersion string
+	progress    func(component, phase, version, message string)
 }
 
 func newLifecycleManager(core *coreClient) *lifecycleManager {
@@ -75,6 +76,12 @@ func newLifecycleManager(core *coreClient) *lifecycleManager {
 			return nil
 		},
 	}, core: core}
+}
+
+func (manager *lifecycleManager) reportProgress(component, phase, version, message string) {
+	if manager.progress != nil {
+		manager.progress(component, phase, version, message)
+	}
 }
 
 func validateArtifact(artifact managementArtifact) error {
@@ -271,11 +278,13 @@ func latestRollback(kind string) (string, error) {
 }
 
 func (manager *lifecycleManager) installOrUpdateCore(ctx context.Context, artifact managementArtifact) error {
+	manager.reportProgress("core", "downloading", artifact.Version, "")
 	staged, err := manager.downloadArtifact(ctx, artifact, "mmwxc-core")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(staged)
+	manager.reportProgress("core", "verifying", artifact.Version, "")
 	if err := validateELFArchitecture(staged); err != nil {
 		return err
 	}
@@ -285,6 +294,7 @@ func (manager *lifecycleManager) installOrUpdateCore(ctx context.Context, artifa
 	if err != nil || !strings.Contains(strings.ToLower(version), "xray") {
 		return errors.New("artifact is not a supported Xray Core")
 	}
+	manager.reportProgress("core", "installing", artifact.Version, "")
 	wasActive := serviceActive(ctx, coreServiceName)
 	if err := installAtomic(staged, coreBinaryPath, "core"); err != nil {
 		return err
@@ -307,6 +317,7 @@ func (manager *lifecycleManager) installOrUpdateCore(ctx context.Context, artifa
 	if err := systemctl(ctx, "enable", coreServiceName); err != nil {
 		return manager.restoreCoreAfterFailure(ctx, err)
 	}
+	manager.reportProgress("core", "restarting", artifact.Version, "")
 	if err := systemctl(ctx, "restart", coreServiceName); err != nil {
 		return manager.restoreCoreAfterFailure(ctx, err)
 	}
@@ -863,18 +874,36 @@ func pruneStaleUpdateWorkers(now time.Time) {
 	}
 }
 
-func runManagedHelperUpdate(ctx context.Context, artifact managementArtifact, configPath string) error {
+func runManagedHelperUpdate(ctx context.Context, artifact managementArtifact, configPath string) (returnErr error) {
 	startedAt := time.Now().UTC()
-	manager := newLifecycleManager(newCoreClient(defaultCoreSocket))
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		return err
 	}
+	manager := newLifecycleManager(newCoreClient(defaultCoreSocket))
+	manager.progress = func(component, phase, version, message string) {
+		progressCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = postUpdateProgress(progressCtx, manager.httpClient, cfg, component, phase, version, message)
+	}
+	defer func() {
+		if returnErr == nil {
+			return
+		}
+		phase := "failed"
+		message := returnErr.Error()
+		if strings.Contains(strings.ToLower(message), "previous helper was restored") {
+			phase = "rolled_back"
+		}
+		manager.reportProgress("helper", phase, artifact.Version, message)
+	}()
+	manager.reportProgress("helper", "downloading", artifact.Version, "")
 	staged, err := manager.downloadArtifact(ctx, artifact, "mmwxc-helper")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(staged)
+	manager.reportProgress("helper", "verifying", artifact.Version, "")
 	if err := validateELFArchitecture(staged); err != nil {
 		return err
 	}
@@ -888,16 +917,20 @@ func runManagedHelperUpdate(ctx context.Context, artifact managementArtifact, co
 	if artifact.Version != "" && artifact.Version != newVersion {
 		return errors.New("helper version does not match command")
 	}
+	manager.reportProgress("helper", "installing", artifact.Version, "")
 	if err := installAtomic(staged, helperBinaryPath, "helper"); err != nil {
 		return err
 	}
+	manager.reportProgress("helper", "restarting", artifact.Version, "")
 	if err := systemctl(ctx, "restart", helperServiceName); err != nil {
 		return restoreHelperAfterFailure(ctx, err)
 	}
+	manager.reportProgress("helper", "reconnecting", artifact.Version, "")
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		state, loadErr := loadLocalState(cfg.StatePath)
 		if loadErr == nil && state.HelperVersion == newVersion && state.HeartbeatAt.After(startedAt) && state.ControllerConnectedAt.After(startedAt) {
+			manager.reportProgress("helper", "success", artifact.Version, "")
 			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -917,9 +950,14 @@ func cleanupManagedUpdateWorker() {
 
 func restoreHelperAfterFailure(ctx context.Context, cause error) error {
 	backup, err := latestRollback("helper")
-	if err == nil {
-		_ = copyFile(backup, helperBinaryPath, 0755)
-		_ = systemctl(ctx, "restart", helperServiceName)
+	if err != nil {
+		return fmt.Errorf("helper update failed and no rollback is available: %w", cause)
 	}
-	return fmt.Errorf("helper update failed and rollback was attempted: %w", cause)
+	if err := copyFile(backup, helperBinaryPath, 0755); err != nil {
+		return fmt.Errorf("helper update failed (%v); rollback copy failed: %w", cause, err)
+	}
+	if err := systemctl(ctx, "restart", helperServiceName); err != nil {
+		return fmt.Errorf("helper update failed (%v); rollback restart failed: %w", cause, err)
+	}
+	return fmt.Errorf("helper update failed and the previous Helper was restored: %w", cause)
 }

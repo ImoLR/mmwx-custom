@@ -1758,6 +1758,7 @@ function CoreControlPanel({ server, sessionToken, compact = false }: { server: R
   const desired = mode?.intent.desired_core_mode || "external";
   const currentHelper = agent?.status?.helper?.version || "";
   const currentCore = agent?.status?.core?.version || "";
+  const helperInstalled = Boolean(agent?.status?.helper?.installed);
   const latestHelper = release?.release.latest_helper_version || "";
   const latestCore = release?.release.latest_core_version || "";
   const helperUpdate = Boolean(latestHelper && currentHelper !== latestHelper);
@@ -1768,9 +1769,11 @@ function CoreControlPanel({ server, sessionToken, compact = false }: { server: R
   const corePending = Boolean(agent?.pending?.some((item) => item.action === "core.update"));
   const helperResult = [...(agent?.results || [])].reverse().find((item) => item.action === "helper.update");
   const coreResult = [...(agent?.results || [])].reverse().find((item) => item.action === "core.update");
-  const serverOffline = !isServerOnline(server);
-  const helperUpgradeState = serverOffline ? "offline" : componentUpgradeState(helperPending, helperResult, helperUpdate);
-  const coreUpgradeState = serverOffline ? "offline" : componentUpgradeState(corePending, coreResult, coreUpdate);
+  const helperReportStale = !agent?.status?.reported_at || Date.now() - new Date(agent.status.reported_at).getTime() > 30_000;
+  const helperProgress = agent?.status?.update?.component === "helper" ? agent.status.update : undefined;
+  const coreProgress = agent?.status?.update?.component === "core" ? agent.status.update : undefined;
+  const helperUpgradeState = componentUpgradeState(helperProgress, helperReportStale, helperPending, helperResult, helperUpdate);
+  const coreUpgradeState = componentUpgradeState(coreProgress, helperReportStale, corePending, coreResult, coreUpdate);
 
   async function changeMode(next: "external" | "embedded") {
     if (next === desired && mode?.configured) return;
@@ -1822,10 +1825,11 @@ function CoreControlPanel({ server, sessionToken, compact = false }: { server: R
       {mode?.intent.last_repair_error && <div className="agent-notice error">{mode.intent.last_repair_error}</div>}
       {status !== "healthy" && mode?.configured && <p className="agent-note">尝试次数：{mode.intent.repair_attempts || 0}{mode.intent.next_repair_at ? ` · 下次尝试 ${formatDateTime(mode.intent.next_repair_at)}` : ""}</p>}
       <div className="component-upgrade-grid">
-        <article><div><strong>Helper {currentHelper || "未安装"}</strong>{helperUpdate && <span className="update-dot" title="Helper 有更新" />}</div><small>最新：{latestHelper || (release?.last_error ? "缓存暂不可用" : "读取中")}</small>{helperNeedsFirstUpgrade && <small>需要首次升级</small>}<small>状态：{helperUpgradeState}</small><button type="button" disabled={!currentHelper || !helperUpdate || helperPending || busy !== ""} onClick={() => void upgrade("helper")}>{helperPending ? "正在下载 / 校验 / 安装" : helperNeedsFirstUpgrade ? "首次升级 Helper" : "升级 Helper"}</button></article>
-        <article><div><strong>Fork Core {coreVersionLabel(currentCore)}</strong>{coreUpdate && <span className="update-dot" title="Core 有更新" />}</div><small>最新：{latestCore || (release?.last_error ? "缓存暂不可用" : "读取中")}</small><small>状态：{coreUpgradeState}</small><button type="button" disabled={!coreUpdate || corePending || busy !== ""} onClick={() => void upgrade("core")}>{corePending ? "正在下载 / 校验 / 安装" : "升级 Core"}</button></article>
+        <article><div><strong>Helper {currentHelper || (helperInstalled ? "版本未知" : "未安装")}</strong>{helperUpdate && <span className="update-dot" title="Helper 有更新" />}</div><small>最新：{latestHelper || (release?.last_error ? "缓存暂不可用" : "读取中")}</small>{helperInstalled && helperNeedsFirstUpgrade && <small>需要首次升级</small>}<small>状态：{componentUpgradeLabel(helperUpgradeState)}</small><button type="button" disabled={!helperInstalled || !helperUpdate || helperPending || busy !== ""} onClick={() => void upgrade("helper")}>{helperPending ? "升级进行中" : helperNeedsFirstUpgrade ? "首次升级 Helper" : "升级 Helper"}</button></article>
+        <article><div><strong>Fork Core {coreVersionLabel(currentCore)}</strong>{coreUpdate && <span className="update-dot" title="Core 有更新" />}</div><small>最新：{latestCore || (release?.last_error ? "缓存暂不可用" : "读取中")}</small><small>状态：{componentUpgradeLabel(coreUpgradeState)}</small><button type="button" disabled={!helperInstalled || !coreUpdate || corePending || busy !== ""} onClick={() => void upgrade("core")}>{corePending ? "升级进行中" : "升级 Core"}</button></article>
       </div>
       {release?.last_error && release.cached && <p className="agent-note">GitHub 暂时不可达，继续使用 {formatDateTime(release.release.fetched_at)} 的上次成功缓存。</p>}
+      {agent?.status?.update?.message && (agent.status.update.phase === "failed" || agent.status.update.phase === "rolled_back") && <div className="agent-notice error">{agent.status.update.message}</div>}
       {error && <div className="agent-notice error">{error}</div>}
     </section>
   );
@@ -1836,14 +1840,24 @@ function coreVersionLabel(value: string) {
   return value.match(/\b[0-9a-f]{7,40}\b/i)?.[0]?.slice(0, 7) || value.split(" ")[1] || value;
 }
 
-function componentUpgradeState(pending: boolean, result: { success: boolean; message?: string; completed_at: string } | undefined, updateAvailable: boolean) {
-  if (pending) return "dispatching / downloading / verifying / installing";
+function componentUpgradeState(progress: NonNullable<CustomAgentStatusResponse["status"]>["update"] | undefined, offline: boolean, pending: boolean, result: { success: boolean; message?: string; completed_at: string } | undefined, updateAvailable: boolean) {
+  if (progress && Date.now() - new Date(progress.updated_at).getTime() < 15 * 60 * 1000) return progress.phase;
+  if (offline) return "offline";
+  if (pending) return "dispatching";
   if (result && Date.now() - new Date(result.completed_at).getTime() < 10 * 60 * 1000) {
     if (!result.success) return result.message?.toLowerCase().includes("rollback") ? "rolled_back" : "failed";
     if (updateAvailable) return "reconnecting";
     return "success";
   }
   return updateAvailable ? "update_available" : "idle";
+}
+
+function componentUpgradeLabel(value: string) {
+  return ({
+    idle: "已是最新", update_available: "有更新", dispatching: "正在下发", downloading: "正在下载", verifying: "正在校验",
+    installing: "正在安装", restarting: "正在重启", reconnecting: "正在重连", success: "升级成功", failed: "升级失败",
+    rolled_back: "升级失败，已回滚", offline: "Helper 离线",
+  } as Record<string, string>)[value] || value;
 }
 
 function HelperInstallDialog({ server, sessionToken, connectionMetric }: { server: RemoteServer; sessionToken: string; connectionMetric?: ConnectionMetric }) {

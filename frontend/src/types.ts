@@ -320,6 +320,8 @@ export type CustomAgentStatusResponse = {
     external_ownership?: { prepared?: boolean; armed?: boolean; enabled?: boolean; service_owned?: boolean; runtime_owned?: boolean; single_core?: boolean; service_active?: boolean; core_ready?: boolean; last_repair_at?: string; last_repair_reason?: string; error?: string };
     machine_id?: string;
     architecture?: string;
+    reported_at?: string;
+    update?: { component: "helper" | "core"; phase: "dispatching" | "downloading" | "verifying" | "installing" | "restarting" | "reconnecting" | "success" | "failed" | "rolled_back"; target_version?: string; message?: string; updated_at: string };
   };
   pending?: Array<{ id: string; action: string; created_at: string }>;
   results?: Array<{ action: string; success: boolean; message?: string; completed_at: string }>;

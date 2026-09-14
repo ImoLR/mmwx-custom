@@ -23,9 +23,9 @@ func (releaseRoundTripper) RoundTrip(request *http.Request) (*http.Response, err
 	body := ""
 	switch {
 	case strings.Contains(request.URL.Path, "/releases/latest"):
-		body = `{"tag_name":"v1.3.0","assets":[{"name":"component-versions.json","browser_download_url":"https://github.com/ImoLR/mmwx-custom/releases/download/v1.3.0/component-versions.json"},{"name":"checksums.txt","browser_download_url":"https://github.com/ImoLR/mmwx-custom/releases/download/v1.3.0/checksums.txt"},{"name":"mmwxc-helper-linux-amd64","browser_download_url":"https://github.com/ImoLR/mmwx-custom/releases/download/v1.3.0/mmwxc-helper-linux-amd64"},{"name":"mmwxc-helper-linux-arm64","browser_download_url":"https://github.com/ImoLR/mmwx-custom/releases/download/v1.3.0/mmwxc-helper-linux-arm64"},{"name":"mmwxc-core-linux-amd64","browser_download_url":"https://github.com/ImoLR/mmwx-custom/releases/download/v1.3.0/mmwxc-core-linux-amd64"},{"name":"mmwxc-core-linux-arm64","browser_download_url":"https://github.com/ImoLR/mmwx-custom/releases/download/v1.3.0/mmwxc-core-linux-arm64"}]}`
+		body = `{"tag_name":"v1.3.1","assets":[{"name":"component-versions.json","browser_download_url":"https://github.com/ImoLR/mmwx-custom/releases/download/v1.3.1/component-versions.json"},{"name":"checksums.txt","browser_download_url":"https://github.com/ImoLR/mmwx-custom/releases/download/v1.3.1/checksums.txt"},{"name":"mmwxc-helper-linux-amd64","browser_download_url":"https://github.com/ImoLR/mmwx-custom/releases/download/v1.3.1/mmwxc-helper-linux-amd64"},{"name":"mmwxc-helper-linux-arm64","browser_download_url":"https://github.com/ImoLR/mmwx-custom/releases/download/v1.3.1/mmwxc-helper-linux-arm64"},{"name":"mmwxc-core-linux-amd64","browser_download_url":"https://github.com/ImoLR/mmwx-custom/releases/download/v1.3.1/mmwxc-core-linux-amd64"},{"name":"mmwxc-core-linux-arm64","browser_download_url":"https://github.com/ImoLR/mmwx-custom/releases/download/v1.3.1/mmwxc-core-linux-arm64"}]}`
 	case strings.HasSuffix(request.URL.Path, "/component-versions.json"):
-		body = `{"custom_version":"v1.3.0","helper_version":"v0.5.0","core_version":"6e8f098"}`
+		body = `{"custom_version":"v1.3.1","helper_version":"v0.5.1","core_version":"6e8f098"}`
 	case strings.HasSuffix(request.URL.Path, "/checksums.txt"):
 		body = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  mmwxc-helper-linux-amd64\n" +
 			"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  mmwxc-helper-linux-arm64\n" +
@@ -68,7 +68,7 @@ func TestReleaseFetchBuildsVerifiedComponentArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Tag != "v1.3.0" || info.HelperVersion != "v0.5.0" || info.CoreVersion != "6e8f098" {
+	if info.Tag != "v1.3.1" || info.HelperVersion != "v0.5.1" || info.CoreVersion != "6e8f098" {
 		t.Fatalf("release info=%#v", info)
 	}
 	if info.HelperArtifacts["amd64"].SHA256 != strings.Repeat("a", 64) || info.CoreArtifacts["arm64"].SHA256 != strings.Repeat("d", 64) {

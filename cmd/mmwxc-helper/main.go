@@ -24,7 +24,7 @@ const (
 	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
 	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
 	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
-	helperVersion        = "v0.5.0"
+	helperVersion        = "v0.5.1"
 )
 
 type config struct {
@@ -103,6 +103,7 @@ func main() {
 	nftables := newNftablesManager(cfg.EnableNft)
 	lifecycle := newLifecycleManager(core)
 	executor := &commandExecutor{lifecycle: lifecycle, core: core, state: &state, client: client, config: cfg}
+	lifecycle.progress = executor.reportUpdateProgress
 	if *rollbackTakeoverOnce {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		err := restoreEmbeddedTakeover(ctx, client, cfg, lifecycle, &state)

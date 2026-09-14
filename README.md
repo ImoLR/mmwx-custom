@@ -84,6 +84,7 @@ The following endpoints are available:
 - `POST /api/custom/helper/install-token`
 - `GET /api/custom/helper/install/<install-token>`
 - `POST /api/custom/helper/rebind`
+- `POST /api/custom/agent/update-progress`
 - `GET /api/custom/servers/:id/agent`
 - `POST /api/custom/servers/:id/agent`
 - `GET /api/custom/servers/:id/core-mode`
@@ -93,7 +94,7 @@ The following endpoints are available:
 
 ## Connections Helper
 
-`mmwxc-helper v0.5.0` is the Custom Agent. The normal installer defaults to a
+`mmwxc-helper v0.5.1` is the Custom Agent. The normal installer defaults to a
 transactional external single-Core takeover; `--helper-only` keeps the
 diagnostic-only maintenance mode. The official `mmw-agent` remains responsible
 for config generation and the `xray.service` lifecycle.
@@ -116,6 +117,11 @@ The Helper persists a stable machine identity in `/var/lib/mmwxc/machine-id`.
 An existing Helper installation can use a one-time rebind token to move its
 controller association, desired mode, connection settings, and status to a new
 formal server id without exposing or replacing the long-lived Helper token.
+
+Helper and Core upgrades post authenticated phase transitions (`dispatching`,
+`downloading`, `verifying`, `installing`, `restarting`, `reconnecting`, and a
+terminal success/failure/rollback state) to the Custom controller. A normal
+Helper heartbeat preserves the most recent phase instead of erasing it.
 
 The `external.ownership.arm` management step installs that drop-in and releases
 the old Custom service ports before the controller asks the official Agent to

@@ -62,19 +62,20 @@ type componentStatus struct {
 }
 
 type agentStatus struct {
-	Helper        componentStatus         `json:"helper"`
-	Core          componentStatus         `json:"core"`
-	RunUser       string                  `json:"run_user,omitempty"`
-	Architecture  string                  `json:"architecture,omitempty"`
-	Capabilities  []string                `json:"capabilities"`
-	LastOperation *managementResult       `json:"last_operation,omitempty"`
-	ReportedAt    time.Time               `json:"reported_at"`
-	Ownership     externalOwnershipStatus `json:"external_ownership"`
-	CoreMode      string                  `json:"core_mode"`
-	SingleCore    bool                    `json:"single_core"`
-	OfficialAgent string                  `json:"official_agent"`
-	Takeover      takeoverState           `json:"takeover"`
-	MachineID     string                  `json:"machine_id,omitempty"`
+	Helper        componentStatus          `json:"helper"`
+	Core          componentStatus          `json:"core"`
+	RunUser       string                   `json:"run_user,omitempty"`
+	Architecture  string                   `json:"architecture,omitempty"`
+	Capabilities  []string                 `json:"capabilities"`
+	LastOperation *managementResult        `json:"last_operation,omitempty"`
+	ReportedAt    time.Time                `json:"reported_at"`
+	Ownership     externalOwnershipStatus  `json:"external_ownership"`
+	CoreMode      string                   `json:"core_mode"`
+	SingleCore    bool                     `json:"single_core"`
+	OfficialAgent string                   `json:"official_agent"`
+	Takeover      takeoverState            `json:"takeover"`
+	MachineID     string                   `json:"machine_id,omitempty"`
+	Update        *componentUpdateProgress `json:"update,omitempty"`
 }
 
 type managementReport struct {
@@ -152,6 +153,12 @@ type commandExecutor struct {
 	config    config
 }
 
+func (executor *commandExecutor) reportUpdateProgress(component, phase, version, message string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = postUpdateProgress(ctx, executor.client, executor.config, component, phase, version, message)
+}
+
 func (executor *commandExecutor) status(ctx context.Context) agentStatus {
 	username := ""
 	if current, err := user.Current(); err == nil {
@@ -224,6 +231,16 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 			} else {
 				err = executor.lifecycle.installOrUpdateCore(ctx, artifact)
 			}
+			phase := "success"
+			message := ""
+			if err != nil {
+				phase = "failed"
+				message = err.Error()
+				if strings.Contains(strings.ToLower(message), "previous") && strings.Contains(strings.ToLower(message), "restored") {
+					phase = "rolled_back"
+				}
+			}
+			executor.reportUpdateProgress("core", phase, artifact.Version, message)
 		}
 	case "core.restart":
 		if executor.state.ExternalOwnership.Enabled {

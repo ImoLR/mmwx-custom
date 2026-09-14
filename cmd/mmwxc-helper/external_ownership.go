@@ -360,11 +360,13 @@ func (manager *lifecycleManager) installOrUpdateExternalOwnedCore(ctx context.Co
 	if state == nil || !state.Enabled {
 		return errors.New("external ownership is not enabled")
 	}
+	manager.reportProgress("core", "downloading", artifact.Version, "")
 	staged, err := manager.downloadArtifact(ctx, artifact, "mmwxc-core")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(staged)
+	manager.reportProgress("core", "verifying", artifact.Version, "")
 	if err := validateELFArchitecture(staged); err != nil {
 		return err
 	}
@@ -381,6 +383,7 @@ func (manager *lifecycleManager) installOrUpdateExternalOwnedCore(ctx context.Co
 	if err != nil {
 		return err
 	}
+	manager.reportProgress("core", "installing", artifact.Version, "")
 	if err := os.MkdirAll(filepath.Dir(ownershipImagePath), 0700); err != nil {
 		return err
 	}
@@ -405,6 +408,7 @@ func (manager *lifecycleManager) installOrUpdateExternalOwnedCore(ctx context.Co
 			return fmt.Errorf("update owned Core binary: %w", err)
 		}
 		state.ExpectedCoreSHA = newHash
+		manager.reportProgress("core", "restarting", artifact.Version, "")
 		if err := systemctl(ctx, "restart", "xray.service"); err != nil {
 			return err
 		}
