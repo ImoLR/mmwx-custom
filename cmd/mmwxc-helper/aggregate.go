@@ -24,8 +24,30 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 	for _, item := range settings.Users {
 		settingsByIdentity[item.Identity] = item
 	}
+	runtimeUsers := append([]coreUserSnapshot(nil), core.Users...)
+	knownUsers := make(map[coreIdentity]struct{}, len(runtimeUsers))
+	for _, user := range runtimeUsers {
+		if user.Attributed {
+			knownUsers[user.Identity] = struct{}{}
+		}
+	}
+	for _, inbound := range core.Inbounds {
+		for _, user := range inbound.Users {
+			identity := coreIdentity{InboundTag: inbound.InboundTag, User: user}
+			if identity.InboundTag == "" || identity.User == "" {
+				continue
+			}
+			if _, exists := knownUsers[identity]; exists {
+				continue
+			}
+			knownUsers[identity] = struct{}{}
+			runtimeUsers = append(runtimeUsers, coreUserSnapshot{
+				Identity: identity, InboundName: inbound.InboundName, InboundPort: inbound.InboundPort, Attributed: true,
+			})
+		}
+	}
 	usersByPort := make(map[uint32][]coreUserSnapshot)
-	for _, user := range core.Users {
+	for _, user := range runtimeUsers {
 		if user.Attributed && user.InboundPort > 0 {
 			usersByPort[user.InboundPort] = append(usersByPort[user.InboundPort], user)
 		}
@@ -34,12 +56,22 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 		tcp         tcpStateCounts
 		connections map[string]int64
 	}
-	byPort := make(map[uint32]*portStats, len(usersByPort))
+	byPort := make(map[uint32]*portStats, len(usersByPort)+len(core.Inbounds))
+	configuredByPort := make(map[uint32]coreInboundSnapshot, len(core.Inbounds))
+	for _, inbound := range core.Inbounds {
+		if inbound.InboundPort == 0 {
+			continue
+		}
+		configuredByPort[inbound.InboundPort] = inbound
+		byPort[inbound.InboundPort] = &portStats{connections: make(map[string]int64)}
+	}
 	for port := range usersByPort {
-		byPort[port] = &portStats{connections: make(map[string]int64)}
+		if byPort[port] == nil {
+			byPort[port] = &portStats{connections: make(map[string]int64)}
+		}
 	}
 	if core.Version >= 2 {
-		for _, user := range core.Users {
+		for _, user := range runtimeUsers {
 			stats := byPort[user.InboundPort]
 			if stats == nil || !user.Attributed {
 				continue
@@ -92,12 +124,13 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 	}
 
 	var inbounds []inboundSnapshot
-	for port, users := range usersByPort {
-		stats := byPort[port]
+	for port, stats := range byPort {
+		users := usersByPort[port]
+		configured := configuredByPort[port]
 		inbound := inboundSnapshot{
 			Port:        port,
-			InboundTag:  users[0].Identity.InboundTag,
-			Protocol:    users[0].InboundName,
+			InboundTag:  configured.InboundTag,
+			Protocol:    configured.InboundName,
 			TCP:         stats.tcp,
 			Established: stats.tcp.Established,
 			SynRecv:     stats.tcp.SynRecv,
@@ -107,14 +140,23 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 			CloseWait:   stats.tcp.CloseWait,
 			LastAck:     stats.tcp.LastAck,
 			Closing:     stats.tcp.Closing,
-			Attribution: "inbound_port",
+			Attribution: "core_inbound",
+		}
+		if len(users) > 0 {
+			if inbound.InboundTag == "" {
+				inbound.InboundTag = users[0].Identity.InboundTag
+			}
+			if inbound.Protocol == "" {
+				inbound.Protocol = users[0].InboundName
+			}
+			inbound.Attribution = "inbound_port"
 		}
 		if len(users) == 1 {
 			inbound.User = users[0].Identity.User
 			inbound.Attribution = "single_user_inbound"
 			inbound.MaxOnlineIPs = settingsByIdentity[users[0].Identity].MaxInboundOnlineIPs
 		}
-		if core.Version >= 2 {
+		if core.Version >= 2 && len(users) > 0 {
 			inbound.Attribution = "core_identity_tuple"
 		}
 		for ip, count := range stats.connections {
@@ -131,8 +173,8 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 		return inbounds[i].InboundTag < inbounds[j].InboundTag
 	})
 
-	proxyUsers := make([]proxyUserSnapshot, 0, len(core.Users))
-	for _, user := range core.Users {
+	proxyUsers := make([]proxyUserSnapshot, 0, len(runtimeUsers))
+	for _, user := range runtimeUsers {
 		if !user.Attributed {
 			continue
 		}

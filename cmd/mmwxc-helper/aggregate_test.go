@@ -84,3 +84,24 @@ func TestAggregateV2UsesCoreIdentityTupleStatesAndLimits(t *testing.T) {
 		t.Fatalf("limits were not propagated to Core config: %#v", config)
 	}
 }
+
+func TestAggregateV2IncludesConfiguredInboundsAndUsersBeforeTraffic(t *testing.T) {
+	tracker := newOnlineIPTracker()
+	core := coreSnapshotResponse{
+		Version: 2,
+		Inbounds: []coreInboundSnapshot{
+			{InboundTag: "ss-12311", InboundName: "shadowsocks-2022", InboundPort: 12311},
+			{InboundTag: "ss-10015", InboundName: "shadowsocks-2022-multi", InboundPort: 10015, Users: []string{"user-a", "user-b"}},
+		},
+	}
+	inbounds, users := tracker.aggregate(nil, core, defaultConnectionSettings())
+	if len(inbounds) != 2 || inbounds[0].Port != 10015 || inbounds[1].Port != 12311 {
+		t.Fatalf("configured inbounds = %#v", inbounds)
+	}
+	if inbounds[0].Attribution != "core_identity_tuple" || inbounds[1].Attribution != "core_inbound" {
+		t.Fatalf("configured attribution = %#v", inbounds)
+	}
+	if len(users) != 2 || users[0].InboundTag != "ss-10015" || users[0].CurrentTotal != 0 {
+		t.Fatalf("configured users = %#v", users)
+	}
+}

@@ -51,11 +51,19 @@ type coreUserSnapshot struct {
 	CloseWaitTimeoutSeconds    *int64         `json:"close_wait_timeout_seconds"`
 }
 
+type coreInboundSnapshot struct {
+	InboundTag  string   `json:"inbound_tag"`
+	InboundName string   `json:"inbound_name,omitempty"`
+	InboundPort uint32   `json:"inbound_port"`
+	Users       []string `json:"users"`
+}
+
 type coreSnapshotResponse struct {
-	Version   int                `json:"version"`
-	StartedAt time.Time          `json:"started_at"`
-	Global    coreGlobalSnapshot `json:"global"`
-	Users     []coreUserSnapshot `json:"proxy_users"`
+	Version   int                   `json:"version"`
+	StartedAt time.Time             `json:"started_at"`
+	Global    coreGlobalSnapshot    `json:"global"`
+	Inbounds  []coreInboundSnapshot `json:"inbounds"`
+	Users     []coreUserSnapshot    `json:"proxy_users"`
 }
 
 type coreGlobalSnapshot struct {
