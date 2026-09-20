@@ -752,6 +752,59 @@ export type PackagePayload = Omit<ManagedPackage, "id" | "nodes_configured" | "s
 export type PackagesResponse = { packages?: ManagedPackage[] };
 export type PackageTemplatesResponse = { templates?: PackageTemplate[] };
 
+export type ManagedUser = {
+  username: string;
+  email?: string;
+  nickname?: string;
+  avatar_url?: string;
+  role: string;
+  is_active: boolean;
+  remark?: string;
+  package_id?: number | null;
+  package_name?: string;
+  traffic_limit_gb?: number;
+  traffic_used?: number;
+  traffic_limit?: number;
+  traffic_multiplier?: number;
+  is_over_limit?: boolean;
+  is_reset?: boolean;
+  reset_day?: number;
+  package_end_date?: string | null;
+  speed_limit_mbps?: number;
+  device_limit?: number;
+  speed_limit_override?: number | null;
+  device_limit_override?: number | null;
+  traffic_limit_override_gb?: number | null;
+  node_speed_limit_overrides?: Record<number, number> | null;
+  node_device_limit_overrides?: Record<number, number> | null;
+  user_short_code?: string;
+  custom_user_short_code?: string;
+  telegram_id?: number;
+  telegram_username?: string;
+};
+
+export type ManagedUsersResponse = { users?: ManagedUser[] };
+
+export type UserSubaccount = {
+  type: "routed" | "inbound" | string;
+  email?: string;
+  identifier?: string;
+  node_id?: number;
+  node_name?: string;
+  server_id?: number;
+  server_name?: string;
+  inbound_tag?: string;
+  protocol?: string;
+  is_active: boolean;
+  updated_at?: string;
+};
+
+export type UserSubaccountsResponse = {
+  success: boolean;
+  username: string;
+  subaccounts?: UserSubaccount[];
+};
+
 export type PackageForwardChain = {
   id: number;
   name: string;

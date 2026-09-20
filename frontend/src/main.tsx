@@ -127,6 +127,7 @@ import type {
 } from "./types";
 import { NodeManagementPage } from "./node-manager";
 import { PackageManagementPage } from "./package-manager";
+import { UserManagementPage } from "./user-manager";
 import { ForwardManagementPage } from "./forward-manager";
 import { XrayManager } from "./xray-manager";
 import "./styles.css";
@@ -782,6 +783,8 @@ function Dashboard({
         <NodeManagementPage token={session.token} servers={state.servers} username={session.username} />
       ) : activeTab === "packages" ? (
         <PackageManagementPage token={session.token} />
+      ) : activeTab === "users" ? (
+        <UserManagementPage token={session.token} />
       ) : activeTab === "forward" ? (
         <ForwardManagementPage token={session.token} />
       ) : activeTab !== "overview" ? (
@@ -3170,7 +3173,7 @@ function SideMenu({
   const menuItems = [
     { key: "overview", label: "概览", icon: Home },
     { key: "nodes", label: "节点管理", icon: Boxes },
-    { key: "users", label: "用户", icon: Users },
+    { key: "users", label: "用户管理", icon: Users },
     { key: "packages", label: "套餐管理", icon: PackageIcon },
     { key: "forward", label: "转发管理", icon: Share2 },
     { key: "services", label: "服务管理", icon: Server },
@@ -3733,7 +3736,7 @@ function tabTitle(tab: string) {
     nodes: "节点",
     packages: "套餐管理",
     forward: "转发管理",
-    users: "用户",
+    users: "用户管理",
     subscriptions: "订阅",
     settings: "设置",
   };

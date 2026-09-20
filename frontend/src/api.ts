@@ -42,6 +42,8 @@ import type {
   PeriodUserTrafficItem,
   DNSProvidersResponse,
   MasterUrlResponse,
+  ManagedUsersResponse,
+  UserSubaccountsResponse,
   CarpoolPublishRequest,
   PackageForwardChainsResponse,
   PackageMutationResponse,
@@ -1212,6 +1214,118 @@ export function deleteRoutedOutbound(token: string, id: number) {
 
 export function fetchXrayUsers(token: string) {
   return request<Array<Record<string, unknown>> | { users?: Array<Record<string, unknown>> }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/users"), token);
+}
+
+export function fetchManagedUsers(token: string) {
+  return request<ManagedUsersResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/users"), token);
+}
+
+export function createManagedUser(token: string, body: { username: string; email: string; nickname: string; password: string; remark: string }) {
+  return request<{ username: string; email?: string; nickname?: string; role: string; password: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/users/create"), token, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function setManagedUserStatus(token: string, username: string, isActive: boolean) {
+  return request<{ status?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/users/status"), token, {
+    method: "POST",
+    body: JSON.stringify({ username, is_active: isActive }),
+  });
+}
+
+export function resetManagedUserPassword(token: string, username: string, newPassword: string) {
+  return request<{ username: string; password: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/users/reset-password"), token, {
+    method: "POST",
+    body: JSON.stringify({ username, new_password: newPassword }),
+  });
+}
+
+export function resetManagedUserTraffic(token: string, username: string) {
+  return request<{ success?: boolean; message?: string }>(joinUrl(MMWX_API_BASE_URL, `/api/admin/traffic/users/${encodeURIComponent(username)}`), token, {
+    method: "DELETE",
+  });
+}
+
+export function deleteManagedUser(token: string, username: string) {
+  return request<{ status?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/users/delete"), token, {
+    method: "POST",
+    body: JSON.stringify({ username }),
+  });
+}
+
+export function updateManagedUserRemark(token: string, username: string, remark: string) {
+  return request<{ status?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/users/remark"), token, {
+    method: "POST",
+    body: JSON.stringify({ username, remark }),
+  });
+}
+
+export function updateManagedUserShortCode(token: string, username: string, shortCode: string) {
+  return request<{ status?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/users/short-code"), token, {
+    method: "POST",
+    body: JSON.stringify({ username, short_code: shortCode }),
+  });
+}
+
+export function extendManagedUserPackage(token: string, username: string, days: number) {
+  return request<{ success?: boolean; end_date?: string; warnings?: string[] }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/users/extend"), token, {
+    method: "POST",
+    body: JSON.stringify({ username, days }),
+  });
+}
+
+export function assignManagedUserPackage(token: string, body: { username: string; package_id: number; start_date: string; expire_date: string; is_reset?: boolean; reset_day?: number }) {
+  return request<{ success?: boolean; warnings?: string[]; message?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/packages/assign"), token, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function unassignManagedUserPackage(token: string, username: string) {
+  return request<{ message?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/packages/unassign"), token, {
+    method: "POST",
+    body: JSON.stringify({ username }),
+  });
+}
+
+export function updateManagedUserLimits(token: string, body: { username: string; speed_limit_override: number | null; device_limit_override: number | null }) {
+  return request<{ success?: boolean; message?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/users/limits"), token, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateManagedUserNodeLimits(token: string, body: { username: string; node_speed_overrides: Record<number, number>; node_device_overrides: Record<number, number> }) {
+  return request<{ success?: boolean; message?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/users/node-limits"), token, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchManagedUserSubaccounts(token: string, username: string) {
+  return request<UserSubaccountsResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/users/subaccounts?username=${encodeURIComponent(username)}`), token);
+}
+
+export function fetchManagedUserTelegram(token: string, username: string) {
+  return request<{ username: string; bound: boolean; telegram_id?: number; telegram_username?: string; bot_url?: string }>(joinUrl(MMWX_API_BASE_URL, `/api/user/telegram-binding?username=${encodeURIComponent(username)}`), token);
+}
+
+export function createManagedUserTelegramInvite(token: string, username: string) {
+  return request<{ success?: boolean; code: string; command: string; expires_at: string; bot_url?: string }>(joinUrl(MMWX_API_BASE_URL, `/api/user/telegram-binding?username=${encodeURIComponent(username)}`), token, { method: "POST" });
+}
+
+export function unbindManagedUserTelegram(token: string, username: string) {
+  return request<{ success?: boolean }>(joinUrl(MMWX_API_BASE_URL, `/api/user/telegram-binding?username=${encodeURIComponent(username)}`), token, { method: "DELETE" });
+}
+
+export function fetchManagedUserNodes(token: string) {
+  return request<XrayNodesResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes?include_private=1"), token);
+}
+
+export function managedSubscriptionUrl(packageCode: string, userCode: string, client: string) {
+  const base = MMWX_API_BASE_URL || window.location.origin;
+  return `${base}/x/${packageCode}${userCode}?t=${encodeURIComponent(client)}`;
 }
 
 export function updateXrayUserEmail(token: string, username: string, email: string) {
