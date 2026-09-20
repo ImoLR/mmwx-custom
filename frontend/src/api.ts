@@ -9,6 +9,7 @@ import type {
   DetailedConnectionResponse,
   ServerConnectionSettings,
   GeoLookupResponse,
+  GitHubAcceleratorSettingsResponse,
   HelperInstallTokenResponse,
   LoginResponse,
   NodeMutationRequest,
@@ -716,6 +717,20 @@ export function setCoreMode(token: string, serverId: number, desiredMode: "exter
 export function fetchCustomReleaseInfo(token: string) {
   return requestCustomApi<CustomReleaseInfoResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/releases"), {
     headers: { "MM-Authorization": token },
+  });
+}
+
+export function fetchGitHubAcceleratorSettings(token: string) {
+  return requestCustomApi<GitHubAcceleratorSettingsResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/settings/github-accelerator"), {
+    headers: { "MM-Authorization": token },
+  });
+}
+
+export function saveGitHubAcceleratorSettings(token: string, accelerator: string) {
+  return requestCustomApi<GitHubAcceleratorSettingsResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/settings/github-accelerator"), {
+    method: "PUT",
+    headers: { "MM-Authorization": token, "Content-Type": "application/json" },
+    body: JSON.stringify({ github_accelerator: accelerator }),
   });
 }
 

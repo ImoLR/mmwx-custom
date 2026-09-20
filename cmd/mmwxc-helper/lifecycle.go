@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ImoLR/mmwx-custom/internal/releaseurl"
 )
 
 const (
@@ -85,9 +87,11 @@ func (manager *lifecycleManager) reportProgress(component, phase, version, messa
 }
 
 func validateArtifact(artifact managementArtifact) error {
-	parsed, err := url.Parse(strings.TrimSpace(artifact.URL))
-	if err != nil || !allowedArtifactSource(parsed) {
+	if !releaseurl.IsPublicAsset(artifact.URL) {
 		return errors.New("artifact URL is not allowed")
+	}
+	if _, err := releaseurl.NormalizeAccelerator(artifact.GitHubAccelerator); err != nil {
+		return err
 	}
 	if len(artifact.SHA256) != 64 {
 		return errors.New("artifact sha256 is required")
@@ -96,10 +100,6 @@ func validateArtifact(artifact managementArtifact) error {
 		return errors.New("artifact sha256 is invalid")
 	}
 	return nil
-}
-
-func allowedArtifactSource(parsed *url.URL) bool {
-	return parsed.Scheme == "https" && strings.EqualFold(parsed.Hostname(), "github.com") && strings.HasPrefix(parsed.EscapedPath(), "/ImoLR/mmwx-custom/releases/")
 }
 
 func allowedArtifactRedirectHost(host string) bool {
@@ -114,17 +114,54 @@ func (manager *lifecycleManager) downloadArtifact(ctx context.Context, artifact 
 	if err := os.MkdirAll(stagingRoot, 0700); err != nil {
 		return "", err
 	}
+	candidates, err := releaseurl.Candidates(artifact.GitHubAccelerator, artifact.URL)
+	if err != nil {
+		return "", err
+	}
+	return tryDownloadCandidates(candidates, func(index int, candidate string) (string, error) {
+		if index == 0 && len(candidates) > 1 {
+			// Report only after the accelerator attempt actually fails below.
+			path, err := manager.downloadArtifactCandidate(ctx, artifact, name, candidate)
+			if err == nil {
+				return path, nil
+			}
+			component := "core"
+			if strings.Contains(name, "helper") {
+				component = "helper"
+			}
+			manager.reportProgress(component, "downloading", artifact.Version, "GitHub 加速下载失败，正在尝试 GitHub 官方")
+			return "", err
+		}
+		return manager.downloadArtifactCandidate(ctx, artifact, name, candidate)
+	})
+
+}
+
+func tryDownloadCandidates(candidates []string, attempt func(index int, candidate string) (string, error)) (string, error) {
+	var failures []string
+	for index, candidate := range candidates {
+		path, err := attempt(index, candidate)
+		if err == nil {
+			return path, nil
+		}
+		failures = append(failures, err.Error())
+	}
+	return "", fmt.Errorf("artifact download failed: %s", strings.Join(failures, "; "))
+}
+
+func (manager *lifecycleManager) downloadArtifactCandidate(ctx context.Context, artifact managementArtifact, name, candidate string) (string, error) {
 	file, err := os.CreateTemp(stagingRoot, name+"-*.download")
 	if err != nil {
 		return "", err
 	}
 	path := file.Name()
 	cleanup := func(returnErr error) (string, error) { file.Close(); os.Remove(path); return "", returnErr }
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, artifact.URL, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, candidate, nil)
 	if err != nil {
 		return cleanup(err)
 	}
-	response, err := manager.httpClient.Do(request)
+	client := manager.clientForArtifactCandidate(candidate, artifact.URL)
+	response, err := client.Do(request)
 	if err != nil {
 		return cleanup(err)
 	}
@@ -155,6 +192,29 @@ func (manager *lifecycleManager) downloadArtifact(ctx context.Context, artifact 
 		return "", err
 	}
 	return path, nil
+}
+
+func (manager *lifecycleManager) clientForArtifactCandidate(candidate, official string) *http.Client {
+	if candidate == official {
+		return manager.httpClient
+	}
+	parsed, err := url.Parse(candidate)
+	if err != nil {
+		return manager.httpClient
+	}
+	acceleratorHost := strings.ToLower(parsed.Hostname())
+	clone := *manager.httpClient
+	clone.CheckRedirect = func(request *http.Request, _ []*http.Request) error {
+		if request.URL.Scheme != "https" {
+			return errors.New("artifact redirect is not allowed")
+		}
+		host := strings.ToLower(request.URL.Hostname())
+		if host != acceleratorHost && !allowedArtifactRedirectHost(host) {
+			return errors.New("artifact redirect is not allowed")
+		}
+		return nil
+	}
+	return &clone
 }
 
 func validateELFArchitecture(path string) error {
@@ -851,7 +911,7 @@ func (manager *lifecycleManager) scheduleHelperUpdate(ctx context.Context, artif
 		return err
 	}
 	unit := fmt.Sprintf("mmwxc-helper-update-%d", time.Now().UnixNano())
-	command := exec.CommandContext(ctx, "systemd-run", "--collect", "--unit", unit, worker, "--managed-helper-update", "--update-url", artifact.URL, "--update-sha256", artifact.SHA256, "--update-version", artifact.Version)
+	command := exec.CommandContext(ctx, "systemd-run", "--collect", "--unit", unit, worker, "--managed-helper-update", "--update-url", artifact.URL, "--update-sha256", artifact.SHA256, "--update-version", artifact.Version, "--update-github-accelerator", artifact.GitHubAccelerator)
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("schedule helper update: %w: %s", err, strings.TrimSpace(string(output)))
 	}

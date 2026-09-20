@@ -24,10 +24,11 @@ const (
 )
 
 type managementArtifact struct {
-	URL      string `json:"url"`
-	SHA256   string `json:"sha256"`
-	Version  string `json:"version,omitempty"`
-	Activate bool   `json:"activate,omitempty"`
+	URL               string `json:"url"`
+	SHA256            string `json:"sha256"`
+	Version           string `json:"version,omitempty"`
+	Activate          bool   `json:"activate,omitempty"`
+	GitHubAccelerator string `json:"github_accelerator,omitempty"`
 }
 
 type managementCommand struct {

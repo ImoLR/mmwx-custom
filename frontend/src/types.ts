@@ -417,6 +417,12 @@ export type HelperInstallTokenResponse = {
   command: string;
 };
 
+export type GitHubAcceleratorSettingsResponse = {
+  success: boolean;
+  github_accelerator: string;
+  effective_value: string;
+};
+
 export type CustomAgentStatusResponse = {
   success: boolean;
   status?: {

@@ -64,6 +64,7 @@ import {
   fetchCustomAgentStatus,
   fetchCoreMode,
   fetchCustomReleaseInfo,
+  fetchGitHubAcceleratorSettings,
   deleteRemoteWebsite,
   deployRemoteDefaultConfig,
   expectXrayRecovery,
@@ -91,6 +92,7 @@ import {
   revealRemoteServerToken,
   restoreXraySnapshot,
   saveSession,
+  saveGitHubAcceleratorSettings,
   setCoreMode,
   streamAgentAction,
   syncRemoteNodeAddress,
@@ -787,6 +789,8 @@ function Dashboard({
         <UserManagementPage token={session.token} />
       ) : activeTab === "forward" ? (
         <ForwardManagementPage token={session.token} />
+      ) : activeTab === "settings" ? (
+        <ServerSettingsPage token={session.token} canEdit={session.isAdmin} />
       ) : activeTab !== "overview" ? (
         <Placeholder title={tabTitle(activeTab)} />
       ) : (
@@ -3177,7 +3181,7 @@ function SideMenu({
     { key: "packages", label: "套餐管理", icon: PackageIcon },
     { key: "forward", label: "转发管理", icon: Share2 },
     { key: "services", label: "服务管理", icon: Server },
-    { key: "settings", label: "设置", icon: Settings },
+    { key: "settings", label: "服务器配置", icon: Settings },
     { key: "inbounds", label: "入站", icon: LogIn },
     { key: "outbounds", label: "出站", icon: LogOut },
     { key: "routing", label: "路由", icon: Route },
@@ -3233,6 +3237,87 @@ function PanelTitle({ icon, title, subtitle }: { icon: React.ReactNode; title: s
         <p>{subtitle}</p>
       </div>
     </div>
+  );
+}
+
+function ServerSettingsPage({ token, canEdit }: { token: string; canEdit: boolean }) {
+  const [value, setValue] = useState("");
+  const [effective, setEffective] = useState("加载中...");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetchGitHubAcceleratorSettings(token);
+      setValue(response.github_accelerator ?? "");
+      setEffective(response.effective_value || "GitHub 官方直连");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "读取设置失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    if (!canEdit) return;
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await saveGitHubAcceleratorSettings(token, value);
+      setValue(response.github_accelerator ?? "");
+      setEffective(response.effective_value || "GitHub 官方直连");
+      setMessage("已保存；下一次 Helper/Core Release 下载立即使用新设置。不会重启 Xray。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存设置失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="panel-card server-settings-page" aria-busy={loading || saving}>
+      <PanelTitle icon={<Settings />} title="服务器配置" subtitle="主控全局设置" />
+      <form className="server-settings-form" onSubmit={save}>
+        <div className="server-settings-section">
+          <div>
+            <h3>GitHub 下载加速</h3>
+            <p>只用于公开的 mmwx-custom GitHub Release 文件。失败时自动回源 GitHub 官方。</p>
+          </div>
+          <label>
+            <span>GitHub 加速地址</span>
+            <input
+              type="url"
+              inputMode="url"
+              placeholder="https://ghfast.top/"
+              value={value}
+              disabled={loading || saving || !canEdit}
+              onChange={(event) => setValue(event.target.value)}
+            />
+            <small>必须使用 HTTPS；保存时自动补全末尾 /。留空表示关闭加速。</small>
+          </label>
+          <div className="server-settings-effective">
+            <span>当前实际生效值</span>
+            <code>{effective}</code>
+          </div>
+          {error && <p className="server-settings-error">{error}</p>}
+          {message && <p className="server-settings-success">{message}</p>}
+          {!canEdit && <p className="server-settings-note">当前账号不是管理员，只能查看设置。</p>}
+        </div>
+        <button className="primary-button server-settings-save" type="submit" disabled={loading || saving || !canEdit}>
+          {saving ? "保存中..." : "保存 GitHub 加速设置"}
+        </button>
+      </form>
+    </section>
   );
 }
 
@@ -3738,7 +3823,7 @@ function tabTitle(tab: string) {
     forward: "转发管理",
     users: "用户管理",
     subscriptions: "订阅",
-    settings: "设置",
+    settings: "服务器配置",
   };
   return titles[tab] ?? "概览";
 }

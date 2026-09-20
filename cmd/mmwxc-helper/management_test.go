@@ -166,6 +166,21 @@ func TestArtifactValidationAndRollbackPruning(t *testing.T) {
 	}
 }
 
+func TestDownloadCandidatesFallsBackToOfficial(t *testing.T) {
+	candidates := []string{"accelerated", "official"}
+	var attempted []string
+	path, err := tryDownloadCandidates(candidates, func(_ int, candidate string) (string, error) {
+		attempted = append(attempted, candidate)
+		if candidate == "accelerated" {
+			return "", errors.New("accelerator timeout")
+		}
+		return "/tmp/verified-artifact", nil
+	})
+	if err != nil || path != "/tmp/verified-artifact" || !reflect.DeepEqual(attempted, candidates) {
+		t.Fatalf("path=%q attempted=%#v err=%v", path, attempted, err)
+	}
+}
+
 func TestCurrentTestBinaryMatchesELFArchitecture(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {

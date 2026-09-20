@@ -70,9 +70,46 @@ func TestInstallTokenDefaultsToTakeoverAndAllowsExplicitHelperOnly(t *testing.T)
 	if _, _, err := state.createInstallTokenForMode("14", "unsafe"); err == nil {
 		t.Fatal("invalid install mode was accepted")
 	}
-	script := renderHelperInstaller("https://controller.invalid", "uuid", "token", "takeover", "rebind-token")
+	script := renderHelperInstaller("https://controller.invalid", "uuid", "token", "takeover", "rebind-token", "https://ghfast.top/")
 	if !strings.Contains(script, "export MMWXC_INSTALL_MODE=\"takeover\"") {
 		t.Fatalf("rendered installer did not pin takeover mode: %q", script[:min(len(script), 256)])
+	}
+	if !strings.Contains(script, "export MMWXC_GITHUB_ACCELERATOR=\"https://ghfast.top/\"") {
+		t.Fatal("rendered installer did not include the current global accelerator")
+	}
+}
+
+func TestGlobalGitHubAcceleratorPersistsAndIsInjectedIntoDownloads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "helper-state.json")
+	state, err := openHelperState(path, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.githubAccelerator(); got != "https://ghfast.top/" {
+		t.Fatalf("default accelerator=%q", got)
+	}
+	if got, err := state.setGitHubAccelerator("https://mirror.example/base"); err != nil || got != "https://mirror.example/base/" {
+		t.Fatalf("saved accelerator=%q err=%v", got, err)
+	}
+	state.recordLegacyReporter("7", "helper-token", "v0.6.0")
+	payload := json.RawMessage(`{"url":"https://github.com/ImoLR/mmwx-custom/releases/download/v1.4.1/mmwxc-helper-linux-amd64","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","version":"v0.6.1"}`)
+	command, err := state.enqueueManagementCommand("7", "helper.update", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var artifact managementArtifact
+	if err := json.Unmarshal(command.Payload, &artifact); err != nil {
+		t.Fatal(err)
+	}
+	if artifact.GitHubAccelerator != "https://mirror.example/base/" {
+		t.Fatalf("command accelerator=%q", artifact.GitHubAccelerator)
+	}
+	reloaded, err := openHelperState(path, time.Minute)
+	if err != nil || reloaded.githubAccelerator() != "https://mirror.example/base/" {
+		t.Fatalf("persisted accelerator=%q err=%v", reloaded.githubAccelerator(), err)
+	}
+	if got, err := reloaded.setGitHubAccelerator(""); err != nil || got != "" || reloaded.githubAccelerator() != "" {
+		t.Fatalf("disabled accelerator=%q current=%q err=%v", got, reloaded.githubAccelerator(), err)
 	}
 }
 

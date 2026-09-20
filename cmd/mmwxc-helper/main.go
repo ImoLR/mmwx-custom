@@ -24,7 +24,7 @@ const (
 	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
 	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
 	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
-	helperVersion        = "v0.6.0"
+	helperVersion        = "v0.6.1"
 )
 
 type config struct {
@@ -65,6 +65,7 @@ func main() {
 	updateURL := flag.String("update-url", "", "managed update artifact URL")
 	updateSHA256 := flag.String("update-sha256", "", "managed update artifact SHA256")
 	updateVersion := flag.String("update-version", "", "managed update artifact version")
+	updateAccelerator := flag.String("update-github-accelerator", "", "managed update GitHub Release accelerator")
 	flag.Parse()
 
 	if *showVersion {
@@ -74,9 +75,9 @@ func main() {
 	if *managedHelperUpdate {
 		defer cleanupManagedUpdateWorker()
 		time.Sleep(2 * time.Second)
-		ctx, cancel := context.WithTimeout(context.Background(), 17*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 31*time.Minute)
 		defer cancel()
-		artifact := managementArtifact{URL: *updateURL, SHA256: *updateSHA256, Version: *updateVersion}
+		artifact := managementArtifact{URL: *updateURL, SHA256: *updateSHA256, Version: *updateVersion, GitHubAccelerator: *updateAccelerator}
 		if err := runManagedHelperUpdate(ctx, artifact, *configPath); err != nil {
 			log.Fatalf("[mmwxc-helper] managed update failed: %v", err)
 		}
@@ -175,7 +176,7 @@ func main() {
 		state.ControllerConnectedAt = time.Now().UTC()
 		state.Settings = response.Settings
 		if response.Command != nil && !completedCommand(state.CompletedCommandIDs, response.Command.ID) {
-			commandCtx, cancelCommand := context.WithTimeout(context.Background(), 17*time.Minute)
+			commandCtx, cancelCommand := context.WithTimeout(context.Background(), 31*time.Minute)
 			result := executor.execute(commandCtx, *response.Command, cfg.Token)
 			cancelCommand()
 			state.PendingResult = &result

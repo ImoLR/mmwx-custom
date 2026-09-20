@@ -36,6 +36,7 @@ type helperState struct {
 }
 
 type helperStateData struct {
+	GitHubAccelerator  *string                             `json:"github_accelerator,omitempty"`
 	Servers            map[string]helperServerIdentity     `json:"servers"`
 	InstallTokens      map[string]helperInstallToken       `json:"install_tokens"`
 	ConnectionSettings map[string]serverConnectionSettings `json:"connection_settings,omitempty"`
@@ -525,7 +526,7 @@ func (a *app) helperInstallScriptHandler(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = io.WriteString(w, renderHelperInstaller(a.externalBaseURL(r), record.CustomServerUUID, record.HelperToken, record.InstallMode, rawToken))
+	_, _ = io.WriteString(w, renderHelperInstaller(a.externalBaseURL(r), record.CustomServerUUID, record.HelperToken, record.InstallMode, rawToken, a.helperState.githubAccelerator()))
 }
 
 func (a *app) helperRebindHandler(w http.ResponseWriter, r *http.Request) {
@@ -570,8 +571,8 @@ func (a *app) externalBaseURL(r *http.Request) string {
 //go:embed scripts/install-helper.sh
 var helperInstallerScript string
 
-func renderHelperInstaller(apiURL, serverUUID, helperToken, installMode, rebindToken string) string {
-	prefix := fmt.Sprintf("#!/usr/bin/env bash\nexport MMWXC_HELPER_API_URL=%q\nexport MMWXC_HELPER_SERVER_ID=%q\nexport MMWXC_HELPER_TOKEN=%q\nexport MMWXC_INSTALL_MODE=%q\nexport MMWXC_REBIND_TOKEN=%q\n", apiURL, serverUUID, helperToken, installMode, rebindToken)
+func renderHelperInstaller(apiURL, serverUUID, helperToken, installMode, rebindToken, githubAccelerator string) string {
+	prefix := fmt.Sprintf("#!/usr/bin/env bash\nexport MMWXC_HELPER_API_URL=%q\nexport MMWXC_HELPER_SERVER_ID=%q\nexport MMWXC_HELPER_TOKEN=%q\nexport MMWXC_INSTALL_MODE=%q\nexport MMWXC_REBIND_TOKEN=%q\nexport MMWXC_GITHUB_ACCELERATOR=%q\n", apiURL, serverUUID, helperToken, installMode, rebindToken, githubAccelerator)
 	return prefix + strings.TrimPrefix(helperInstallerScript, "#!/usr/bin/env bash\n")
 }
 

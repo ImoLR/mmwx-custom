@@ -9,6 +9,7 @@ INTERVAL="${MMWXC_HELPER_INTERVAL:-5s}"
 INSTALL_MODE="${MMWXC_INSTALL_MODE:-takeover}"
 REBIND_TOKEN="${MMWXC_REBIND_TOKEN:-}"
 RELEASE_TAG="${MMWXC_RELEASE_TAG:-latest}"
+GITHUB_ACCELERATOR="${MMWXC_GITHUB_ACCELERATOR-https://ghfast.top/}"
 ASSET_DIR="${MMWXC_ASSET_DIR:-}"
 ROOT_PREFIX="${MMWXC_INSTALL_ROOT:-}"
 SYSTEMCTL="${MMWXC_SYSTEMCTL:-systemctl}"
@@ -23,7 +24,7 @@ log_step "Custom Agent installer started"
 usage() {
   cat <<'EOF'
 Usage:
-  install-helper.sh [--server-id ID] [--token TOKEN] [--api-url URL] [--takeover|--helper-only]
+  install-helper.sh [--server-id ID] [--token TOKEN] [--api-url URL] [--github-accelerator URL] [--takeover|--helper-only]
 
 The same installer upgrades an existing Helper in place or performs a fresh
 installation when registration values are supplied by a one-time install URL.
@@ -39,6 +40,7 @@ while [[ $# -gt 0 ]]; do
     --interval) INTERVAL="${2:-}"; shift 2 ;;
     --repo) REPO="${2:-}"; shift 2 ;;
     --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
+    --github-accelerator) GITHUB_ACCELERATOR="${2-}"; shift 2 ;;
     --takeover) INSTALL_MODE=takeover; shift ;;
     --helper-only|--no-takeover) INSTALL_MODE=helper-only; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -47,6 +49,23 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$INSTALL_MODE" == "takeover" || "$INSTALL_MODE" == "helper-only" ]] || { echo "invalid install mode: $INSTALL_MODE" >&2; exit 2; }
+
+normalize_accelerator() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  if [[ -z "$value" ]]; then
+    printf ''
+    return 0
+  fi
+  [[ "$value" =~ ^https://[^/?#[:space:]]+(/[^?#[:space:]]*)?$ ]] || {
+    echo "GitHub accelerator must be an HTTPS URL without query or fragment" >&2
+    return 1
+  }
+  printf '%s/' "${value%/}"
+}
+
+GITHUB_ACCELERATOR="$(normalize_accelerator "$GITHUB_ACCELERATOR")"
 
 if [[ "$(uname -s)" != "Linux" ]]; then echo "mmwxc-helper only supports Linux" >&2; exit 1; fi
 if [[ "${EUID:-$(id -u)}" -ne 0 && -z "$ROOT_PREFIX" ]]; then echo "please run as root" >&2; exit 1; fi
@@ -92,24 +111,47 @@ asset_url() {
 }
 
 fetch_asset() {
-  local name="$1" destination="$2" partial url attempt
+  local name="$1" destination="$2" partial url accelerated attempt max_attempts
   local -a resume
   log_step "Downloading $name"
   if [[ -n "$ASSET_DIR" ]]; then cp "$ASSET_DIR/$name" "$destination"
   elif command -v curl >/dev/null 2>&1; then
     partial="${destination}.part"
     url="$(asset_url "$name")"
-    for attempt in 1 2 3 4; do
-      resume=()
-      [[ -s "$partial" ]] && resume=(--continue-at -)
-      if curl --fail --show-error --silent --location --connect-timeout 10 --max-time 900 "${resume[@]}" -o "$partial" "$url"; then
+    if [[ -n "$GITHUB_ACCELERATOR" ]]; then
+      accelerated="${GITHUB_ACCELERATOR}${url}"
+      log_step "Download source: GitHub accelerator ${GITHUB_ACCELERATOR}"
+      if ! curl --fail --show-error --silent --location --connect-timeout 10 --max-time 900 -o "$partial" "$accelerated"; then
+        rm -f "$partial"
+        log_step "Accelerator download failed; falling back to official GitHub"
+      else
         mv -f "$partial" "$destination"
-        break
       fi
-      [[ $attempt -lt 4 ]] || return 1
-      sleep 2
-    done
-  elif command -v wget >/dev/null 2>&1; then wget -q --connect-timeout=10 --read-timeout=900 -O "$destination" "$(asset_url "$name")"
+    fi
+    if [[ ! -s "$destination" ]]; then
+      max_attempts=4
+      for ((attempt=1; attempt<=max_attempts; attempt++)); do
+        resume=()
+        [[ -s "$partial" ]] && resume=(--continue-at -)
+        if curl --fail --show-error --silent --location --connect-timeout 10 --max-time 900 "${resume[@]}" -o "$partial" "$url"; then
+          mv -f "$partial" "$destination"
+          break
+        fi
+        [[ $attempt -lt $max_attempts ]] || return 1
+        sleep 2
+      done
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    url="$(asset_url "$name")"
+    if [[ -n "$GITHUB_ACCELERATOR" ]]; then
+      accelerated="${GITHUB_ACCELERATOR}${url}"
+      log_step "Download source: GitHub accelerator ${GITHUB_ACCELERATOR}"
+      if ! wget -q --connect-timeout=10 --read-timeout=900 -O "$destination" "$accelerated"; then
+        rm -f "$destination"
+        log_step "Accelerator download failed; falling back to official GitHub"
+      fi
+    fi
+    [[ -s "$destination" ]] || wget -q --connect-timeout=10 --read-timeout=900 -O "$destination" "$url"
   else echo "curl or wget is required" >&2; exit 1
   fi
   [[ -s "$destination" ]] || { echo "downloaded empty asset: $name" >&2; exit 1; }

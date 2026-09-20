@@ -11,10 +11,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ImoLR/mmwx-custom/internal/releaseurl"
 )
 
 const (
@@ -37,10 +38,11 @@ var managementActions = map[string]struct{}{
 }
 
 type managementArtifact struct {
-	URL      string `json:"url"`
-	SHA256   string `json:"sha256"`
-	Version  string `json:"version,omitempty"`
-	Activate bool   `json:"activate,omitempty"`
+	URL               string `json:"url"`
+	SHA256            string `json:"sha256"`
+	Version           string `json:"version,omitempty"`
+	Activate          bool   `json:"activate,omitempty"`
+	GitHubAccelerator string `json:"github_accelerator,omitempty"`
 }
 
 type managementCommand struct {
@@ -171,6 +173,11 @@ func (s *helperState) enqueueManagementCommand(serverID, action string, payload 
 	if _, ok := managementActions[action]; !ok {
 		return managementCommand{}, errors.New("unsupported management action")
 	}
+	var err error
+	payload, err = s.withCurrentGitHubAccelerator(action, payload)
+	if err != nil {
+		return managementCommand{}, err
+	}
 	if err := validateManagementPayload(action, payload); err != nil {
 		return managementCommand{}, err
 	}
@@ -209,6 +216,22 @@ func (s *helperState) enqueueManagementCommand(serverID, action string, payload 
 		return managementCommand{}, err
 	}
 	return command, nil
+}
+
+func (s *helperState) withCurrentGitHubAccelerator(action string, payload json.RawMessage) (json.RawMessage, error) {
+	if action != "helper.update" && action != "core.install" && action != "core.update" {
+		return payload, nil
+	}
+	var artifact managementArtifact
+	if err := json.Unmarshal(payload, &artifact); err != nil {
+		return nil, errors.New("invalid artifact payload")
+	}
+	artifact.GitHubAccelerator = s.githubAccelerator()
+	updated, err := json.Marshal(artifact)
+	if err != nil {
+		return nil, errors.New("invalid artifact payload")
+	}
+	return updated, nil
 }
 
 func (s *helperState) acceptManagementReport(serverID string, report *managementReport) (*managementCommand, error) {
@@ -323,8 +346,7 @@ func validateManagementPayload(action string, payload json.RawMessage) error {
 		if err := json.Unmarshal(payload, &artifact); err != nil {
 			return errors.New("invalid artifact payload")
 		}
-		parsed, err := url.Parse(artifact.URL)
-		if err != nil || !allowedArtifactSource(parsed) {
+		if !releaseurl.IsPublicAsset(artifact.URL) {
 			return errors.New("artifact URL is not allowed")
 		}
 		if len(artifact.SHA256) != 64 {
@@ -332,6 +354,9 @@ func validateManagementPayload(action string, payload json.RawMessage) error {
 		}
 		if _, err := hex.DecodeString(artifact.SHA256); err != nil {
 			return errors.New("artifact sha256 is invalid")
+		}
+		if _, err := releaseurl.NormalizeAccelerator(artifact.GitHubAccelerator); err != nil {
+			return err
 		}
 	case "core.config.apply":
 		var body struct {
@@ -350,10 +375,6 @@ func validateManagementPayload(action string, payload json.RawMessage) error {
 		}
 	}
 	return nil
-}
-
-func allowedArtifactSource(parsed *url.URL) bool {
-	return parsed.Scheme == "https" && strings.EqualFold(parsed.Hostname(), "github.com") && strings.HasPrefix(parsed.EscapedPath(), "/ImoLR/mmwx-custom/releases/")
 }
 
 func (a *app) agentManagementHandler(w http.ResponseWriter, r *http.Request, serverID string) {

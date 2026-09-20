@@ -199,6 +199,7 @@ func main() {
 	mux.HandleFunc("/api/custom/helper/rebind", api.withCORS(api.helperRebindHandler))
 	mux.HandleFunc("/api/custom/agent/update-progress", api.withCORS(api.helperUpdateProgressHandler))
 	mux.HandleFunc("/api/custom/releases", api.withCORS(api.releaseInfoHandler))
+	mux.HandleFunc("/api/custom/settings/github-accelerator", api.withCORS(api.githubAcceleratorHandler))
 	mux.Handle("/api/", api.withCORSHandler(mmwxAPIProxy(mmwxAPITarget)))
 	mux.Handle("/", spaHandler(getenv("MMWXC_FRONTEND_DIR", defaultFrontendDir)))
 
