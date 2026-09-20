@@ -17,6 +17,9 @@ func TestLocalStatePersistenceAndUnlimitedNull(t *testing.T) {
 	}
 	value := int64(20)
 	state.Settings.DefaultCloseWaitTimeoutSeconds = &value
+	state.Settings.ManagementUsers = []managementUserSettings{{Username: "ken", MaxOutboundTCPActive: &value}}
+	state.Settings.Ports = []portConnectionSettings{{InboundTag: "in-a", MaxOutboundTCPActive: &value}}
+	state.Settings.ManagementMappings = []managementMapping{{Identity: coreIdentity{InboundTag: "in-a", User: "proto-a"}, Group: "ken"}}
 	if err := saveLocalState(path, state); err != nil {
 		t.Fatal(err)
 	}
@@ -26,6 +29,9 @@ func TestLocalStatePersistenceAndUnlimitedNull(t *testing.T) {
 	}
 	if loaded.Settings.DefaultCloseWaitTimeoutSeconds == nil || *loaded.Settings.DefaultCloseWaitTimeoutSeconds != 20 {
 		t.Fatalf("state did not round-trip: %#v", loaded)
+	}
+	if len(loaded.Settings.ManagementUsers) != 1 || loaded.Settings.ManagementUsers[0].Username != "ken" || len(loaded.Settings.Ports) != 1 || loaded.Settings.Ports[0].InboundTag != "in-a" || len(loaded.Settings.ManagementMappings) != 1 || loaded.Settings.ManagementMappings[0].Group != "ken" {
+		t.Fatalf("management mapping/limits did not persist: %#v", loaded.Settings)
 	}
 }
 

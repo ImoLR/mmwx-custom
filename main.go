@@ -162,6 +162,10 @@ func main() {
 		log.Printf("[mmwx-custom] warning: admin database config is unavailable; browser Custom API access is disabled")
 	} else {
 		api.adminStore = adminStore
+		if err := adminStore.EnsureConnectionOwnershipSchema(context.Background()); err != nil {
+			_ = adminStore.Close()
+			log.Fatalf("[mmwx-custom] connection ownership migration failed: %v", err)
+		}
 		defer adminStore.Close()
 	}
 	api.helperState, err = openHelperState(getenv("MMWXC_HELPER_STATE_FILE", defaultHelperStatePath), helperInstallTokenTTLFromEnv())

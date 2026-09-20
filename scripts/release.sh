@@ -97,7 +97,7 @@ EOF
 cat >"$RELEASE_DIR/component-versions.json" <<EOF
 {
   "custom_version": "$TAG",
-  "helper_version": "v0.5.3",
+  "helper_version": "v0.6.0",
   "core_version": "$(git -C "$CORE_SOURCE_DIR" rev-parse --short=7 HEAD)"
 }
 EOF

@@ -208,6 +208,17 @@ export type ServerConnectionSettings = {
   global_total_limit_enabled: boolean;
   max_global_total_connections: number | null;
   users: UserConnectionSettings[];
+  ports: Array<{
+    inbound_tag: string;
+    max_outbound_tcp_active: number | null;
+    max_outbound_tcp_new_per_second: number | null;
+  }>;
+  management_users: Array<{
+    username: string;
+    max_outbound_tcp_active: number | null;
+    max_outbound_tcp_new_per_second: number | null;
+  }>;
+  management_mappings?: Array<{ identity: ConnectionIdentity; group: string }>;
 };
 
 export type TCPStateCounts = {
@@ -230,6 +241,43 @@ export type DetailedConnectionResponse = {
   available: boolean;
   stale_timeout_seconds: number;
   settings: ServerConnectionSettings;
+  ownership_error?: string;
+  management: {
+    users: Array<{
+      username: string;
+      source: "binding" | "owner" | "manual" | string;
+      aggregate: ManagementGroupConnections;
+      limits: {
+        username: string;
+        max_outbound_tcp_active: number | null;
+        max_outbound_tcp_new_per_second: number | null;
+      };
+      ports: Array<{
+        inbound_tag: string;
+        port: number;
+        protocol?: string;
+        source: string;
+        protocol_identities: string[];
+        manual_assignments?: string[];
+        runtime_attributed: boolean;
+        aggregate: ProxyIdentityConnections;
+        limits: {
+          inbound_tag: string;
+          max_outbound_tcp_active: number | null;
+          max_outbound_tcp_new_per_second: number | null;
+        };
+      }>;
+    }>;
+    unassigned_ports: Array<{
+      inbound_tag: string;
+      port: number;
+      protocol?: string;
+      protocol_identities: string[];
+      reason: string;
+    }>;
+    assignable_users: string[];
+    warnings: string[];
+  };
   record?: {
     server_id: string;
     custom_server_uuid?: string;
@@ -274,6 +322,9 @@ export type DetailedConnectionResponse = {
         rejected_active_limit: number;
         rejected_new_rate_limit: number;
         rejected_user_total_limit: number;
+        rejected_port_total_limit: number;
+        rejected_user_new_rate_limit: number;
+        rejected_port_new_rate_limit: number;
         rejected_online_ip_limit: number;
         rejected_global_total_limit: number;
         max_inbound_online_ips: number | null;
@@ -282,7 +333,9 @@ export type DetailedConnectionResponse = {
         max_outbound_tcp_new_per_second: number | null;
         close_wait_timeout_seconds: number | null;
         source: string;
+        management_group?: string;
       }>;
+      management_groups: ManagementGroupConnections[];
       global: {
         current_total: number;
         max_total: number | null;
@@ -297,6 +350,62 @@ export type DetailedConnectionResponse = {
       sampled_at: string;
     };
   };
+};
+
+export type ProxyIdentityConnections = {
+  identity: ConnectionIdentity;
+  inbound_tag: string;
+  user: string;
+  inbound_port?: number;
+  current_total: number;
+  inbound_active: number;
+  inbound_tcp: TCPStateCounts;
+  inbound_online_ips: Array<{ ip: string; connections: number }>;
+  outbound_active: number;
+  outbound_pending: number;
+  outbound_tcp: TCPStateCounts;
+  outbound_new_rate: number;
+  outbound_new_total: number;
+  outbound_rejected_total: number;
+  rejected_active_limit: number;
+  rejected_new_rate_limit: number;
+  rejected_user_total_limit: number;
+  rejected_port_total_limit: number;
+  rejected_user_new_rate_limit: number;
+  rejected_port_new_rate_limit: number;
+  rejected_online_ip_limit: number;
+  rejected_global_total_limit: number;
+  max_inbound_online_ips: number | null;
+  max_total_connections: number | null;
+  max_outbound_tcp_active: number | null;
+  max_outbound_tcp_new_per_second: number | null;
+  max_port_outbound_tcp_active?: number | null;
+  max_port_outbound_tcp_new_per_second?: number | null;
+  close_wait_timeout_seconds: number | null;
+  source: string;
+  management_group?: string;
+};
+
+export type ManagementGroupConnections = {
+  group: string;
+  current_total: number;
+  inbound_active: number;
+  inbound_tcp: TCPStateCounts;
+  inbound_online_ips: Array<{ ip: string; connections: number }>;
+  outbound_active: number;
+  outbound_pending: number;
+  outbound_tcp: TCPStateCounts;
+  outbound_new_rate: number;
+  outbound_new_total: number;
+  outbound_rejected_total: number;
+  rejected_user_total_limit: number;
+  rejected_user_new_rate_limit: number;
+  rejected_port_total_limit: number;
+  rejected_port_new_rate_limit: number;
+  rejected_online_ip_limit: number;
+  rejected_global_total_limit: number;
+  max_outbound_tcp_active: number | null;
+  max_outbound_tcp_new_per_second: number | null;
 };
 
 export type HelperInstallTokenResponse = {

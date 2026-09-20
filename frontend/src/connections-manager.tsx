@@ -1,10 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { AlertTriangle, CheckCircle2, RefreshCw, Save } from "lucide-react";
-import { fetchDetailedConnections, updateDetailedConnectionSettings } from "./api";
-import type { DetailedConnectionResponse, RemoteServer, ServerConnectionSettings, TCPStateCounts, UserConnectionSettings } from "./types";
+import { AlertTriangle, CheckCircle2, RefreshCw, Save, Trash2 } from "lucide-react";
+import {
+  assignConnectionPort,
+  deleteConnectionPortAssignment,
+  fetchDetailedConnections,
+  updateDetailedConnectionSettings,
+} from "./api";
+import type {
+  DetailedConnectionResponse,
+  ProxyIdentityConnections,
+  RemoteServer,
+  ServerConnectionSettings,
+  TCPStateCounts,
+  UserConnectionSettings,
+} from "./types";
 
 type Props = { server: RemoteServer; token: string };
+type AssignmentDraft = { username: string; identity: string };
 
 const emptySettings: ServerConnectionSettings = {
   default_close_wait_timeout_seconds: null,
@@ -12,6 +25,8 @@ const emptySettings: ServerConnectionSettings = {
   global_total_limit_enabled: false,
   max_global_total_connections: null,
   users: [],
+  ports: [],
+  management_users: [],
 };
 
 const emptyTCP = (): TCPStateCounts => ({
@@ -27,13 +42,16 @@ export function ConnectionsManager({ server, token }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [assignmentDrafts, setAssignmentDrafts] = useState<Record<string, AssignmentDraft>>({});
+  const dirtyRef = useRef(false);
 
-  const load = useCallback(async (signal?: AbortSignal) => {
-    setError("");
+  const load = useCallback(async (signal?: AbortSignal, forceSettings = false) => {
     try {
       const response = await fetchDetailedConnections(token, server.id, signal);
       setData(response);
-      setSettings(mergeDiscoveredUsers(response.settings, response));
+      if (forceSettings || !dirtyRef.current) setSettings(mergeDiscoveredUsers(response.settings, response));
+      if (response.ownership_error) setError(response.ownership_error);
+      else setError("");
     } catch (reason) {
       if (!signal?.aborted) setError(reason instanceof Error ? reason.message : "连接详情加载失败");
     } finally {
@@ -43,9 +61,15 @@ export function ConnectionsManager({ server, token }: Props) {
 
   useEffect(() => {
     const controller = new AbortController();
-    void load(controller.signal);
-    return () => controller.abort();
+    void load(controller.signal, true);
+    const timer = window.setInterval(() => void load(controller.signal), 5000);
+    return () => { controller.abort(); window.clearInterval(timer); };
   }, [load]);
+
+  const updateSettings: Dispatch<SetStateAction<ServerConnectionSettings>> = (next) => {
+    dirtyRef.current = true;
+    setSettings(next);
+  };
 
   async function save() {
     setSaving(true);
@@ -53,10 +77,10 @@ export function ConnectionsManager({ server, token }: Props) {
     setNotice("");
     try {
       const response = await updateDetailedConnectionSettings(token, server.id, settings);
+      dirtyRef.current = false;
       setData(response);
       setSettings(mergeDiscoveredUsers(response.settings, response));
-      setNotice("设置已持久化，Helper 将自动下发；只拒绝新连接，不中断现有连接");
-      window.setTimeout(() => void load(), 5500);
+      setNotice("设置已持久化并将自动下发；达到限额只拒绝新连接，不中断现有连接");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "保存连接限制失败");
     } finally {
@@ -64,22 +88,40 @@ export function ConnectionsManager({ server, token }: Props) {
     }
   }
 
+  async function saveAssignment(inboundTag: string, requireIdentity = false) {
+    const draft = assignmentDrafts[inboundTag] ?? { username: data?.management?.assignable_users?.[0] ?? "", identity: "" };
+    if (!draft.username) { setError("请选择管理用户"); return; }
+    if (requireIdentity && !draft.identity) { setError("该端口已有部分身份被分配，请明确选择剩余协议身份"); return; }
+    setSaving(true);
+    setError("");
+    try {
+      await assignConnectionPort(token, server.id, { inbound_tag: inboundTag, management_username: draft.username, protocol_identity: draft.identity || undefined });
+      setNotice("用户关系已追加；运行时统计和限流仍只使用唯一可确定的真实协议身份");
+      await load(undefined, true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "保存手工归属失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeAssignment(inboundTag: string, username: string, identity: string) {
+    setSaving(true);
+    setError("");
+    try {
+      await deleteConnectionPortAssignment(token, server.id, { inbound_tag: inboundTag, management_username: username, protocol_identity: identity || undefined });
+      setNotice("手工归属已删除");
+      await load(undefined, true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "删除手工归属失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const snapshot = data?.record?.snapshot;
   const settingsByIdentity = useMemo(() => new Map(settings.users.map((item) => [identityKey(item), item])), [settings.users]);
-  const proxyUsers = useMemo(() => {
-    if (snapshot?.proxy_users?.length) return snapshot.proxy_users;
-    return settings.users.map((item) => ({
-      identity: item.identity, inbound_tag: item.identity.inbound_tag, user: item.identity.user,
-      inbound_port: undefined, current_total: 0, inbound_active: 0, inbound_tcp: emptyTCP(), inbound_online_ips: [],
-      outbound_active: 0, outbound_pending: 0, outbound_tcp: emptyTCP(), outbound_new_rate: 0,
-      outbound_new_total: 0, outbound_rejected_total: 0, rejected_active_limit: 0,
-      rejected_new_rate_limit: 0, rejected_user_total_limit: 0, rejected_online_ip_limit: 0,
-      rejected_global_total_limit: 0, max_inbound_online_ips: item.max_inbound_online_ips,
-      max_total_connections: item.max_total_connections, max_outbound_tcp_active: item.max_outbound_tcp_active,
-      max_outbound_tcp_new_per_second: item.max_outbound_tcp_new_per_second,
-      close_wait_timeout_seconds: item.close_wait_timeout_seconds, source: "persisted_settings",
-    }));
-  }, [settings.users, snapshot?.proxy_users]);
+  const managementUsers = data?.management?.users ?? [];
 
   return (
     <div className="service-dialog-body connection-manager">
@@ -88,68 +130,17 @@ export function ConnectionsManager({ server, token }: Props) {
           <strong>{server.name}</strong>
           <span>{data?.available ? `Helper ${data.record?.helper_version ?? "在线"} · Core API v${snapshot?.core.interface_version ?? "?"}` : "Helper 数据不可用"}</span>
         </div>
-        <button type="button" onClick={() => void load()} disabled={loading} aria-label="刷新连接详情" title="刷新连接详情"><RefreshCw className={loading ? "spin" : ""} /></button>
+        <button type="button" onClick={() => void load(undefined, !dirtyRef.current)} disabled={loading} aria-label="刷新连接详情" title="刷新连接详情"><RefreshCw className={loading ? "spin" : ""} /></button>
       </div>
 
       {error && <div className="connection-message error"><AlertTriangle /> <span>{error}</span></div>}
       {notice && <div className="connection-message success"><CheckCircle2 /> <span>{notice}</span></div>}
+      {data?.management?.warnings?.map((warning) => <div className="connection-message error" key={warning}><AlertTriangle /><span>{warning}</span></div>)}
 
-      <section className="connection-section">
-        <div className="connection-section-head"><h4>系统 TCP</h4><span className="connection-source">Linux /proc/net/tcp*</span></div>
-        <TCPStateGrid states={snapshot?.system} />
-      </section>
-
-      <section className="connection-section">
-        <div className="connection-section-head"><h4>入站与在线 IP</h4><span className="connection-source">Core 认证身份 + 精确四元组</span></div>
-        {snapshot?.inbounds?.length ? snapshot.inbounds.map((inbound) => (
-          <article className="connection-inbound" key={`${inbound.inbound_tag}-${inbound.port}`}>
-            <div className="connection-card-title">
-              <div><strong>{inbound.inbound_tag || `端口 ${inbound.port}`}</strong><span>{inbound.protocol || "协议未知"} · {inbound.port}</span></div>
-              <em>{inbound.online_ip_count} / {displayLimit(inbound.max_online_ips)} IP</em>
-            </div>
-            <TCPStateGrid states={inbound.tcp} compact />
-            <span className="connection-attribution">{attributionText(inbound.attribution, inbound.user)}</span>
-            {inbound.online_ips?.length > 0 && <div className="connection-ip-list">{inbound.online_ips.map((item) => <div key={item.ip}><code>{item.ip}</code><strong>{item.connections}</strong></div>)}</div>}
-          </article>
-        )) : <EmptyConnectionState text={snapshot?.core.available ? "当前没有可归属的入站连接" : "Custom Core 接口尚未连接"} />}
-      </section>
-
-      <section className="connection-section">
-        <div className="connection-section-head"><h4>认证用户连接</h4><span className="connection-source">Custom Core 身份传播</span></div>
-        {proxyUsers.length ? proxyUsers.map((user) => {
-          const item = settingsByIdentity.get(`${user.inbound_tag}\u0000${user.user}`) ?? fromProxyUser(user);
-          return (
-            <article className="connection-user" key={`${user.inbound_tag}-${user.user}`}>
-              <div className="connection-card-title">
-                <div><strong>{user.user}</strong><span>{user.inbound_tag}{user.inbound_port ? ` · ${user.inbound_port}` : ""}</span></div>
-                <em>总连接 {user.current_total} / {displayLimit(item.max_total_connections)}</em>
-              </div>
-              <ConnectionSubsection title="入站 TCP" meta={`active ${user.inbound_active}`} states={user.inbound_tcp} />
-              <ConnectionSubsection title="物理出站 TCP" meta={`active ${user.outbound_active} · pending ${user.outbound_pending}`} states={user.outbound_tcp} />
-              <div className="connection-inline-stats">
-                <span>出站 NEW <strong>{user.outbound_new_rate}/s</strong></span>
-                <span>累计 Dial <strong>{user.outbound_new_total}</strong></span>
-                <span>累计拒绝 <strong>{user.outbound_rejected_total}</strong></span>
-              </div>
-              <div className="connection-rejection-grid" aria-label="拒绝原因">
-                <span>用户总数 <strong>{user.rejected_user_total_limit}</strong></span>
-                <span>出站 active <strong>{user.rejected_active_limit}</strong></span>
-                <span>出站 NEW/s <strong>{user.rejected_new_rate_limit}</strong></span>
-                <span>在线 IP <strong>{user.rejected_online_ip_limit}</strong></span>
-                <span>全局总数 <strong>{user.rejected_global_total_limit}</strong></span>
-              </div>
-              {user.inbound_online_ips?.length > 0 && <div className="connection-ip-list">{user.inbound_online_ips.map((source) => <div key={source.ip}><code>{source.ip}</code><strong>{source.connections}</strong></div>)}</div>}
-              <div className="connection-limit-grid">
-                <NullableNumber label="同时在线 IP 上限" value={item.max_inbound_online_ips} min={1} onChange={(value) => patchUser(item, "max_inbound_online_ips", value, setSettings)} />
-                <NullableNumber label="每用户总连接上限" value={item.max_total_connections} min={1} onChange={(value) => patchUser(item, "max_total_connections", value, setSettings)} />
-                <NullableNumber label="出站 TCP active 上限" value={item.max_outbound_tcp_active} min={1} onChange={(value) => patchUser(item, "max_outbound_tcp_active", value, setSettings)} />
-                <NullableNumber label="出站 NEW/s 上限" value={item.max_outbound_tcp_new_per_second} min={1} onChange={(value) => patchUser(item, "max_outbound_tcp_new_per_second", value, setSettings)} />
-                <NullableNumber label="CLOSE_WAIT 自动关闭（秒）" value={item.close_wait_timeout_seconds} min={0} placeholder="继承全局" onChange={(value) => patchUser(item, "close_wait_timeout_seconds", value, setSettings)} />
-              </div>
-            </article>
-          );
-        }) : <EmptyConnectionState text="尚无经过认证的代理用户运行数据" />}
-      </section>
+      <details className="connection-section connection-fold">
+        <summary><span>机器 TCP</span><small>总数 {snapshot?.system?.tcp_total ?? "--"} · ESTABLISHED {snapshot?.system?.established ?? "--"}</small></summary>
+        <div className="connection-fold-body"><TCPStateGrid states={snapshot?.system} /></div>
+      </details>
 
       <section className="connection-section connection-global-settings">
         <div className="connection-section-head"><h4>全局保护与设置</h4><span className="connection-source">Helper 持久化</span></div>
@@ -158,20 +149,164 @@ export function ConnectionsManager({ server, token }: Props) {
           <span>全局限额拒绝 <strong>{snapshot?.global?.rejected_global_total_limit ?? "--"}</strong></span>
         </div>
         <label className="connection-toggle">
-          <input type="checkbox" checked={settings.global_total_limit_enabled} onChange={(event) => setSettings((current) => ({ ...current, global_total_limit_enabled: event.target.checked }))} />
+          <input type="checkbox" checked={settings.global_total_limit_enabled} onChange={(event) => updateSettings((current) => ({ ...current, global_total_limit_enabled: event.target.checked }))} />
           <span><strong>启用全局总连接保护</strong><small>达到上限后只拒绝新连接，不清理现有连接</small></span>
         </label>
         <div className="connection-limit-grid">
-          <NullableNumber label="全局总连接上限" value={settings.max_global_total_connections} min={1} required={settings.global_total_limit_enabled} onChange={(value) => setSettings((current) => ({ ...current, max_global_total_connections: value }))} />
-          <NullableNumber label="默认 CLOSE_WAIT 自动关闭（秒）" value={settings.default_close_wait_timeout_seconds} min={0} onChange={(value) => setSettings((current) => ({ ...current, default_close_wait_timeout_seconds: value }))} />
-          <NullableNumber label="在线 IP 保留秒数" value={settings.online_ip_grace_period_seconds} min={1} required onChange={(value) => setSettings((current) => ({ ...current, online_ip_grace_period_seconds: value ?? 30 }))} />
+          <NullableNumber label="全局总连接上限" value={settings.max_global_total_connections} min={1} required={settings.global_total_limit_enabled} onChange={(value) => updateSettings((current) => ({ ...current, max_global_total_connections: value }))} />
+          <NullableNumber label="默认 CLOSE_WAIT 自动关闭（秒）" value={settings.default_close_wait_timeout_seconds} min={0} onChange={(value) => updateSettings((current) => ({ ...current, default_close_wait_timeout_seconds: value }))} />
+          <NullableNumber label="在线 IP 保留秒数" value={settings.online_ip_grace_period_seconds} min={1} required onChange={(value) => updateSettings((current) => ({ ...current, online_ip_grace_period_seconds: value ?? 30 }))} />
         </div>
-        <button className="connection-save" type="button" onClick={() => void save()} disabled={saving || loading}><Save /> <span>{saving ? "保存中..." : "保存连接设置"}</span></button>
       </section>
 
-      <p className="connection-boundary">用户状态来自 Core 认证身份与连接四元组；出站 TIME_WAIT 使用关闭前保留的身份和四元组与内核表精确匹配。总连接限额计算认证后入站 active、物理出站 active 与 pending，不包含已关闭的 TIME_WAIT。认证前 SYN_RECV 无用户身份，不伪归属。Mux 下物理连接数不等于逻辑流数。</p>
+      <section className="connection-section connection-user-tree">
+        <div className="connection-section-head"><h4>管理用户</h4><span className="connection-source">正式关系优先，默认折叠</span></div>
+        {managementUsers.length ? managementUsers.map((user) => (
+          <details className="connection-fold connection-user-fold" key={user.username}>
+            <summary>
+              <span>{user.username}<small>{sourceText(user.source)} · {user.ports.length} 个端口</small><small>出站 {user.aggregate.outbound_active}/{displayLimit(managementSetting(settings, user.username).max_outbound_tcp_active)} · 入站 {user.aggregate.inbound_active} · NEW {user.aggregate.outbound_new_rate}/{displayLimit(managementSetting(settings, user.username).max_outbound_tcp_new_per_second)}/s · IP {user.aggregate.inbound_online_ips?.length ?? 0}</small></span>
+              <strong>{user.aggregate.current_total} 总连接</strong>
+            </summary>
+            <div className="connection-fold-body">
+              <div className="connection-inline-stats">
+                <span>出站 active <strong>{user.aggregate.outbound_active}</strong></span>
+                <span>pending <strong>{user.aggregate.outbound_pending}</strong></span>
+                <span>NEW <strong>{user.aggregate.outbound_new_rate}/s</strong></span>
+                <span>在线 IP <strong>{user.aggregate.inbound_online_ips?.length ?? 0}</strong></span>
+              </div>
+              <div className="connection-rejection-grid" aria-label="管理用户拒绝原因">
+                <span>用户总数 <strong>{user.aggregate.rejected_user_total_limit}</strong></span>
+                <span>用户 NEW/s <strong>{user.aggregate.rejected_user_new_rate_limit}</strong></span>
+                <span>端口总数 <strong>{user.aggregate.rejected_port_total_limit}</strong></span>
+                <span>端口 NEW/s <strong>{user.aggregate.rejected_port_new_rate_limit}</strong></span>
+                <span>在线 IP <strong>{user.aggregate.rejected_online_ip_limit}</strong></span>
+                <span>全局 <strong>{user.aggregate.rejected_global_total_limit}</strong></span>
+              </div>
+              <div className="connection-limit-grid">
+                <NullableNumber label="该管理用户出站 active 总上限" value={managementSetting(settings, user.username).max_outbound_tcp_active} min={1} onChange={(value) => patchManagementUser(user.username, "max_outbound_tcp_active", value, updateSettings)} />
+                <NullableNumber label="该管理用户出站 NEW/s 总上限" value={managementSetting(settings, user.username).max_outbound_tcp_new_per_second} min={1} onChange={(value) => patchManagementUser(user.username, "max_outbound_tcp_new_per_second", value, updateSettings)} />
+              </div>
+              <div className="connection-port-list">
+                {user.ports.map((port) => (
+                  <PortDetails key={`${user.username}-${port.inbound_tag}`} user={user.username} port={port} settings={settings} settingsByIdentity={settingsByIdentity} setSettings={updateSettings} onRemoveAssignment={removeAssignment} assignableUsers={data?.management?.assignable_users ?? []} assignmentDraft={assignmentDrafts[port.inbound_tag]} setAssignmentDraft={(draft) => setAssignmentDrafts((current) => ({ ...current, [port.inbound_tag]: draft }))} onAssign={(requireIdentity) => saveAssignment(port.inbound_tag, requireIdentity)} saving={saving} />
+                ))}
+              </div>
+            </div>
+          </details>
+        )) : <EmptyConnectionState text={snapshot?.core.available ? "当前没有可归属的管理用户连接" : "Custom Core 接口尚未连接"} />}
+      </section>
+
+      {(data?.management?.unassigned_ports?.length ?? 0) > 0 && (
+        <section className="connection-section">
+          <div className="connection-section-head"><h4>未归属身份 / 端口</h4><span className="connection-source">可追加用户关系</span></div>
+          {data!.management.unassigned_ports.map((port) => {
+            const draft = assignmentDrafts[port.inbound_tag] ?? { username: data!.management.assignable_users[0] ?? "", identity: "" };
+            return <article className="connection-assignment" key={port.inbound_tag}>
+              <div className="connection-card-title"><div><strong>{port.inbound_tag}</strong><span>{port.protocol || "协议未知"} · {port.port || "端口未知"}</span></div></div>
+              <select aria-label={`${port.inbound_tag} 管理用户`} value={draft.username} onChange={(event) => setAssignmentDrafts((current) => ({ ...current, [port.inbound_tag]: { ...draft, username: event.target.value } }))}>
+                <option value="">选择管理用户</option>{data!.management.assignable_users.map((username) => <option key={username} value={username}>{username}</option>)}
+              </select>
+              {port.protocol_identities.length > 0 && <select aria-label={`${port.inbound_tag} 协议身份`} value={draft.identity} onChange={(event) => setAssignmentDrafts((current) => ({ ...current, [port.inbound_tag]: { ...draft, identity: event.target.value } }))}>
+                <option value="">{port.reason === "manual_identity_assignment_incomplete" ? "选择剩余协议身份（必选）" : "整个端口（全部协议身份）"}</option>{port.protocol_identities.map((identity) => <option key={identity} value={identity}>{identity}</option>)}
+              </select>}
+              <button type="button" onClick={() => void saveAssignment(port.inbound_tag, port.reason === "manual_identity_assignment_incomplete")} disabled={saving || !draft.username}>追加用户关系</button>
+            </article>;
+          })}
+        </section>
+      )}
+
+      <button className="connection-save" type="button" onClick={() => void save()} disabled={saving || loading}><Save /> <span>{saving ? "保存中..." : "保存全部连接设置"}</span></button>
+      <p className="connection-boundary">管理关系允许同一端口关联多个用户，追加关系不会覆盖已有关系。运行时归属只使用正式绑定、节点所有者或唯一可确定的协议身份，不按用户名猜测、不因管理关系重复计算；无法区分身份的共享密钥端口保持未拆分。限额按全局、管理用户跨端口汇总、端口/协议身份依次检查；达到上限只拒绝新连接。出站 TIME_WAIT 使用关闭前保留的身份与四元组精确匹配；认证前 SYN_RECV 不伪归属；Mux 物理连接数不等于逻辑流数。</p>
     </div>
   );
+}
+
+type ManagementPort = DetailedConnectionResponse["management"]["users"][number]["ports"][number];
+
+function PortDetails({ user, port, settings, settingsByIdentity, setSettings, onRemoveAssignment, assignableUsers, assignmentDraft, setAssignmentDraft, onAssign, saving }: {
+  user: string;
+  port: ManagementPort;
+  settings: ServerConnectionSettings;
+  settingsByIdentity: Map<string, UserConnectionSettings>;
+  setSettings: Dispatch<SetStateAction<ServerConnectionSettings>>;
+  onRemoveAssignment: (tag: string, username: string, identity: string) => Promise<void>;
+  assignableUsers: string[];
+  assignmentDraft?: AssignmentDraft;
+  setAssignmentDraft: (draft: AssignmentDraft) => void;
+  onAssign: (requireIdentity: boolean) => Promise<void>;
+  saving: boolean;
+}) {
+  const identities = port.protocol_identities.length ? port.protocol_identities : [""];
+  const aggregate = port.aggregate;
+  const portLimit = portSetting(settings, port.inbound_tag);
+  return <details className="connection-fold connection-port-fold">
+    <summary>
+      <span>{port.inbound_tag}<small>{port.protocol || "协议未知"} · {port.port || "端口未知"} · {sourceText(port.source)}</small><small>出站 {aggregate.outbound_active}/{displayLimit(portLimit.max_outbound_tcp_active)} · 入站 {aggregate.inbound_active} · NEW {aggregate.outbound_new_rate}/{displayLimit(portLimit.max_outbound_tcp_new_per_second)}/s</small></span>
+      <strong>{aggregate.current_total} 总连接</strong>
+    </summary>
+    <div className="connection-fold-body">
+      <div className="connection-inline-stats">
+        <span>入站 active <strong>{aggregate.inbound_active}</strong></span>
+        <span>出站 active <strong>{aggregate.outbound_active}</strong></span>
+        <span>pending <strong>{aggregate.outbound_pending}</strong></span>
+        <span>NEW <strong>{aggregate.outbound_new_rate}/s</strong></span>
+      </div>
+      <ConnectionSubsection title="入站 TCP" meta={`在线 IP ${aggregate.inbound_online_ips?.length ?? 0}`} states={aggregate.inbound_tcp} />
+      <ConnectionSubsection title="物理出站 TCP" meta={`累计 Dial ${aggregate.outbound_new_total}`} states={aggregate.outbound_tcp} />
+      <div className="connection-rejection-grid">
+        <span>用户总数 <strong>{aggregate.rejected_user_total_limit}</strong></span>
+        <span>用户 NEW/s <strong>{aggregate.rejected_user_new_rate_limit}</strong></span>
+        <span>端口总数 <strong>{aggregate.rejected_port_total_limit}</strong></span>
+        <span>端口 NEW/s <strong>{aggregate.rejected_port_new_rate_limit}</strong></span>
+      </div>
+      {aggregate.inbound_online_ips?.length > 0 && <IPList values={aggregate.inbound_online_ips} />}
+      <div className="connection-limit-grid">
+        <NullableNumber label="该端口出站 active 上限" value={portLimit.max_outbound_tcp_active} min={1} onChange={(value) => patchPort(port.inbound_tag, "max_outbound_tcp_active", value, setSettings)} />
+        <NullableNumber label="该端口出站 NEW/s 上限" value={portLimit.max_outbound_tcp_new_per_second} min={1} onChange={(value) => patchPort(port.inbound_tag, "max_outbound_tcp_new_per_second", value, setSettings)} />
+      </div>
+      <details className="connection-fold connection-identity-fold">
+        <summary><span>协议身份与在线 IP 设置</span><small>{identities.length} 项</small></summary>
+        <div className="connection-fold-body">
+          {identities.map((identity) => {
+            const key = `${port.inbound_tag}\u0000${identity}`;
+            const item = settingsByIdentity.get(key) ?? emptyUserSetting(port.inbound_tag, identity);
+            return <div className="connection-identity" key={key}>
+              <strong>{identity || "单密钥 / tag-only"}</strong>
+              <div className="connection-limit-grid">
+                <NullableNumber label="同时在线 IP 上限" value={item.max_inbound_online_ips} min={1} onChange={(value) => patchUser(item, "max_inbound_online_ips", value, setSettings)} />
+                <NullableNumber label="CLOSE_WAIT 自动关闭（秒）" value={item.close_wait_timeout_seconds} min={0} placeholder="继承全局" onChange={(value) => patchUser(item, "close_wait_timeout_seconds", value, setSettings)} />
+              </div>
+            </div>;
+          })}
+        </div>
+      </details>
+      <small className="connection-attribution-note">{port.runtime_attributed ? "本用户的统计来自唯一确定的 Core identity" : "此处仅展示管理关系；未把共享或不确定连接拆分到本用户"}</small>
+      <AssignmentControls inboundTag={port.inbound_tag} identities={port.protocol_identities} assignableUsers={assignableUsers} draft={assignmentDraft} setDraft={setAssignmentDraft} onAssign={onAssign} saving={saving} />
+      {(port.manual_assignments ?? []).map((identity) => <button className="connection-remove-assignment" type="button" key={identity || "tag-only"} onClick={() => void onRemoveAssignment(port.inbound_tag, user, identity)}><Trash2 />删除手工关系{identity ? `：${identity}` : "（整个端口）"}</button>)}
+    </div>
+  </details>;
+}
+
+function AssignmentControls({ inboundTag, identities, assignableUsers, draft, setDraft, onAssign, saving }: {
+  inboundTag: string;
+  identities: string[];
+  assignableUsers: string[];
+  draft?: AssignmentDraft;
+  setDraft: (draft: AssignmentDraft) => void;
+  onAssign: (requireIdentity: boolean) => Promise<void>;
+  saving: boolean;
+}) {
+  const value = draft ?? { username: assignableUsers[0] ?? "", identity: "" };
+  return <div className="connection-assignment connection-assignment-inline">
+    <strong>追加关联用户</strong>
+    <select aria-label={`${inboundTag} 追加管理用户`} value={value.username} onChange={(event) => setDraft({ ...value, username: event.target.value })}>
+      <option value="">选择管理用户</option>{assignableUsers.map((username) => <option key={username} value={username}>{username}</option>)}
+    </select>
+    {identities.length > 0 && <select aria-label={`${inboundTag} 追加协议身份`} value={value.identity} onChange={(event) => setDraft({ ...value, identity: event.target.value })}>
+      <option value="">整个端口（仅管理关系；不改写既有真实归属）</option>{identities.map((identity) => <option key={identity} value={identity}>{identity}</option>)}
+    </select>}
+    <button type="button" onClick={() => void onAssign(false)} disabled={saving || !value.username}>追加关系</button>
+  </div>;
 }
 
 function TCPStateGrid({ states, compact = false }: { states?: Partial<TCPStateCounts>; compact?: boolean }) {
@@ -187,19 +322,18 @@ function ConnectionSubsection({ title, meta, states }: { title: string; meta: st
   return <div className="connection-subsection"><div><strong>{title}</strong><span>{meta}</span></div><TCPStateGrid states={states} compact /></div>;
 }
 
-function ConnectionStat({ label, value }: { label: string; value?: number }) {
-  return <div><span>{label}</span><strong>{value ?? "--"}</strong></div>;
-}
-
+function ConnectionStat({ label, value }: { label: string; value?: number }) { return <div><span>{label}</span><strong>{value ?? "--"}</strong></div>; }
 function EmptyConnectionState({ text }: { text: string }) { return <div className="connection-empty">{text}</div>; }
+function IPList({ values }: { values: Array<{ ip: string; connections: number }> }) { return <div className="connection-ip-list">{values.map((item) => <div key={item.ip}><code>{item.ip}</code><strong>{item.connections}</strong></div>)}</div>; }
 
 function NullableNumber({ label, value, min, placeholder = "不限", required, onChange }: { label: string; value: number | null; min: number; placeholder?: string; required?: boolean; onChange: (value: number | null) => void }) {
   return <label><span>{label}</span><input type="number" min={min} step="1" required={required} value={value ?? ""} placeholder={placeholder} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} /></label>;
 }
 
 function identityKey(item: UserConnectionSettings) { return `${item.identity.inbound_tag}\u0000${item.identity.user}`; }
+function emptyUserSetting(inboundTag: string, user: string): UserConnectionSettings { return { identity: { inbound_tag: inboundTag, user }, max_inbound_online_ips: null, max_total_connections: null, max_outbound_tcp_active: null, max_outbound_tcp_new_per_second: null, close_wait_timeout_seconds: null }; }
 
-function fromProxyUser(user: NonNullable<DetailedConnectionResponse["record"]>["snapshot"]["proxy_users"][number]): UserConnectionSettings {
+function fromProxyUser(user: ProxyIdentityConnections): UserConnectionSettings {
   return {
     identity: { inbound_tag: user.inbound_tag, user: user.user },
     max_inbound_online_ips: user.max_inbound_online_ips,
@@ -211,23 +345,64 @@ function fromProxyUser(user: NonNullable<DetailedConnectionResponse["record"]>["
 }
 
 function mergeDiscoveredUsers(settings: ServerConnectionSettings, response: DetailedConnectionResponse): ServerConnectionSettings {
-  const normalized = { ...emptySettings, ...settings, users: settings.users ?? [] };
+  const normalized = { ...emptySettings, ...settings, users: settings.users ?? [], ports: settings.ports ?? [], management_users: settings.management_users ?? [] };
   const users = new Map(normalized.users.map((item) => [identityKey(item), { ...item, max_total_connections: item.max_total_connections ?? null }]));
   for (const user of response.record?.snapshot.proxy_users ?? []) {
     const item = fromProxyUser(user);
+    if (!users.has(identityKey(item))) users.set(identityKey(item), item);
+  }
+  for (const management of response.management?.users ?? []) for (const port of management.ports) for (const identity of port.protocol_identities.length ? port.protocol_identities : [""]) {
+    const item = emptyUserSetting(port.inbound_tag, identity);
     if (!users.has(identityKey(item))) users.set(identityKey(item), item);
   }
   return { ...normalized, users: [...users.values()] };
 }
 
 function patchUser(item: UserConnectionSettings, field: keyof Omit<UserConnectionSettings, "identity">, value: number | null, setSettings: Dispatch<SetStateAction<ServerConnectionSettings>>) {
-  setSettings((current) => ({ ...current, users: current.users.map((candidate) => identityKey(candidate) === identityKey(item) ? { ...candidate, [field]: value } : candidate) }));
+  setSettings((current) => {
+    const users = [...current.users];
+    const index = users.findIndex((candidate) => identityKey(candidate) === identityKey(item));
+    if (index >= 0) users[index] = { ...users[index], [field]: value };
+    else users.push({ ...item, [field]: value });
+    return { ...current, users };
+  });
+}
+
+function managementSetting(settings: ServerConnectionSettings, username: string) {
+  return settings.management_users.find((item) => item.username === username) ?? { username, max_outbound_tcp_active: null, max_outbound_tcp_new_per_second: null };
+}
+
+function patchManagementUser(username: string, field: "max_outbound_tcp_active" | "max_outbound_tcp_new_per_second", value: number | null, setSettings: Dispatch<SetStateAction<ServerConnectionSettings>>) {
+  setSettings((current) => {
+    const management_users = [...current.management_users];
+    const index = management_users.findIndex((item) => item.username === username);
+    const item = managementSetting(current, username);
+    if (index >= 0) management_users[index] = { ...item, [field]: value };
+    else management_users.push({ ...item, [field]: value });
+    return { ...current, management_users };
+  });
+}
+
+function portSetting(settings: ServerConnectionSettings, inboundTag: string) {
+  return settings.ports.find((item) => item.inbound_tag === inboundTag) ?? { inbound_tag: inboundTag, max_outbound_tcp_active: null, max_outbound_tcp_new_per_second: null };
+}
+
+function patchPort(inboundTag: string, field: "max_outbound_tcp_active" | "max_outbound_tcp_new_per_second", value: number | null, setSettings: Dispatch<SetStateAction<ServerConnectionSettings>>) {
+  setSettings((current) => {
+    const ports = [...current.ports];
+    const index = ports.findIndex((item) => item.inbound_tag === inboundTag);
+    const item = portSetting(current, inboundTag);
+    if (index >= 0) ports[index] = { ...item, [field]: value };
+    else ports.push({ ...item, [field]: value });
+    return { ...current, ports };
+  });
+}
+
+function sourceText(source: string) {
+  if (source === "binding") return "正式绑定";
+  if (source === "owner") return "节点所有者";
+  if (source === "manual") return "手工归属";
+  return "未归属";
 }
 
 function displayLimit(value: number | null | undefined) { return value == null ? "不限" : value.toLocaleString(); }
-
-function attributionText(attribution: string, user?: string) {
-  if (attribution === "core_identity_tuple") return "Core 认证身份与精确连接四元组归属";
-  if (attribution === "single_user_inbound") return `旧接口单用户入站：${user ?? "未知用户"}`;
-  return "旧接口只能归属到入站端口，不能精确归属用户";
-}

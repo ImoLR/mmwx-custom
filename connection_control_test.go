@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
@@ -20,6 +21,8 @@ func TestValidateServerConnectionSettings(t *testing.T) {
 		MaxOutboundTCPActive:       int64Pointer(200),
 		MaxOutboundTCPNewPerSecond: intPointer(30),
 	}}
+	valid.ManagementUsers = []serverManagementUserSettings{{Username: "ken", MaxOutboundTCPActive: int64Pointer(100)}}
+	valid.Ports = []serverPortConnectionSettings{{InboundTag: "in-a", MaxOutboundTCPActive: int64Pointer(30)}}
 	if err := validateServerConnectionSettings(valid); err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +62,9 @@ func TestHelperStatePersistsConnectionSettings(t *testing.T) {
 	}}
 	settings.GlobalTotalLimitEnabled = true
 	settings.MaxGlobalTotalConnections = int64Pointer(200)
+	settings.ManagementUsers = []serverManagementUserSettings{{Username: "ken", MaxOutboundTCPActive: int64Pointer(100)}}
+	settings.Ports = []serverPortConnectionSettings{{InboundTag: "in-a", MaxOutboundTCPActive: int64Pointer(30)}}
+	settings.ManagementMappings = []serverManagementMapping{{Identity: serverConnectionIdentity{InboundTag: "in-a", User: "user-a"}, Group: "ken"}}
 	if err := state.setConnectionSettings("7", settings); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +73,7 @@ func TestHelperStatePersistsConnectionSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := reloaded.connectionSettings("7")
-	if len(got.Users) != 1 || got.Users[0].MaxOutboundTCPActive == nil || *got.Users[0].MaxOutboundTCPActive != 10 || got.Users[0].MaxTotalConnections == nil || *got.Users[0].MaxTotalConnections != 20 || !got.GlobalTotalLimitEnabled || got.MaxGlobalTotalConnections == nil || *got.MaxGlobalTotalConnections != 200 {
+	if len(got.Users) != 1 || got.Users[0].MaxOutboundTCPActive == nil || *got.Users[0].MaxOutboundTCPActive != 10 || got.Users[0].MaxTotalConnections == nil || *got.Users[0].MaxTotalConnections != 20 || len(got.ManagementUsers) != 1 || len(got.Ports) != 1 || len(got.ManagementMappings) != 1 || !got.GlobalTotalLimitEnabled || got.MaxGlobalTotalConnections == nil || *got.MaxGlobalTotalConnections != 200 {
 		t.Fatalf("settings did not persist: %#v", got)
 	}
 }
@@ -106,7 +112,8 @@ func TestWriteServerConnectionsUsesEmptyArrays(t *testing.T) {
 	}
 	app := &app{helperState: state, detailedConnections: make(map[string]serverDetailedConnectionRecord)}
 	response := httptest.NewRecorder()
-	app.writeServerConnections(response, "6")
+	request := httptest.NewRequest(http.MethodGet, "/api/custom/servers/6/connections", nil)
+	app.writeServerConnections(response, request, "6")
 	if response.Code != 200 {
 		t.Fatalf("unexpected status %d", response.Code)
 	}

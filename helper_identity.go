@@ -353,6 +353,33 @@ func (s *helperState) setConnectionSettings(officialServerID string, settings se
 	return s.saveLocked()
 }
 
+func (s *helperState) setConnectionMappings(officialServerID string, mappings []serverManagementMapping) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settings, ok := s.data.ConnectionSettings[officialServerID]
+	if !ok {
+		settings = defaultServerConnectionSettings()
+	}
+	if equalManagementMappings(settings.ManagementMappings, mappings) {
+		return nil
+	}
+	settings.ManagementMappings = append([]serverManagementMapping(nil), mappings...)
+	s.data.ConnectionSettings[officialServerID] = cloneServerConnectionSettings(settings)
+	return s.saveLocked()
+}
+
+func equalManagementMappings(left, right []serverManagementMapping) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *helperState) pruneExpiredLocked(now time.Time) {
 	for key, record := range s.data.InstallTokens {
 		if now.After(record.ExpiresAt) {

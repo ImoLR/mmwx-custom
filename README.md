@@ -94,7 +94,7 @@ The following endpoints are available:
 
 ## Connections Helper
 
-`mmwxc-helper v0.5.3` is the Custom Agent. The normal installer defaults to a
+`mmwxc-helper v0.6.0` is the Custom Agent. The normal installer defaults to a
 transactional external single-Core takeover; `--helper-only` keeps the
 diagnostic-only maintenance mode. The official `mmw-agent` remains responsible
 for config generation and the `xray.service` lifecycle.
@@ -123,10 +123,12 @@ Helper and Core upgrades post authenticated phase transitions (`dispatching`,
 terminal success/failure/rollback state) to the Custom controller. A normal
 Helper heartbeat preserves the most recent phase instead of erasing it.
 
-Core API v2 registers supported data-plane inbounds and their configured user
+Core API v3 registers supported data-plane inbounds and their configured user
 identities when Xray instantiates the configuration, so zero-traffic users are
-reported immediately. Internal control-plane handlers such as the local Xray
-API inbound are intentionally excluded from connection statistics.
+reported immediately. It also enforces deterministic management-user and port
+limits without changing the identity-level semantics. Internal control-plane
+handlers such as the local Xray API inbound are intentionally excluded from
+connection statistics.
 
 The `external.ownership.arm` management step installs that drop-in and releases
 the old Custom service ports before the controller asks the official Agent to

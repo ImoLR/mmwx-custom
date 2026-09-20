@@ -50,6 +50,15 @@ func loadLocalState(path string) (localState, error) {
 	if state.Settings.Users == nil {
 		state.Settings.Users = []userConnectionSettings{}
 	}
+	if state.Settings.Ports == nil {
+		state.Settings.Ports = []portConnectionSettings{}
+	}
+	if state.Settings.ManagementUsers == nil {
+		state.Settings.ManagementUsers = []managementUserSettings{}
+	}
+	if state.Settings.ManagementMappings == nil {
+		state.Settings.ManagementMappings = []managementMapping{}
+	}
 	return state, nil
 }
 

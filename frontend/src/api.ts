@@ -664,6 +664,22 @@ export function updateDetailedConnectionSettings(token: string, serverId: number
   });
 }
 
+export function assignConnectionPort(token: string, serverId: number, assignment: { inbound_tag: string; management_username: string; protocol_identity?: string }) {
+  return requestCustomApi<{ success: boolean }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/connection-assignments`), {
+    method: "PUT",
+    headers: { "MM-Authorization": token, "Content-Type": "application/json" },
+    body: JSON.stringify(assignment),
+  });
+}
+
+export function deleteConnectionPortAssignment(token: string, serverId: number, assignment: { inbound_tag: string; management_username: string; protocol_identity?: string }) {
+  return requestCustomApi<{ success: boolean }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/connection-assignments`), {
+    method: "DELETE",
+    headers: { "MM-Authorization": token, "Content-Type": "application/json" },
+    body: JSON.stringify(assignment),
+  });
+}
+
 export function createHelperInstallToken(token: string, serverId: number, mode: "takeover" | "helper-only" = "takeover") {
   return requestCustomApi<HelperInstallTokenResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/helper/install-token"), {
     method: "POST",

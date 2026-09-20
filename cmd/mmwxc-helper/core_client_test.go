@@ -61,6 +61,19 @@ func TestCoreClientAcceptsV2TupleStatesAndGlobalLimit(t *testing.T) {
 	}
 }
 
+func TestCoreClientAcceptsV3ManagementGroups(t *testing.T) {
+	path := serveUnixHTTP(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"version":3,"started_at":"2026-09-15T00:00:00Z","management_groups":[{"group":"ken","current_total":9,"outbound_active":6,"outbound_pending":1,"outbound_new_rate":4,"rejected_user_total_limit":2,"rejected_user_new_rate_limit":3}],"proxy_users":[{"identity":{"inbound_tag":"in-a","user":"proto-a"},"attributed":true,"management_group":"ken","rejected_port_total_limit":1,"rejected_port_new_rate_limit":2}]}`))
+	}))
+	snapshot, err := newCoreClient(path).snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.ManagementGroups) != 1 || snapshot.ManagementGroups[0].Username != "ken" || snapshot.ManagementGroups[0].RejectedUserNewRateLimit != 3 || len(snapshot.Users) != 1 || snapshot.Users[0].ManagementGroup != "ken" || snapshot.Users[0].RejectedPortTotalLimit != 1 {
+		t.Fatalf("v3 management data was not decoded: %#v", snapshot)
+	}
+}
+
 func TestCoreClientUnavailable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.sock")
 	if _, err := newCoreClient(path).snapshot(context.Background()); err == nil {
@@ -83,11 +96,47 @@ func TestCoreClientAppliesNullUnlimited(t *testing.T) {
 	}))
 	settings := defaultConnectionSettings()
 	settings.Users = []userConnectionSettings{{Identity: coreIdentity{InboundTag: "in-a", User: "user-a"}}}
+	portLimit := int64(10)
+	settings.Ports = []portConnectionSettings{{InboundTag: "in-a", MaxOutboundTCPActive: &portLimit}}
+	groupLimit := int64(20)
+	settings.ManagementUsers = []managementUserSettings{{Username: "ken", MaxOutboundTCPActive: &groupLimit}}
+	settings.ManagementMappings = []managementMapping{{Identity: coreIdentity{InboundTag: "in-a", User: "user-a"}, Group: "ken"}}
 	if err := newCoreClient(path).apply(context.Background(), settings); err != nil {
 		t.Fatal(err)
 	}
-	if len(received.Limits) != 1 || received.Limits[0].MaxOutboundTCPActive != nil {
+	if len(received.Limits) != 1 || received.Limits[0].MaxOutboundTCPActive != nil || len(received.PortLimits) != 1 || received.PortLimits[0].MaxOutboundTCPActive == nil || *received.PortLimits[0].MaxOutboundTCPActive != 10 || len(received.ManagementMappings) != 1 || received.ManagementMappings[0].Group != "ken" || len(received.ManagementLimits) != 1 || received.ManagementLimits[0].MaxOutboundTCPActive == nil || *received.ManagementLimits[0].MaxOutboundTCPActive != 20 {
 		t.Fatalf("null unlimited changed: %#v", received)
+	}
+}
+
+func TestCoreClientFallsBackToV2ConfigDuringRollingUpgrade(t *testing.T) {
+	requests := 0
+	path := serveUnixHTTP(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if requests == 1 {
+			if _, exists := body["management_mappings"]; !exists {
+				t.Error("v3 config was not attempted first")
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"json: unknown field management_mappings"}`))
+			return
+		}
+		if _, exists := body["management_mappings"]; exists {
+			t.Error("legacy retry still contained v3 fields")
+		}
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	settings := defaultConnectionSettings()
+	settings.ManagementMappings = []managementMapping{{Identity: coreIdentity{InboundTag: "in-a", User: "proto-a"}, Group: "ken"}}
+	if err := newCoreClient(path).apply(context.Background(), settings); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests=%d, want 2", requests)
 	}
 }
 

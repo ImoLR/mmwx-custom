@@ -46,30 +46,43 @@ func (client *coreClient) snapshot(ctx context.Context) (coreSnapshotResponse, e
 	if err := decoder.Decode(&snapshot); err != nil {
 		return coreSnapshotResponse{}, fmt.Errorf("decode core snapshot: %w", err)
 	}
-	if snapshot.Version != 1 && snapshot.Version != 2 {
+	if snapshot.Version != 1 && snapshot.Version != 2 && snapshot.Version != 3 {
 		return coreSnapshotResponse{}, fmt.Errorf("unsupported core interface version %d", snapshot.Version)
 	}
 	return snapshot, nil
 }
 
 func (client *coreClient) apply(ctx context.Context, settings connectionSettings) error {
-	body, err := json.Marshal(settings.coreConfig())
-	if err != nil {
+	legacy, err := client.applyConfig(ctx, settings.coreConfig())
+	if err == nil {
+		return nil
+	}
+	if !legacy {
 		return err
+	}
+	_, retryErr := client.applyConfig(ctx, settings.legacyCoreConfig())
+	return retryErr
+}
+
+func (client *coreClient) applyConfig(ctx context.Context, config any) (bool, error) {
+	body, err := json.Marshal(config)
+	if err != nil {
+		return false, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, "http://mmwxc-core/v1/config", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return false, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := client.client.Do(request)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
-		return fmt.Errorf("core config HTTP %d: %s", response.StatusCode, string(data))
+		legacy := response.StatusCode == http.StatusBadRequest && bytes.Contains(data, []byte("unknown field"))
+		return legacy, fmt.Errorf("core config HTTP %d: %s", response.StatusCode, string(data))
 	}
 	var result struct {
 		Success bool `json:"success"`
@@ -77,10 +90,10 @@ func (client *coreClient) apply(ctx context.Context, settings connectionSettings
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&result); err != nil {
-		return fmt.Errorf("decode core config response: %w", err)
+		return false, fmt.Errorf("decode core config response: %w", err)
 	}
 	if !result.Success {
-		return fmt.Errorf("core rejected config")
+		return false, fmt.Errorf("core rejected config")
 	}
-	return nil
+	return false, nil
 }

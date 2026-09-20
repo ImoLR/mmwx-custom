@@ -24,7 +24,7 @@ const (
 	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
 	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
 	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
-	helperVersion        = "v0.5.3"
+	helperVersion        = "v0.6.0"
 )
 
 type config struct {
@@ -341,6 +341,7 @@ func collectDetailedSnapshot(ctx context.Context, core *coreClient, tracker *onl
 	}
 	snapshot.Core = coreStatus{Available: true, Version: coreSnapshot.Version, StartedAt: coreSnapshot.StartedAt}
 	snapshot.Global = coreSnapshot.Global
+	snapshot.ManagementGroups = append([]managementGroupSnapshot(nil), coreSnapshot.ManagementGroups...)
 	snapshot.Inbounds, snapshot.ProxyUsers = tracker.aggregate(sockets, coreSnapshot, settings)
 	return snapshot
 }
@@ -430,6 +431,15 @@ func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config,
 	}
 	if decoded.Settings.Users == nil {
 		decoded.Settings.Users = []userConnectionSettings{}
+	}
+	if decoded.Settings.Ports == nil {
+		decoded.Settings.Ports = []portConnectionSettings{}
+	}
+	if decoded.Settings.ManagementUsers == nil {
+		decoded.Settings.ManagementUsers = []managementUserSettings{}
+	}
+	if decoded.Settings.ManagementMappings == nil {
+		decoded.Settings.ManagementMappings = []managementMapping{}
 	}
 	return decoded, nil
 }
