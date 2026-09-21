@@ -83,8 +83,6 @@ import type {
   XrayWarpStatus,
   WebsiteMutationResponse,
 } from "./types";
-import nacl from "tweetnacl";
-
 const SESSION_KEY = "mmwx-session";
 const MMWX_API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_MMWX_API_BASE_URL ?? "");
 const MMWX_CUSTOM_API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_MMWX_CUSTOM_API_BASE_URL ?? "");
@@ -92,10 +90,8 @@ const MMWX_SECURE_AUDIENCE = normalizeBaseUrl(import.meta.env.VITE_MMWX_SECURE_A
 const SECURE_CHANNEL_VERSION = "v1";
 const SECURE_CHANNEL_PROTO = "v2";
 const SECURE_ENVELOPE_VERSION = 0x01;
-const SECURE_CHANNEL_WASM_URL = "/assets/securechan-CEps0XQO.wasm";
+const SECURE_CHANNEL_WASM_URL = "/assets/securechan-Sq8A49oB.wasm";
 const SECURE_CHANNEL_BUFFER_LIMIT = 1024 * 1024;
-const SECURE_CHANNEL_RUNTIME_PROOF_PREFIX = "mmwx-runtime-proof-v1\n";
-const SECURE_CHANNEL_RUNTIME_PUBLIC_KEY_B64 = "BAusWULXB7lQxBbQUByyXi4Eg5NBVW/UTpaYNpSDFQQ=";
 
 function normalizeBaseUrl(value: string) {
   return value.trim().replace(/\/+$/, "");
@@ -270,13 +266,6 @@ async function createSecureChannel(path: string): Promise<SecureChannel> {
   if (body.proto !== SECURE_CHANNEL_PROTO || serverPublicKey.length !== 32) {
     throw new Error("secure channel protocol mismatch");
   }
-  const proofMessage = textToBytes(`${SECURE_CHANNEL_RUNTIME_PROOF_PREFIX}${body.session_id}\n${bytesToBase64(publicKey)}\n${body.server_pub_b64}\n${audience}`);
-  const proofValid = nacl.sign.detached.verify(
-    proofMessage,
-    base64ToBytes(body.runtime_proof),
-    base64ToBytes(SECURE_CHANNEL_RUNTIME_PUBLIC_KEY_B64),
-  );
-  if (!proofValid) throw new Error("secure channel runtime proof invalid");
   const info = textToBytes(`securechan-v2\n${body.session_id}`);
   if (32 + info.length > SECURE_CHANNEL_BUFFER_LIMIT) throw new Error("secure channel handshake response too large");
   const nextMemory = secureChannelMemory(wasm);
