@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +60,56 @@ func TestEnsureOwnershipFilesReplacesMaskAndPreservesBaseUnit(t *testing.T) {
 	}
 	if !exactFileContents(dropIn, ownershipDropIn) {
 		t.Fatal("drifted ownership drop-in was not restored")
+	}
+}
+
+func TestEnsureAgentXrayCompatibilityLinkUsesOwnedCoreWithoutCopy(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "core", "xray")
+	link := filepath.Join(directory, "bin", "xray")
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("owned-core"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	changed, owned, err := ensureAgentXrayCompatibilityLinkAt(link, target)
+	if err != nil || !changed || !owned {
+		t.Fatalf("compatibility link result changed=%t owned=%t err=%v", changed, owned, err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("compatibility path is not a symlink: info=%v err=%v", info, err)
+	}
+	changed, owned, err = ensureAgentXrayCompatibilityLinkAt(link, target)
+	if err != nil || changed || !owned {
+		t.Fatalf("idempotent result changed=%t owned=%t err=%v", changed, owned, err)
+	}
+	if err := removeAgentXrayCompatibilityLinkAt(link, target); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(link); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owned compatibility link was not removed: %v", err)
+	}
+}
+
+func TestEnsureAgentXrayCompatibilityLinkPreservesUnrelatedBinary(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "owned-xray")
+	link := filepath.Join(directory, "official-xray")
+	if err := os.WriteFile(target, []byte("owned"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(link, []byte("official"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	changed, owned, err := ensureAgentXrayCompatibilityLinkAt(link, target)
+	if err != nil || changed || owned {
+		t.Fatalf("unrelated binary result changed=%t owned=%t err=%v", changed, owned, err)
+	}
+	data, err := os.ReadFile(link)
+	if err != nil || string(data) != "official" {
+		t.Fatalf("unrelated binary changed: %q err=%v", data, err)
 	}
 }
 

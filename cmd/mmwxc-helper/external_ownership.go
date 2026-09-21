@@ -19,6 +19,7 @@ import (
 const (
 	officialConfigPath      = "/usr/local/etc/xray/config.json"
 	officialAgentConfigPath = "/etc/mmw-agent/config.yaml"
+	officialXrayBinaryPath  = "/usr/local/bin/xray"
 	ownershipDropInDir      = "/etc/systemd/system/xray.service.d"
 	ownershipDropInPath     = "/etc/systemd/system/xray.service.d/90-mmwxc-owner.conf"
 	ownershipImagePath      = "/var/lib/mmwxc/ownership/xray"
@@ -61,16 +62,17 @@ LimitNOFILE=1048576
 `
 
 type externalOwnershipState struct {
-	Prepared          bool      `json:"prepared,omitempty"`
-	Armed             bool      `json:"armed,omitempty"`
-	Enabled           bool      `json:"enabled,omitempty"`
-	BackupDir         string    `json:"backup_dir,omitempty"`
-	ExpectedCoreSHA   string    `json:"expected_core_sha256,omitempty"`
-	LastGoodConfigSHA string    `json:"last_good_config_sha256,omitempty"`
-	RejectedConfigSHA string    `json:"rejected_config_sha256,omitempty"`
-	InvalidConfigAt   time.Time `json:"invalid_config_at,omitempty"`
-	LastRepairAt      time.Time `json:"last_repair_at,omitempty"`
-	LastRepairReason  string    `json:"last_repair_reason,omitempty"`
+	Prepared               bool      `json:"prepared,omitempty"`
+	Armed                  bool      `json:"armed,omitempty"`
+	Enabled                bool      `json:"enabled,omitempty"`
+	BackupDir              string    `json:"backup_dir,omitempty"`
+	ExpectedCoreSHA        string    `json:"expected_core_sha256,omitempty"`
+	LastGoodConfigSHA      string    `json:"last_good_config_sha256,omitempty"`
+	RejectedConfigSHA      string    `json:"rejected_config_sha256,omitempty"`
+	InvalidConfigAt        time.Time `json:"invalid_config_at,omitempty"`
+	LastRepairAt           time.Time `json:"last_repair_at,omitempty"`
+	LastRepairReason       string    `json:"last_repair_reason,omitempty"`
+	CompatibilityLinkOwned bool      `json:"compatibility_link_owned,omitempty"`
 }
 
 type externalOwnershipStatus struct {
@@ -109,6 +111,11 @@ func (manager *lifecycleManager) armExternalOwnership(ctx context.Context, state
 	if _, _, err := ensureOwnershipFiles(); err != nil {
 		return err
 	}
+	_, linkOwned, err := ensureAgentXrayCompatibilityLinkAt(officialXrayBinaryPath, coreBinaryPath)
+	if err != nil {
+		return err
+	}
+	state.CompatibilityLinkOwned = linkOwned
 	if err := systemctl(ctx, "daemon-reload"); err != nil {
 		return err
 	}
@@ -202,6 +209,11 @@ func (manager *lifecycleManager) activateExternalOwnership(ctx context.Context, 
 	if _, _, err := ensureOwnershipFiles(); err != nil {
 		return err
 	}
+	_, linkOwned, err := ensureAgentXrayCompatibilityLinkAt(officialXrayBinaryPath, coreBinaryPath)
+	if err != nil {
+		return err
+	}
+	state.CompatibilityLinkOwned = linkOwned
 	if err := systemctl(ctx, "daemon-reload"); err != nil {
 		return err
 	}
@@ -248,6 +260,9 @@ func (manager *lifecycleManager) rollbackExternalOwnership(ctx context.Context, 
 	if err := restoreOwnershipBackup(ctx, state.BackupDir); err != nil {
 		return err
 	}
+	if state.CompatibilityLinkOwned {
+		_ = removeAgentXrayCompatibilityLinkAt(officialXrayBinaryPath, coreBinaryPath)
+	}
 	*state = externalOwnershipState{}
 	return nil
 }
@@ -280,6 +295,14 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 	}
 	if dropInChanged {
 		reasons = append(reasons, "service ownership restored")
+	}
+	linkChanged, linkOwned, err := ensureAgentXrayCompatibilityLinkAt(officialXrayBinaryPath, coreBinaryPath)
+	if err != nil {
+		return err
+	}
+	state.CompatibilityLinkOwned = linkOwned
+	if linkChanged {
+		reasons = append(reasons, "official Agent Xray path linked to owned Core")
 	}
 	if serviceActive(ctx, coreServiceName) {
 		if err := systemctl(ctx, "disable", "--now", coreServiceName); err != nil {
@@ -589,6 +612,62 @@ func ensureOwnershipFilesAt(basePath, dropInPath string) (bool, bool, error) {
 		}
 	}
 	return baseChanged, dropInChanged, nil
+}
+
+// ensureAgentXrayCompatibilityLinkAt exposes the already-owned external Core
+// at the conventional path used by older official Agents for installed/version
+// detection. It never copies a binary and never replaces an unrelated regular
+// file, so there is still exactly one Core image and one runtime lifecycle.
+func ensureAgentXrayCompatibilityLinkAt(linkPath, targetPath string) (changed, owned bool, err error) {
+	info, err := os.Lstat(linkPath)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(linkPath), 0755); err != nil {
+			return false, false, err
+		}
+		temporary := linkPath + ".mmwxc-new"
+		_ = os.Remove(temporary)
+		if err := os.Symlink(targetPath, temporary); err != nil {
+			return false, false, err
+		}
+		if err := os.Rename(temporary, linkPath); err != nil {
+			_ = os.Remove(temporary)
+			return false, false, err
+		}
+		return true, true, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, readErr := os.Readlink(linkPath)
+		if readErr != nil {
+			return false, false, readErr
+		}
+		if target == targetPath {
+			return false, true, nil
+		}
+		// Do not take ownership of an unrelated symlink.
+		return false, false, nil
+	}
+	return false, sameFile(linkPath, targetPath), nil
+}
+
+func removeAgentXrayCompatibilityLinkAt(linkPath, targetPath string) error {
+	info, err := os.Lstat(linkPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return nil
+	}
+	target, err := os.Readlink(linkPath)
+	if err != nil || target != targetPath {
+		return err
+	}
+	return os.Remove(linkPath)
 }
 
 func writeExactFile(path, contents string, mode os.FileMode) error {
