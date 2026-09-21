@@ -272,6 +272,7 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 		return nil
 	}
 	reasons := make([]string, 0, 4)
+	restartRequired := false
 	coreHash, err := sha256File(coreBinaryPath)
 	if err != nil || coreHash != state.ExpectedCoreSHA {
 		imageHash, imageErr := sha256File(ownershipImagePath)
@@ -285,6 +286,7 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 			return fmt.Errorf("replace owned Core binary: %w", err)
 		}
 		reasons = append(reasons, "core binary restored")
+		restartRequired = true
 	}
 	baseChanged, dropInChanged, err := ensureOwnershipFiles()
 	if err != nil {
@@ -292,9 +294,11 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 	}
 	if baseChanged {
 		reasons = append(reasons, "xray.service restored")
+		restartRequired = true
 	}
 	if dropInChanged {
 		reasons = append(reasons, "service ownership restored")
+		restartRequired = true
 	}
 	linkChanged, linkOwned, err := ensureAgentXrayCompatibilityLinkAt(officialXrayBinaryPath, coreBinaryPath)
 	if err != nil {
@@ -343,6 +347,7 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 		state.InvalidConfigAt = time.Time{}
 		state.RejectedConfigSHA = rejectedHash
 		reasons = append(reasons, "last-good official config restored")
+		restartRequired = true
 	}
 	status := manager.externalOwnershipStatus(ctx, state)
 	if state.Armed && status.ServiceActive && status.RuntimeOwned && status.SingleCore && status.CoreReady {
@@ -353,6 +358,7 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 	}
 	if status.ServiceActive && !status.RuntimeOwned {
 		reasons = append(reasons, "wrong runtime binary replaced")
+		restartRequired = true
 	}
 	if len(reasons) == 0 {
 		return nil
@@ -362,7 +368,7 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 	}
 	// Only restart after ownership drift. Ordinary Agent-driven configuration
 	// writes and restarts never enter this branch.
-	if status.ServiceActive || baseChanged || dropInChanged {
+	if restartRequired {
 		if err := systemctl(ctx, "restart", "xray.service"); err != nil {
 			return err
 		}
