@@ -67,7 +67,7 @@ func healthyExternalStatus() agentStatus {
 	}
 }
 
-func TestCoreModeIntentDefaultsToExternalForNormalInstall(t *testing.T) {
+func TestCoreModeIntentDefaultsToEmbeddedForSafeInstall(t *testing.T) {
 	state, err := openHelperState(filepath.Join(t.TempDir(), "helper-state.json"), time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestCoreModeIntentDefaultsToExternalForNormalInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	intent, ok := state.coreModeIntent("12")
-	if !ok || intent.DesiredMode != "external" || !intent.CustomCoreOwned {
+	if !ok || intent.DesiredMode != "embedded" || !intent.CustomCoreOwned {
 		t.Fatalf("normal install intent=%#v configured=%v", intent, ok)
 	}
 }
@@ -207,8 +207,80 @@ func TestExplicitEmbeddedIntentNeverQueuesExternalRepair(t *testing.T) {
 		t.Fatalf("embedded reconcile command=%#v err=%v", command, err)
 	}
 	intent, _ := state.coreModeIntent("12")
-	if intent.CustomCoreOwned || intent.RepairStatus != "healthy" {
+	if !intent.CustomCoreOwned || intent.RepairStatus != "healthy" || intent.PendingChange {
 		t.Fatalf("embedded intent=%#v", intent)
+	}
+}
+
+func TestFormalEmbeddedModeSupersedesCompletedLegacyExternalIntent(t *testing.T) {
+	state := newCoreModeTestState(t)
+	state.mu.Lock()
+	state.data.CoreModeIntents["12"] = newCoreModeIntent("external", time.Now())
+	state.mu.Unlock()
+	status := healthyExternalStatus()
+	command, err := state.reconcileCoreMode("12", status, remoteServerRuntime{XrayMode: "embedded", Status: "connected"}, nil)
+	if err != nil || command == nil || command.Action != "core.mode.apply" {
+		t.Fatalf("formal embedded reconcile command=%#v err=%v", command, err)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(command.Payload, &payload); err != nil || payload["desired_mode"] != "embedded" {
+		t.Fatalf("formal embedded repair payload=%s err=%v", command.Payload, err)
+	}
+	intent, _ := state.coreModeIntent("12")
+	if intent.DesiredMode != "embedded" || intent.LifecycleSource != "formal" || intent.PendingChange {
+		t.Fatalf("formal embedded intent=%#v", intent)
+	}
+}
+
+func TestFormalEmbeddedModeRemainsStableAfterOwnershipRelease(t *testing.T) {
+	state := newCoreModeTestState(t)
+	state.mu.Lock()
+	state.data.CoreModeIntents["12"] = newCoreModeIntent("external", time.Now())
+	state.mu.Unlock()
+	status := healthyExternalStatus()
+	first, err := state.reconcileCoreMode("12", status, remoteServerRuntime{XrayMode: "embedded", Status: "connected"}, nil)
+	if err != nil || first == nil {
+		t.Fatalf("initial embedded cleanup command=%#v err=%v", first, err)
+	}
+	state.mu.Lock()
+	state.data.ManagementCommands["12"] = nil
+	state.mu.Unlock()
+	embedded := agentStatus{CoreMode: "embedded", ReportedAt: time.Now().UTC(), MachineID: "stable-machine-identity", Capabilities: []string{"core.mode.apply"}}
+	result := &managementResult{Action: "core.mode.apply", Success: true, CompletedAt: time.Now().UTC()}
+	second, err := state.reconcileCoreMode("12", embedded, remoteServerRuntime{XrayMode: "embedded", Status: "connected"}, result)
+	if err != nil || second != nil {
+		t.Fatalf("stable embedded reconcile command=%#v err=%v", second, err)
+	}
+	third, err := state.reconcileCoreMode("12", embedded, remoteServerRuntime{XrayMode: "embedded", Status: "connected"}, nil)
+	if err != nil || third != nil {
+		t.Fatalf("repeated embedded reconcile command=%#v err=%v", third, err)
+	}
+}
+
+func TestExplicitPendingLifecycleChangeIsAppliedOnce(t *testing.T) {
+	state := newCoreModeTestState(t)
+	if _, err := state.setCoreModeIntent("12", "external"); err != nil {
+		t.Fatal(err)
+	}
+	embedded := agentStatus{CoreMode: "embedded", ReportedAt: time.Now().UTC(), Capabilities: []string{"core.mode.apply"}}
+	command, err := state.reconcileCoreMode("12", embedded, remoteServerRuntime{XrayMode: "embedded", Status: "connected"}, nil)
+	if err != nil || command == nil {
+		t.Fatalf("explicit transition command=%#v err=%v", command, err)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(command.Payload, &payload); err != nil || payload["desired_mode"] != "external" {
+		t.Fatalf("explicit transition payload=%s err=%v", command.Payload, err)
+	}
+}
+
+func TestXrayCapabilitySaveDoesNotChangeLifecycleMode(t *testing.T) {
+	source, err := os.ReadFile("frontend/src/xray-manager.tsx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if strings.Contains(text, "setCoreMode") || strings.Contains(text, "desired_core_mode") {
+		t.Fatal("Xray configuration UI is coupled to lifecycle mode")
 	}
 }
 

@@ -678,7 +678,7 @@ export function deleteConnectionPortAssignment(token: string, serverId: number, 
   });
 }
 
-export function createHelperInstallToken(token: string, serverId: number, mode: "takeover" | "helper-only" = "takeover") {
+export function createHelperInstallToken(token: string, serverId: number, mode: "takeover" | "helper-only" = "helper-only") {
   return requestCustomApi<HelperInstallTokenResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/helper/install-token"), {
     method: "POST",
     headers: {

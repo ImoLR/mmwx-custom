@@ -94,18 +94,19 @@ The following endpoints are available:
 
 ## Connections Helper
 
-`mmwxc-helper v0.6.0` is the Custom Agent. The normal installer defaults to a
-transactional external single-Core takeover; `--helper-only` keeps the
-diagnostic-only maintenance mode. The official `mmw-agent` remains responsible
-for config generation and the `xray.service` lifecycle.
+`mmwxc-helper v0.6.0` is the Custom Agent. Generated installation commands
+follow the formal server lifecycle mode: an external server uses the
+transactional external single-Core takeover, while an embedded server uses
+`--helper-only` and remains embedded. The official `mmw-agent` remains
+responsible for config generation and the selected lifecycle.
 
-The Custom controller persists `desired_core_mode` separately from the formal
-controller's current `xray_mode`. Normal installation records Fork Core /
-external as the desired state. Only the dedicated administrator core-mode API
-can change that intent; ordinary server edits never do. A fresh Helper report
-that disagrees with the desired state queues one signed transactional repair.
-Failures use 1, 5, 15, and 30 minute backoff intervals instead of repeatedly
-starting or stopping Xray.
+The Custom controller records the last formal lifecycle mode separately from
+Fork capability settings. A dedicated Custom transition is pending only until
+it succeeds; after that, the formal controller's current `xray_mode` is the
+source of truth. Xray configuration and capability saves never alter that
+mode. A fresh Helper report with ownership inconsistent with the selected
+lifecycle queues one signed transactional repair. Failures use 1, 5, 15, and
+30 minute backoff intervals instead of repeatedly starting or stopping Xray.
 
 For an external single-Core deployment, the optional ownership mode keeps the
 official Agent's `/usr/local/etc/xray/config.json` and `xray.service` lifecycle,

@@ -25,12 +25,14 @@ layers:
 - The Custom API persists desired settings and stores the latest Helper
   snapshot. The Custom UI only talks to this API.
 
-Core ownership intent is persisted as `desired_core_mode` plus
-`custom_core_owned`; it is never inferred from the mutable formal
-`xray_mode`. Only the dedicated administrator core-mode endpoint changes that
-intent. Each fresh Helper report compares controller mode, Agent mode, service
-ownership, runtime ownership, single-Core state, and Core readiness. Drift
-queues one signed transactional repair with bounded exponential backoff.
+Core capability and lifecycle state are independent. A dedicated Custom
+lifecycle transition is marked pending only until it succeeds; afterwards the
+formal controller's `xray_mode` is authoritative. Saving metrics, traffic,
+gRPC, inbounds, outbounds, or routes never changes `xray_mode`. Each fresh
+Helper report compares controller mode, Agent mode, service ownership, runtime
+ownership, single-Core state, and Core readiness. Ownership inconsistent with
+the formal lifecycle queues one signed transactional repair with bounded
+exponential backoff.
 
 Core does not contain database, public HTTP, UI, or Linux firewall management.
 Its bridge is opt-in through `MMWXC_CORE_CONTROL_SOCKET` and listens only on an

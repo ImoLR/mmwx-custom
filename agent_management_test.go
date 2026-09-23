@@ -54,13 +54,13 @@ func TestInstallTokenPreservesExistingIdentity(t *testing.T) {
 	}
 }
 
-func TestInstallTokenDefaultsToTakeoverAndAllowsExplicitHelperOnly(t *testing.T) {
+func TestInstallTokenDefaultsToHelperOnlyAndAllowsExplicitTakeover(t *testing.T) {
 	state, err := openHelperState(filepath.Join(t.TempDir(), "helper-state.json"), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defaultRecord, _, err := state.createInstallToken("12")
-	if err != nil || defaultRecord.InstallMode != "takeover" {
+	if err != nil || defaultRecord.InstallMode != "helper-only" {
 		t.Fatalf("default install mode=%q err=%v", defaultRecord.InstallMode, err)
 	}
 	helperOnly, _, err := state.createInstallTokenForMode("13", "helper-only")

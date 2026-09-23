@@ -16,6 +16,8 @@ var coreRepairBackoff = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.
 type coreModeIntent struct {
 	DesiredMode      string    `json:"desired_core_mode"`
 	CustomCoreOwned  bool      `json:"custom_core_owned"`
+	PendingChange    bool      `json:"pending_lifecycle_change,omitempty"`
+	LifecycleSource  string    `json:"lifecycle_source,omitempty"`
 	MachineID        string    `json:"machine_id,omitempty"`
 	RepairStatus     string    `json:"repair_status"`
 	RepairAttempts   int       `json:"repair_attempts"`
@@ -39,7 +41,7 @@ type coreModeView struct {
 
 func newCoreModeIntent(mode string, now time.Time) coreModeIntent {
 	return coreModeIntent{
-		DesiredMode: mode, CustomCoreOwned: mode == "external", RepairStatus: "drift_detected", UpdatedAt: now.UTC(),
+		DesiredMode: mode, CustomCoreOwned: true, LifecycleSource: "formal", RepairStatus: "drift_detected", UpdatedAt: now.UTC(),
 	}
 }
 
@@ -55,6 +57,8 @@ func (s *helperState) setCoreModeIntent(serverID, mode string) (coreModeIntent, 
 	}
 	now := time.Now().UTC()
 	intent := newCoreModeIntent(mode, now)
+	intent.PendingChange = true
+	intent.LifecycleSource = "custom-explicit"
 	intent.MachineID = identity.CustomServerUUID
 	s.data.CoreModeIntents[serverID] = intent
 	if err := s.saveLocked(); err != nil {
@@ -112,6 +116,20 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		return nil, nil
 	}
 	now := time.Now().UTC()
+	// The formal controller owns the lifecycle choice. A completed Custom
+	// transition must never turn into a permanent policy that pulls an
+	// explicitly changed formal xray_mode back again. Legacy intents did not
+	// carry PendingChange, so they safely adopt the currently recorded formal
+	// mode on their first observation.
+	if !intent.PendingChange && (runtime.XrayMode == "embedded" || runtime.XrayMode == "external") && intent.DesiredMode != runtime.XrayMode {
+		intent.DesiredMode = runtime.XrayMode
+		intent.CustomCoreOwned = true
+		intent.LifecycleSource = "formal"
+		intent.RepairAttempts = 0
+		intent.LastRepairError = ""
+		intent.NextRepairAt = time.Time{}
+		intent.LastRepairReason = "formal lifecycle mode observed"
+	}
 	intent.LastObservedMode = runtime.XrayMode
 	if status.MachineID != "" {
 		intent.MachineID = status.MachineID
@@ -131,6 +149,8 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		}
 	}
 	if coreModeHealthy(intent, status, runtime) {
+		intent.PendingChange = false
+		intent.LifecycleSource = "formal"
 		intent.RepairStatus = "healthy"
 		intent.RepairAttempts = 0
 		intent.LastRepairError = ""

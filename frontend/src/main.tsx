@@ -93,7 +93,6 @@ import {
   restoreXraySnapshot,
   saveSession,
   saveGitHubAcceleratorSettings,
-  setCoreMode,
   streamAgentAction,
   syncRemoteNodeAddress,
   syncRemoteNodes,
@@ -1762,7 +1761,7 @@ function CoreControlPanel({ server, sessionToken, compact = false }: { server: R
   }, [load]);
 
   const status = mode?.intent.repair_status || (mode?.configured ? "drift_detected" : "disabled");
-  const desired = mode?.intent.desired_core_mode || "external";
+  const desired = mode?.intent.desired_core_mode || server.xray_mode || "external";
   const currentHelper = agent?.status?.helper?.version || "";
   const currentCore = agent?.status?.core?.version || "";
   const helperInstalled = Boolean(agent?.status?.helper?.installed);
@@ -1781,24 +1780,6 @@ function CoreControlPanel({ server, sessionToken, compact = false }: { server: R
   const coreProgress = agent?.status?.update?.component === "core" ? agent.status.update : undefined;
   const helperUpgradeState = componentUpgradeState(helperProgress, helperReportStale, helperPending, helperResult, helperUpdate);
   const coreUpgradeState = componentUpgradeState(coreProgress, helperReportStale, corePending, coreResult, coreUpdate);
-
-  async function changeMode(next: "external" | "embedded") {
-    if (next === desired && mode?.configured) return;
-    const prompt = next === "external"
-      ? "将启用 Custom Fork Core，并切换为 External 单 Core。失败时会回滚到切换前业务状态。"
-      : "切换为官方 Core 后，将停止 Fork Core 接管并恢复 Embedded；系统不会再自动拉回 External，直到再次手动选择。";
-    if (!window.confirm(prompt)) return;
-    setBusy("mode");
-    setError("");
-    try {
-      setMode(await setCoreMode(sessionToken, server.id, next));
-      window.setTimeout(() => void load(), 1000);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "核心控制方式切换失败");
-    } finally {
-      setBusy("");
-    }
-  }
 
   async function upgrade(component: "helper" | "core") {
     const artifact = component === "helper" ? release?.release.helper_artifacts?.[architecture] : release?.release.core_artifacts?.[architecture];
@@ -1821,10 +1802,10 @@ function CoreControlPanel({ server, sessionToken, compact = false }: { server: R
 
   return (
     <section className={`core-control-panel${compact ? " compact" : ""}`}>
-      <div className="core-control-heading"><div><h4>核心控制</h4><p>长期 desired state；普通服务器保存不会修改此设置。</p></div><button type="button" onClick={() => void load()} aria-label="刷新核心控制状态"><RefreshCw /></button></div>
-      <label className="agent-field"><span>核心控制方式</span><select value={desired} disabled={busy === "mode"} onChange={(event) => void changeMode(event.target.value as "external" | "embedded")}><option value="external">Fork Core（External）</option><option value="embedded">官方 Core（Embedded）</option></select></label>
+      <div className="core-control-heading"><div><h4>Core 与生命周期</h4><p>Fork 能力与正式 xray_mode 分离；生命周期始终跟随正式控制器。</p></div><button type="button" onClick={() => void load()} aria-label="刷新核心控制状态"><RefreshCw /></button></div>
+      <label className="agent-field"><span>正式生命周期模式</span><input value={desired === "external" ? "External" : "Embedded"} readOnly /></label>
       <div className="core-control-state-grid">
-        <InfoBlock label="期望模式" value={desired === "external" ? "External" : "Embedded"} />
+        <InfoBlock label="跟随模式" value={desired === "external" ? "External" : "Embedded"} />
         <InfoBlock label="主控记录" value={mode?.controller_mode || "--"} />
         <InfoBlock label="当前运行" value={mode?.current_mode || "--"} />
         <InfoBlock label="状态" value={status === "healthy" ? "正常" : status === "repairing" ? "模式漂移，正在自动恢复" : status === "degraded" ? "自动恢复失败" : status === "disabled" ? "尚未配置" : "检测到模式漂移"} />
@@ -1886,7 +1867,7 @@ function HelperInstallDialog({ server, sessionToken, connectionMetric }: { serve
     setBusy(true);
     setError("");
     try {
-      const response = await createHelperInstallToken(sessionToken, server.id);
+      const response = await createHelperInstallToken(sessionToken, server.id, server.xray_mode === "external" ? "takeover" : "helper-only");
       setInstall(response);
     } catch (err) {
       setError(err instanceof Error ? err.message : "生成安装命令失败");
@@ -1911,7 +1892,7 @@ function HelperInstallDialog({ server, sessionToken, connectionMetric }: { serve
       <CoreControlPanel server={server} sessionToken={sessionToken} />
       <div className="service-dialog-section">
         <h4>安装 Connections Helper</h4>
-        <p>该命令只绑定当前服务器：{server.name}。安装链接短期有效且只能使用一次；默认事务式切换为 external 单 Core，失败自动恢复 embedded。</p>
+        <p>该命令只绑定当前服务器：{server.name}。安装链接短期有效且只能使用一次；当前正式模式为 {server.xray_mode === "external" ? "external，将保持 external 单 Core ownership" : "embedded，将保持内联生命周期且不会自动切换 external"}。</p>
         <button className="helper-generate-button" type="button" disabled={busy} onClick={() => void generate()}>
           {busy ? "生成中..." : "生成安装命令"}
         </button>

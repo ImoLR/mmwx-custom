@@ -175,7 +175,7 @@ func (s *helperState) saveLocked() error {
 }
 
 func (s *helperState) createInstallToken(officialServerID string) (helperInstallToken, string, error) {
-	return s.createInstallTokenForMode(officialServerID, "takeover")
+	return s.createInstallTokenForMode(officialServerID, "helper-only")
 }
 
 func (s *helperState) createInstallTokenForMode(officialServerID, installMode string) (helperInstallToken, string, error) {
@@ -472,16 +472,21 @@ func (a *app) createHelperInstallTokenHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 	installMode := strings.TrimSpace(req.Mode)
-	if installMode == "" {
-		installMode = "takeover"
-	}
-	if installMode != "takeover" && installMode != "helper-only" {
+	if installMode != "" && installMode != "takeover" && installMode != "helper-only" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid install mode"})
 		return
 	}
 	if err := a.authorizeOperatorServerRequest(r, serverID); err != nil {
 		writeOperatorAuthorizationError(w, err)
 		return
+	}
+	if installMode == "" {
+		installMode = "helper-only"
+		if store, ok := a.adminStore.(remoteServerModeStore); ok && store != nil {
+			if runtime, err := store.RemoteServerRuntime(r.Context(), serverID); err == nil && runtime.XrayMode == "external" {
+				installMode = "takeover"
+			}
+		}
 	}
 	record, installToken, err := a.helperState.createInstallTokenForMode(serverID, installMode)
 	if err != nil {
