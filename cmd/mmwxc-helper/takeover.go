@@ -18,6 +18,7 @@ const takeoverEndpoint = "/api/custom/agent/takeover"
 
 type takeoverRuntime struct {
 	XrayMode      string     `json:"xray_mode"`
+	XrayRunning   bool       `json:"xray_running"`
 	Status        string     `json:"status"`
 	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
 }
@@ -269,15 +270,7 @@ func waitEmbeddedTakeoverHealthy(ctx context.Context, client *http.Client, cfg c
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		runtime, err := requestTakeoverRuntime(ctx, client, cfg, "")
-		ports, _ := officialInboundPorts()
-		owners, _ := listeningPIDsForPorts(ports)
-		allListening := len(ports) > 0
-		for _, port := range ports {
-			if len(owners[port]) == 0 {
-				allListening = false
-			}
-		}
-		if err == nil && runtime.XrayMode == "embedded" && runtime.Status == "connected" && serviceActive(ctx, "mmw-agent.service") && !serviceActive(ctx, "xray.service") && !serviceActive(ctx, coreServiceName) && allListening {
+		if err == nil && runtime.XrayMode == "embedded" && runtime.XrayRunning && runtime.Status == "connected" && serviceActive(ctx, "mmw-agent.service") && !serviceActive(ctx, "xray.service") && !serviceActive(ctx, coreServiceName) {
 			return nil
 		}
 		select {

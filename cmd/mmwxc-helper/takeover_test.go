@@ -2,11 +2,39 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestEmbeddedHealthUsesControllerRuntimeInsteadOfTCPOnlyProbe(t *testing.T) {
+	var runtime takeoverRuntime
+	if err := json.Unmarshal([]byte(`{"xray_mode":"embedded","xray_running":true,"status":"connected"}`), &runtime); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.XrayRunning || runtime.XrayMode != "embedded" {
+		t.Fatalf("runtime=%#v", runtime)
+	}
+	source, err := os.ReadFile("takeover.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	start := strings.Index(text, "func waitEmbeddedTakeoverHealthy")
+	if start < 0 {
+		t.Fatal("embedded health function not found")
+	}
+	end := strings.Index(text[start:], "func readAgentXrayMode")
+	if end < 0 {
+		t.Fatal("embedded health function not found")
+	}
+	body := text[start : start+end]
+	if !strings.Contains(body, "runtime.XrayRunning") || strings.Contains(body, "officialInboundPorts") {
+		t.Fatalf("embedded health still depends on TCP-only probing: %s", body)
+	}
+}
 
 func TestBootstrapExternalOwnershipStartsOnceWithoutRestartLoop(t *testing.T) {
 	var calls []string

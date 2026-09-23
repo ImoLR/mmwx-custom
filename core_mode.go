@@ -154,6 +154,7 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		intent.RepairStatus = "healthy"
 		intent.RepairAttempts = 0
 		intent.LastRepairError = ""
+		intent.LastRepairReason = "formal lifecycle mode healthy"
 		intent.NextRepairAt = time.Time{}
 		intent.UpdatedAt = now
 		s.data.CoreModeIntents[serverID] = intent

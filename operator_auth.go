@@ -39,6 +39,7 @@ type remoteServerModeStore interface {
 
 type remoteServerRuntime struct {
 	XrayMode      string     `json:"xray_mode"`
+	XrayRunning   bool       `json:"xray_running"`
 	Status        string     `json:"status"`
 	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
 }
@@ -147,7 +148,7 @@ func (s *postgresAdminSessionStore) RemoteServerRuntime(ctx context.Context, ser
 	defer cancel()
 	var runtime remoteServerRuntime
 	var heartbeat sql.NullTime
-	err = s.db.QueryRowContext(ctx, `SELECT COALESCE(xray_mode, 'external'), COALESCE(status, ''), last_heartbeat FROM remote_servers WHERE id = $1`, parsed).Scan(&runtime.XrayMode, &runtime.Status, &heartbeat)
+	err = s.db.QueryRowContext(ctx, `SELECT COALESCE(xray_mode, 'external'), COALESCE(xray_running, 0) <> 0, COALESCE(status, ''), last_heartbeat FROM remote_servers WHERE id = $1`, parsed).Scan(&runtime.XrayMode, &runtime.XrayRunning, &runtime.Status, &heartbeat)
 	if errors.Is(err, sql.ErrNoRows) {
 		return remoteServerRuntime{}, errOperatorServerNotFound
 	}
