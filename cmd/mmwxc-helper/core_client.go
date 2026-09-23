@@ -46,7 +46,7 @@ func (client *coreClient) snapshot(ctx context.Context) (coreSnapshotResponse, e
 	if err := decoder.Decode(&snapshot); err != nil {
 		return coreSnapshotResponse{}, fmt.Errorf("decode core snapshot: %w", err)
 	}
-	if snapshot.Version != 1 && snapshot.Version != 2 && snapshot.Version != 3 {
+	if snapshot.Version != 1 && snapshot.Version != 2 && snapshot.Version != 3 && snapshot.Version != 4 {
 		return coreSnapshotResponse{}, fmt.Errorf("unsupported core interface version %d", snapshot.Version)
 	}
 	return snapshot, nil

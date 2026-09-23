@@ -124,12 +124,14 @@ Helper and Core upgrades post authenticated phase transitions (`dispatching`,
 terminal success/failure/rollback state) to the Custom controller. A normal
 Helper heartbeat preserves the most recent phase instead of erasing it.
 
-Core API v3 registers supported data-plane inbounds and their configured user
+Core API v4 registers supported data-plane inbounds and their configured user
 identities when Xray instantiates the configuration, so zero-traffic users are
-reported immediately. It also enforces deterministic management-user and port
-limits without changing the identity-level semantics. Internal control-plane
-handlers such as the local Xray API inbound are intentionally excluded from
-connection statistics.
+reported immediately. Inbound admission runs after protocol authentication and
+before routing, with server, management-user, and port logical-connection limits
+plus management-user and port online-IP limits. Identity remains an attribution
+key rather than an administrator limit layer. Existing outbound controls are
+unchanged. Internal control-plane handlers such as the local Xray API inbound
+are intentionally excluded from connection statistics.
 
 The `external.ownership.arm` management step installs that drop-in and releases
 the old Custom service ports before the controller asks the official Agent to

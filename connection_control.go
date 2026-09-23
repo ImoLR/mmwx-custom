@@ -32,6 +32,8 @@ type serverUserConnectionSettings struct {
 
 type serverPortConnectionSettings struct {
 	InboundTag                 string `json:"inbound_tag"`
+	MaxInboundConnections      *int64 `json:"max_inbound_connections"`
+	MaxInboundOnlineIPs        *int   `json:"max_inbound_online_ips"`
 	MaxOutboundTCPActive       *int64 `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond *int   `json:"max_outbound_tcp_new_per_second"`
 }
@@ -41,6 +43,7 @@ type serverConnectionSettings struct {
 	OnlineIPGracePeriodSeconds     int64                          `json:"online_ip_grace_period_seconds"`
 	GlobalTotalLimitEnabled        bool                           `json:"global_total_limit_enabled"`
 	MaxGlobalTotalConnections      *int64                         `json:"max_global_total_connections"`
+	MaxGlobalInboundConnections    *int64                         `json:"max_global_inbound_connections"`
 	Users                          []serverUserConnectionSettings `json:"users"`
 	Ports                          []serverPortConnectionSettings `json:"ports"`
 	ManagementUsers                []serverManagementUserSettings `json:"management_users"`
@@ -94,6 +97,7 @@ type serverProxyUserConnections struct {
 	InboundPort                    uint32                   `json:"inbound_port,omitempty"`
 	CurrentTotal                   int64                    `json:"current_total"`
 	InboundActive                  int64                    `json:"inbound_active"`
+	InboundCurrent                 int64                    `json:"inbound_current"`
 	InboundTCP                     serverTCPStateCounts     `json:"inbound_tcp"`
 	InboundOnlineIPs               []serverOnlineIP         `json:"inbound_online_ips"`
 	OutboundActive                 int64                    `json:"outbound_active"`
@@ -110,21 +114,31 @@ type serverProxyUserConnections struct {
 	RejectedPortNewRateLimit       uint64                   `json:"rejected_port_new_rate_limit"`
 	RejectedOnlineIPLimit          uint64                   `json:"rejected_online_ip_limit"`
 	RejectedGlobalTotalLimit       uint64                   `json:"rejected_global_total_limit"`
+	RejectedUserInboundLimit       uint64                   `json:"rejected_user_inbound_limit"`
+	RejectedPortInboundLimit       uint64                   `json:"rejected_port_inbound_limit"`
+	RejectedUserOnlineIPLimit      uint64                   `json:"rejected_user_online_ip_limit"`
+	RejectedPortOnlineIPLimit      uint64                   `json:"rejected_port_online_ip_limit"`
+	RejectedGlobalInboundLimit     uint64                   `json:"rejected_global_inbound_limit"`
 	MaxInboundOnlineIPs            *int                     `json:"max_inbound_online_ips"`
 	MaxTotalConnections            *int64                   `json:"max_total_connections"`
 	MaxOutboundTCPActive           *int64                   `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond     *int                     `json:"max_outbound_tcp_new_per_second"`
 	MaxPortOutboundTCPActive       *int64                   `json:"max_port_outbound_tcp_active"`
 	MaxPortOutboundTCPNewPerSecond *int                     `json:"max_port_outbound_tcp_new_per_second"`
+	MaxPortInboundConnections      *int64                   `json:"max_port_inbound_connections"`
+	MaxPortInboundOnlineIPs        *int                     `json:"max_port_inbound_online_ips"`
 	CloseWaitTimeoutSeconds        *int64                   `json:"close_wait_timeout_seconds"`
 	Source                         string                   `json:"source"`
 	ManagementGroup                string                   `json:"management_group,omitempty"`
 }
 
 type serverGlobalConnections struct {
-	CurrentTotal             int64  `json:"current_total"`
-	RejectedGlobalTotalLimit uint64 `json:"rejected_global_total_limit"`
-	MaxTotal                 *int64 `json:"max_total"`
+	CurrentTotal               int64  `json:"current_total"`
+	RejectedGlobalTotalLimit   uint64 `json:"rejected_global_total_limit"`
+	MaxTotal                   *int64 `json:"max_total"`
+	CurrentInbound             int64  `json:"current_inbound"`
+	MaxInbound                 *int64 `json:"max_inbound"`
+	RejectedGlobalInboundLimit uint64 `json:"rejected_global_inbound_limit"`
 }
 
 type serverCoreConnectionStatus struct {
@@ -198,6 +212,9 @@ func validateServerConnectionSettings(settings serverConnectionSettings) error {
 	if settings.MaxGlobalTotalConnections != nil && *settings.MaxGlobalTotalConnections <= 0 {
 		return errors.New("max_global_total_connections must be positive when set")
 	}
+	if settings.MaxGlobalInboundConnections != nil && *settings.MaxGlobalInboundConnections < 0 {
+		return errors.New("max_global_inbound_connections must be non-negative")
+	}
 	if settings.GlobalTotalLimitEnabled && settings.MaxGlobalTotalConnections == nil {
 		return errors.New("max_global_total_connections is required when the global limit is enabled")
 	}
@@ -210,18 +227,6 @@ func validateServerConnectionSettings(settings serverConnectionSettings) error {
 			return fmt.Errorf("duplicate connection settings for %s/%s", user.Identity.InboundTag, user.Identity.User)
 		}
 		seen[user.Identity] = struct{}{}
-		if user.MaxInboundOnlineIPs != nil && *user.MaxInboundOnlineIPs <= 0 {
-			return errors.New("max_inbound_online_ips must be positive when set")
-		}
-		if user.MaxTotalConnections != nil && *user.MaxTotalConnections <= 0 {
-			return errors.New("max_total_connections must be positive when set")
-		}
-		if user.MaxOutboundTCPActive != nil && *user.MaxOutboundTCPActive <= 0 {
-			return errors.New("max_outbound_tcp_active must be positive when set")
-		}
-		if user.MaxOutboundTCPNewPerSecond != nil && *user.MaxOutboundTCPNewPerSecond <= 0 {
-			return errors.New("max_outbound_tcp_new_per_second must be positive when set")
-		}
 		if user.CloseWaitTimeoutSeconds != nil && *user.CloseWaitTimeoutSeconds < 0 {
 			return errors.New("close_wait_timeout_seconds must be non-negative")
 		}
@@ -236,6 +241,12 @@ func validateServerConnectionSettings(settings serverConnectionSettings) error {
 			return fmt.Errorf("duplicate management user settings for %s", username)
 		}
 		seenManagement[username] = struct{}{}
+		if user.MaxInboundConnections != nil && *user.MaxInboundConnections < 0 {
+			return errors.New("management max_inbound_connections must be non-negative")
+		}
+		if user.MaxInboundOnlineIPs != nil && *user.MaxInboundOnlineIPs < 0 {
+			return errors.New("management max_inbound_online_ips must be non-negative")
+		}
 		if user.MaxOutboundTCPActive != nil && *user.MaxOutboundTCPActive <= 0 {
 			return errors.New("management max_outbound_tcp_active must be positive when set")
 		}
@@ -253,6 +264,12 @@ func validateServerConnectionSettings(settings serverConnectionSettings) error {
 			return fmt.Errorf("duplicate port settings for %s", tag)
 		}
 		seenPorts[tag] = struct{}{}
+		if port.MaxInboundConnections != nil && *port.MaxInboundConnections < 0 {
+			return errors.New("port max_inbound_connections must be non-negative")
+		}
+		if port.MaxInboundOnlineIPs != nil && *port.MaxInboundOnlineIPs < 0 {
+			return errors.New("port max_inbound_online_ips must be non-negative")
+		}
 		if port.MaxOutboundTCPActive != nil && *port.MaxOutboundTCPActive <= 0 {
 			return errors.New("port max_outbound_tcp_active must be positive when set")
 		}
@@ -352,7 +369,7 @@ func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
 	if len(snapshot.Inbounds) > 10000 || len(snapshot.ProxyUsers) > 10000 {
 		return errors.New("too many connection records")
 	}
-	if snapshot.Global.CurrentTotal < 0 {
+	if snapshot.Global.CurrentTotal < 0 || snapshot.Global.CurrentInbound < 0 {
 		return errors.New("negative global connection count")
 	}
 	for _, inbound := range snapshot.Inbounds {
@@ -369,7 +386,7 @@ func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
 		}
 	}
 	for _, user := range snapshot.ProxyUsers {
-		if user.CurrentTotal < 0 || user.InboundActive < 0 || user.OutboundActive < 0 || user.OutboundPending < 0 || user.OutboundNewRate < 0 {
+		if user.CurrentTotal < 0 || user.InboundActive < 0 || user.InboundCurrent < 0 || user.OutboundActive < 0 || user.OutboundPending < 0 || user.OutboundNewRate < 0 {
 			return errors.New("negative proxy user connection count")
 		}
 		if err := validateTCPStateCounts(user.InboundTCP, "proxy user inbound"); err != nil {
@@ -380,7 +397,7 @@ func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
 		}
 	}
 	for _, group := range snapshot.ManagementGroups {
-		if strings.TrimSpace(group.Username) == "" || group.CurrentTotal < 0 || group.InboundActive < 0 || group.OutboundActive < 0 || group.OutboundPending < 0 || group.OutboundNewRate < 0 {
+		if strings.TrimSpace(group.Username) == "" || group.CurrentTotal < 0 || group.InboundActive < 0 || group.InboundCurrent < 0 || group.OutboundActive < 0 || group.OutboundPending < 0 || group.OutboundNewRate < 0 {
 			return errors.New("invalid management group connection count")
 		}
 		if err := validateTCPStateCounts(group.InboundTCP, "management group inbound"); err != nil {

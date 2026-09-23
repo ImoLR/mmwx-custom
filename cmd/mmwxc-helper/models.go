@@ -29,6 +29,7 @@ type coreUserSnapshot struct {
 	OutboundTag                    string         `json:"outbound_tag,omitempty"`
 	Attributed                     bool           `json:"attributed"`
 	InboundActive                  int64          `json:"inbound_active"`
+	InboundCurrent                 int64          `json:"inbound_current"`
 	InboundTotal                   uint64         `json:"inbound_total"`
 	CurrentTotal                   int64          `json:"current_total"`
 	InboundTCP                     tcpStateCounts `json:"inbound_tcp"`
@@ -47,12 +48,19 @@ type coreUserSnapshot struct {
 	RejectedPortNewRateLimit       uint64         `json:"rejected_port_new_rate_limit"`
 	RejectedOnlineIPLimit          uint64         `json:"rejected_online_ip_limit"`
 	RejectedGlobalTotalLimit       uint64         `json:"rejected_global_total_limit"`
+	RejectedUserInboundLimit       uint64         `json:"rejected_user_inbound_limit"`
+	RejectedPortInboundLimit       uint64         `json:"rejected_port_inbound_limit"`
+	RejectedUserOnlineIPLimit      uint64         `json:"rejected_user_online_ip_limit"`
+	RejectedPortOnlineIPLimit      uint64         `json:"rejected_port_online_ip_limit"`
+	RejectedGlobalInboundLimit     uint64         `json:"rejected_global_inbound_limit"`
 	MaxInboundOnlineIPs            *int           `json:"max_inbound_online_ips"`
 	MaxTotalConnections            *int64         `json:"max_total_connections"`
 	MaxOutboundTCPActive           *int64         `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond     *int           `json:"max_outbound_tcp_new_per_second"`
 	MaxPortOutboundTCPActive       *int64         `json:"max_port_outbound_tcp_active"`
 	MaxPortOutboundTCPNewPerSecond *int           `json:"max_port_outbound_tcp_new_per_second"`
+	MaxPortInboundConnections      *int64         `json:"max_port_inbound_connections"`
+	MaxPortInboundOnlineIPs        *int           `json:"max_port_inbound_online_ips"`
 	CloseWaitTimeoutSeconds        *int64         `json:"close_wait_timeout_seconds"`
 	ManagementGroup                string         `json:"management_group,omitempty"`
 }
@@ -74,15 +82,19 @@ type coreSnapshotResponse struct {
 }
 
 type coreGlobalSnapshot struct {
-	CurrentTotal             int64  `json:"current_total"`
-	MaxTotal                 *int64 `json:"max_total"`
-	RejectedGlobalTotalLimit uint64 `json:"rejected_global_total_limit"`
+	CurrentTotal               int64  `json:"current_total"`
+	MaxTotal                   *int64 `json:"max_total"`
+	CurrentInbound             int64  `json:"current_inbound"`
+	MaxInbound                 *int64 `json:"max_inbound"`
+	RejectedGlobalTotalLimit   uint64 `json:"rejected_global_total_limit"`
+	RejectedGlobalInboundLimit uint64 `json:"rejected_global_inbound_limit"`
 }
 
 type managementGroupSnapshot struct {
 	Username                   string         `json:"group"`
 	CurrentTotal               int64          `json:"current_total"`
 	InboundActive              int64          `json:"inbound_active"`
+	InboundCurrent             int64          `json:"inbound_current"`
 	InboundTCP                 tcpStateCounts `json:"inbound_tcp"`
 	InboundOnlineIPs           []onlineIP     `json:"inbound_online_ips"`
 	OutboundActive             int64          `json:"outbound_active"`
@@ -97,6 +109,13 @@ type managementGroupSnapshot struct {
 	RejectedPortNewRateLimit   uint64         `json:"rejected_port_new_rate_limit"`
 	RejectedOnlineIPLimit      uint64         `json:"rejected_online_ip_limit"`
 	RejectedGlobalTotalLimit   uint64         `json:"rejected_global_total_limit"`
+	RejectedUserInboundLimit   uint64         `json:"rejected_user_inbound_limit"`
+	RejectedPortInboundLimit   uint64         `json:"rejected_port_inbound_limit"`
+	RejectedUserOnlineIPLimit  uint64         `json:"rejected_user_online_ip_limit"`
+	RejectedPortOnlineIPLimit  uint64         `json:"rejected_port_online_ip_limit"`
+	RejectedGlobalInboundLimit uint64         `json:"rejected_global_inbound_limit"`
+	MaxInboundConnections      *int64         `json:"max_inbound_connections"`
+	MaxInboundOnlineIPs        *int           `json:"max_inbound_online_ips"`
 	MaxOutboundTCPActive       *int64         `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond *int           `json:"max_outbound_tcp_new_per_second"`
 }
@@ -115,6 +134,7 @@ type connectionSettings struct {
 	OnlineIPGracePeriodSeconds     int64                    `json:"online_ip_grace_period_seconds"`
 	GlobalTotalLimitEnabled        bool                     `json:"global_total_limit_enabled"`
 	MaxGlobalTotalConnections      *int64                   `json:"max_global_total_connections"`
+	MaxGlobalInboundConnections    *int64                   `json:"max_global_inbound_connections"`
 	Users                          []userConnectionSettings `json:"users"`
 	Ports                          []portConnectionSettings `json:"ports"`
 	ManagementUsers                []managementUserSettings `json:"management_users"`
@@ -123,12 +143,16 @@ type connectionSettings struct {
 
 type portConnectionSettings struct {
 	InboundTag                 string `json:"inbound_tag"`
+	MaxInboundConnections      *int64 `json:"max_inbound_connections"`
+	MaxInboundOnlineIPs        *int   `json:"max_inbound_online_ips"`
 	MaxOutboundTCPActive       *int64 `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond *int   `json:"max_outbound_tcp_new_per_second"`
 }
 
 type managementUserSettings struct {
 	Username                   string `json:"username"`
+	MaxInboundConnections      *int64 `json:"max_inbound_connections"`
+	MaxInboundOnlineIPs        *int   `json:"max_inbound_online_ips"`
 	MaxOutboundTCPActive       *int64 `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond *int   `json:"max_outbound_tcp_new_per_second"`
 }
@@ -142,6 +166,7 @@ type coreConfig struct {
 	DefaultCloseWaitTimeoutSeconds *int64                   `json:"default_close_wait_timeout_seconds"`
 	OnlineIPGracePeriodSeconds     int64                    `json:"online_ip_grace_period_seconds"`
 	MaxGlobalTotalConnections      *int64                   `json:"max_global_total_connections"`
+	MaxGlobalInboundConnections    *int64                   `json:"max_global_inbound_connections"`
 	Limits                         []coreLimit              `json:"limits"`
 	PortLimits                     []portConnectionSettings `json:"port_limits"`
 	ManagementMappings             []managementMapping      `json:"management_mappings"`
@@ -157,6 +182,8 @@ type legacyCoreConfig struct {
 
 type coreManagementLimit struct {
 	Group                      string `json:"group"`
+	MaxInboundConnections      *int64 `json:"max_inbound_connections"`
+	MaxInboundOnlineIPs        *int   `json:"max_inbound_online_ips"`
 	MaxOutboundTCPActive       *int64 `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond *int   `json:"max_outbound_tcp_new_per_second"`
 }
@@ -201,6 +228,7 @@ type proxyUserSnapshot struct {
 	User                           string         `json:"user"`
 	InboundPort                    uint32         `json:"inbound_port,omitempty"`
 	InboundActive                  int64          `json:"inbound_active"`
+	InboundCurrent                 int64          `json:"inbound_current"`
 	CurrentTotal                   int64          `json:"current_total"`
 	InboundTCP                     tcpStateCounts `json:"inbound_tcp"`
 	InboundOnlineIPs               []onlineIP     `json:"inbound_online_ips"`
@@ -218,12 +246,19 @@ type proxyUserSnapshot struct {
 	RejectedPortNewRateLimit       uint64         `json:"rejected_port_new_rate_limit"`
 	RejectedOnlineIPLimit          uint64         `json:"rejected_online_ip_limit"`
 	RejectedGlobalTotalLimit       uint64         `json:"rejected_global_total_limit"`
+	RejectedUserInboundLimit       uint64         `json:"rejected_user_inbound_limit"`
+	RejectedPortInboundLimit       uint64         `json:"rejected_port_inbound_limit"`
+	RejectedUserOnlineIPLimit      uint64         `json:"rejected_user_online_ip_limit"`
+	RejectedPortOnlineIPLimit      uint64         `json:"rejected_port_online_ip_limit"`
+	RejectedGlobalInboundLimit     uint64         `json:"rejected_global_inbound_limit"`
 	MaxInboundOnlineIPs            *int           `json:"max_inbound_online_ips"`
 	MaxTotalConnections            *int64         `json:"max_total_connections"`
 	MaxOutboundTCPActive           *int64         `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond     *int           `json:"max_outbound_tcp_new_per_second"`
 	MaxPortOutboundTCPActive       *int64         `json:"max_port_outbound_tcp_active"`
 	MaxPortOutboundTCPNewPerSecond *int           `json:"max_port_outbound_tcp_new_per_second"`
+	MaxPortInboundConnections      *int64         `json:"max_port_inbound_connections"`
+	MaxPortInboundOnlineIPs        *int           `json:"max_port_inbound_online_ips"`
 	CloseWaitTimeoutSeconds        *int64         `json:"close_wait_timeout_seconds"`
 	Source                         string         `json:"source"`
 	ManagementGroup                string         `json:"management_group,omitempty"`
@@ -270,26 +305,21 @@ func (settings connectionSettings) coreConfig() coreConfig {
 	config := coreConfig{
 		DefaultCloseWaitTimeoutSeconds: settings.DefaultCloseWaitTimeoutSeconds,
 		OnlineIPGracePeriodSeconds:     settings.OnlineIPGracePeriodSeconds,
+		MaxGlobalInboundConnections:    settings.MaxGlobalInboundConnections,
 		PortLimits:                     append([]portConnectionSettings(nil), settings.Ports...),
 		ManagementMappings:             append([]managementMapping(nil), settings.ManagementMappings...),
 	}
 	for _, user := range settings.ManagementUsers {
 		config.ManagementLimits = append(config.ManagementLimits, coreManagementLimit{
-			Group: user.Username, MaxOutboundTCPActive: user.MaxOutboundTCPActive, MaxOutboundTCPNewPerSecond: user.MaxOutboundTCPNewPerSecond,
+			Group: user.Username, MaxInboundConnections: user.MaxInboundConnections, MaxInboundOnlineIPs: user.MaxInboundOnlineIPs,
+			MaxOutboundTCPActive: user.MaxOutboundTCPActive, MaxOutboundTCPNewPerSecond: user.MaxOutboundTCPNewPerSecond,
 		})
 	}
 	if settings.GlobalTotalLimitEnabled {
 		config.MaxGlobalTotalConnections = settings.MaxGlobalTotalConnections
 	}
 	for _, user := range settings.Users {
-		config.Limits = append(config.Limits, coreLimit{
-			Identity:                   user.Identity,
-			MaxInboundOnlineIPs:        user.MaxInboundOnlineIPs,
-			MaxTotalConnections:        user.MaxTotalConnections,
-			MaxOutboundTCPActive:       user.MaxOutboundTCPActive,
-			MaxOutboundTCPNewPerSecond: user.MaxOutboundTCPNewPerSecond,
-			CloseWaitTimeoutSeconds:    user.CloseWaitTimeoutSeconds,
-		})
+		config.Limits = append(config.Limits, coreLimit{Identity: user.Identity, CloseWaitTimeoutSeconds: user.CloseWaitTimeoutSeconds})
 	}
 	return config
 }

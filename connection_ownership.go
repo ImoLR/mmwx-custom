@@ -36,6 +36,8 @@ type connectionOwnershipStore interface {
 
 type serverManagementUserSettings struct {
 	Username                   string `json:"username"`
+	MaxInboundConnections      *int64 `json:"max_inbound_connections"`
+	MaxInboundOnlineIPs        *int   `json:"max_inbound_online_ips"`
 	MaxOutboundTCPActive       *int64 `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond *int   `json:"max_outbound_tcp_new_per_second"`
 }
@@ -49,6 +51,7 @@ type serverManagementGroupConnections struct {
 	Username                   string               `json:"group"`
 	CurrentTotal               int64                `json:"current_total"`
 	InboundActive              int64                `json:"inbound_active"`
+	InboundCurrent             int64                `json:"inbound_current"`
 	InboundTCP                 serverTCPStateCounts `json:"inbound_tcp"`
 	InboundOnlineIPs           []serverOnlineIP     `json:"inbound_online_ips"`
 	OutboundActive             int64                `json:"outbound_active"`
@@ -63,6 +66,13 @@ type serverManagementGroupConnections struct {
 	RejectedPortNewRateLimit   uint64               `json:"rejected_port_new_rate_limit"`
 	RejectedOnlineIPLimit      uint64               `json:"rejected_online_ip_limit"`
 	RejectedGlobalTotalLimit   uint64               `json:"rejected_global_total_limit"`
+	RejectedUserInboundLimit   uint64               `json:"rejected_user_inbound_limit"`
+	RejectedPortInboundLimit   uint64               `json:"rejected_port_inbound_limit"`
+	RejectedUserOnlineIPLimit  uint64               `json:"rejected_user_online_ip_limit"`
+	RejectedPortOnlineIPLimit  uint64               `json:"rejected_port_online_ip_limit"`
+	RejectedGlobalInboundLimit uint64               `json:"rejected_global_inbound_limit"`
+	MaxInboundConnections      *int64               `json:"max_inbound_connections"`
+	MaxInboundOnlineIPs        *int                 `json:"max_inbound_online_ips"`
 	MaxOutboundTCPActive       *int64               `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond *int                 `json:"max_outbound_tcp_new_per_second"`
 }
@@ -199,6 +209,12 @@ func buildManagementView(snapshot serverDetailedConnectionSnapshot, settings ser
 				limit.Username = relation.ManagementUsername
 				aggregate := groupRuntime[relation.ManagementUsername]
 				aggregate.Username = relation.ManagementUsername
+				if aggregate.MaxInboundConnections == nil {
+					aggregate.MaxInboundConnections = limit.MaxInboundConnections
+				}
+				if aggregate.MaxInboundOnlineIPs == nil {
+					aggregate.MaxInboundOnlineIPs = limit.MaxInboundOnlineIPs
+				}
 				if aggregate.MaxOutboundTCPActive == nil {
 					aggregate.MaxOutboundTCPActive = limit.MaxOutboundTCPActive
 				}
@@ -551,6 +567,7 @@ func emptyServerProxyUserConnections(tag string, port uint32) serverProxyUserCon
 func addProxyUserConnections(target *serverProxyUserConnections, source serverProxyUserConnections) {
 	target.CurrentTotal += source.CurrentTotal
 	target.InboundActive += source.InboundActive
+	target.InboundCurrent += source.InboundCurrent
 	target.OutboundActive += source.OutboundActive
 	target.OutboundPending += source.OutboundPending
 	target.OutboundNewRate += source.OutboundNewRate
@@ -564,6 +581,11 @@ func addProxyUserConnections(target *serverProxyUserConnections, source serverPr
 	target.RejectedPortNewRateLimit += source.RejectedPortNewRateLimit
 	target.RejectedOnlineIPLimit += source.RejectedOnlineIPLimit
 	target.RejectedGlobalTotalLimit += source.RejectedGlobalTotalLimit
+	target.RejectedUserInboundLimit += source.RejectedUserInboundLimit
+	target.RejectedPortInboundLimit += source.RejectedPortInboundLimit
+	target.RejectedUserOnlineIPLimit += source.RejectedUserOnlineIPLimit
+	target.RejectedPortOnlineIPLimit += source.RejectedPortOnlineIPLimit
+	target.RejectedGlobalInboundLimit += source.RejectedGlobalInboundLimit
 	addServerTCPCounts(&target.InboundTCP, source.InboundTCP)
 	addServerTCPCounts(&target.OutboundTCP, source.OutboundTCP)
 	ipCounts := make(map[string]int64)

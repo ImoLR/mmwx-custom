@@ -24,7 +24,7 @@ const (
 	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
 	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
 	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
-	helperVersion        = "v0.6.4"
+	helperVersion        = "v0.6.5"
 )
 
 type config struct {
@@ -210,9 +210,9 @@ func main() {
 
 func applyNftables(manager *nftablesManager, snapshot detailedConnectionSnapshot, settings connectionSettings) {
 	if snapshot.Core.Version >= 2 {
-		// Interface v2 enforces authenticated per-user online-IP limits inside
-		// the Core so every rejection has an exact identity and reason. Remove
-		// the legacy per-port nftables approximation instead of double-limiting.
+		// Modern Core interfaces enforce authenticated online-IP limits inside
+		// the Core. Remove the legacy nftables approximation instead of
+		// double-limiting; API v4 applies management-user and port limits.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := manager.apply(ctx, nil, 0); err != nil {

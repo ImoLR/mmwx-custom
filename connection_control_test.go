@@ -21,8 +21,9 @@ func TestValidateServerConnectionSettings(t *testing.T) {
 		MaxOutboundTCPActive:       int64Pointer(200),
 		MaxOutboundTCPNewPerSecond: intPointer(30),
 	}}
-	valid.ManagementUsers = []serverManagementUserSettings{{Username: "ken", MaxOutboundTCPActive: int64Pointer(100)}}
-	valid.Ports = []serverPortConnectionSettings{{InboundTag: "in-a", MaxOutboundTCPActive: int64Pointer(30)}}
+	valid.MaxGlobalInboundConnections = int64Pointer(1000)
+	valid.ManagementUsers = []serverManagementUserSettings{{Username: "ken", MaxInboundConnections: int64Pointer(100), MaxInboundOnlineIPs: intPointer(3), MaxOutboundTCPActive: int64Pointer(100)}}
+	valid.Ports = []serverPortConnectionSettings{{InboundTag: "in-a", MaxInboundConnections: int64Pointer(60), MaxInboundOnlineIPs: intPointer(2), MaxOutboundTCPActive: int64Pointer(30)}}
 	if err := validateServerConnectionSettings(valid); err != nil {
 		t.Fatal(err)
 	}
@@ -31,11 +32,17 @@ func TestValidateServerConnectionSettings(t *testing.T) {
 	if err := validateServerConnectionSettings(invalid); err == nil {
 		t.Fatal("duplicate identity was accepted")
 	}
-	zero := 0
+	negative := -1
 	invalid = cloneServerConnectionSettings(valid)
-	invalid.Users[0].MaxInboundOnlineIPs = &zero
+	invalid.ManagementUsers[0].MaxInboundOnlineIPs = &negative
 	if err := validateServerConnectionSettings(invalid); err == nil {
-		t.Fatal("zero non-null limit was accepted")
+		t.Fatal("negative management inbound limit was accepted")
+	}
+	zero := 0
+	valid.ManagementUsers[0].MaxInboundOnlineIPs = &zero
+	valid.Ports[0].MaxInboundConnections = int64Pointer(0)
+	if err := validateServerConnectionSettings(valid); err != nil {
+		t.Fatalf("zero unlimited inbound value was rejected: %v", err)
 	}
 	invalid = cloneServerConnectionSettings(valid)
 	invalid.GlobalTotalLimitEnabled = true
@@ -62,8 +69,9 @@ func TestHelperStatePersistsConnectionSettings(t *testing.T) {
 	}}
 	settings.GlobalTotalLimitEnabled = true
 	settings.MaxGlobalTotalConnections = int64Pointer(200)
-	settings.ManagementUsers = []serverManagementUserSettings{{Username: "ken", MaxOutboundTCPActive: int64Pointer(100)}}
-	settings.Ports = []serverPortConnectionSettings{{InboundTag: "in-a", MaxOutboundTCPActive: int64Pointer(30)}}
+	settings.MaxGlobalInboundConnections = int64Pointer(1000)
+	settings.ManagementUsers = []serverManagementUserSettings{{Username: "ken", MaxInboundConnections: int64Pointer(100), MaxInboundOnlineIPs: intPointer(3), MaxOutboundTCPActive: int64Pointer(100)}}
+	settings.Ports = []serverPortConnectionSettings{{InboundTag: "in-a", MaxInboundConnections: int64Pointer(60), MaxInboundOnlineIPs: intPointer(2), MaxOutboundTCPActive: int64Pointer(30)}}
 	settings.ManagementMappings = []serverManagementMapping{{Identity: serverConnectionIdentity{InboundTag: "in-a", User: "user-a"}, Group: "ken"}}
 	if err := state.setConnectionSettings("7", settings); err != nil {
 		t.Fatal(err)
@@ -73,7 +81,7 @@ func TestHelperStatePersistsConnectionSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := reloaded.connectionSettings("7")
-	if len(got.Users) != 1 || got.Users[0].MaxOutboundTCPActive == nil || *got.Users[0].MaxOutboundTCPActive != 10 || got.Users[0].MaxTotalConnections == nil || *got.Users[0].MaxTotalConnections != 20 || len(got.ManagementUsers) != 1 || len(got.Ports) != 1 || len(got.ManagementMappings) != 1 || !got.GlobalTotalLimitEnabled || got.MaxGlobalTotalConnections == nil || *got.MaxGlobalTotalConnections != 200 {
+	if len(got.Users) != 1 || got.Users[0].MaxOutboundTCPActive == nil || *got.Users[0].MaxOutboundTCPActive != 10 || got.Users[0].MaxTotalConnections == nil || *got.Users[0].MaxTotalConnections != 20 || len(got.ManagementUsers) != 1 || got.ManagementUsers[0].MaxInboundConnections == nil || *got.ManagementUsers[0].MaxInboundConnections != 100 || len(got.Ports) != 1 || got.Ports[0].MaxInboundOnlineIPs == nil || *got.Ports[0].MaxInboundOnlineIPs != 2 || len(got.ManagementMappings) != 1 || !got.GlobalTotalLimitEnabled || got.MaxGlobalTotalConnections == nil || *got.MaxGlobalTotalConnections != 200 || got.MaxGlobalInboundConnections == nil || *got.MaxGlobalInboundConnections != 1000 {
 		t.Fatalf("settings did not persist: %#v", got)
 	}
 }

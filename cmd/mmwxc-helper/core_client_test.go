@@ -74,6 +74,19 @@ func TestCoreClientAcceptsV3ManagementGroups(t *testing.T) {
 	}
 }
 
+func TestCoreClientAcceptsV4InboundLimits(t *testing.T) {
+	path := serveUnixHTTP(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"version":4,"started_at":"2026-09-24T00:00:00Z","global":{"current_inbound":7,"max_inbound":1000,"rejected_global_inbound_limit":2},"management_groups":[{"group":"ken","inbound_current":7,"inbound_online_ips":[{"ip":"198.51.100.1","connections":4}],"max_inbound_connections":100,"max_inbound_online_ips":3,"rejected_user_inbound_limit":1,"rejected_user_online_ip_limit":2}],"proxy_users":[{"identity":{"inbound_tag":"in-a","user":"proto-a"},"attributed":true,"inbound_current":4,"management_group":"ken","max_port_inbound_connections":60,"max_port_inbound_online_ips":2,"rejected_port_inbound_limit":3,"rejected_port_online_ip_limit":4}]}`))
+	}))
+	snapshot, err := newCoreClient(path).snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Global.CurrentInbound != 7 || snapshot.Global.MaxInbound == nil || *snapshot.Global.MaxInbound != 1000 || len(snapshot.ManagementGroups) != 1 || snapshot.ManagementGroups[0].InboundCurrent != 7 || snapshot.ManagementGroups[0].MaxInboundOnlineIPs == nil || *snapshot.ManagementGroups[0].MaxInboundOnlineIPs != 3 || len(snapshot.Users) != 1 || snapshot.Users[0].MaxPortInboundConnections == nil || *snapshot.Users[0].MaxPortInboundConnections != 60 {
+		t.Fatalf("v4 inbound data was not decoded: %#v", snapshot)
+	}
+}
+
 func TestCoreClientUnavailable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.sock")
 	if _, err := newCoreClient(path).snapshot(context.Background()); err == nil {
@@ -95,16 +108,27 @@ func TestCoreClientAppliesNullUnlimited(t *testing.T) {
 		_, _ = w.Write([]byte(`{"success":true}`))
 	}))
 	settings := defaultConnectionSettings()
-	settings.Users = []userConnectionSettings{{Identity: coreIdentity{InboundTag: "in-a", User: "user-a"}}}
+	legacyIdentityLimit := int64(9)
+	legacyIdentityIPLimit := 4
+	settings.Users = []userConnectionSettings{{
+		Identity: coreIdentity{InboundTag: "in-a", User: "user-a"}, MaxInboundOnlineIPs: &legacyIdentityIPLimit,
+		MaxTotalConnections: &legacyIdentityLimit, MaxOutboundTCPActive: &legacyIdentityLimit,
+	}}
 	portLimit := int64(10)
-	settings.Ports = []portConnectionSettings{{InboundTag: "in-a", MaxOutboundTCPActive: &portLimit}}
+	portInboundLimit := int64(30)
+	portIPLimit := 2
+	settings.Ports = []portConnectionSettings{{InboundTag: "in-a", MaxInboundConnections: &portInboundLimit, MaxInboundOnlineIPs: &portIPLimit, MaxOutboundTCPActive: &portLimit}}
 	groupLimit := int64(20)
-	settings.ManagementUsers = []managementUserSettings{{Username: "ken", MaxOutboundTCPActive: &groupLimit}}
+	groupInboundLimit := int64(100)
+	groupIPLimit := 3
+	settings.ManagementUsers = []managementUserSettings{{Username: "ken", MaxInboundConnections: &groupInboundLimit, MaxInboundOnlineIPs: &groupIPLimit, MaxOutboundTCPActive: &groupLimit}}
 	settings.ManagementMappings = []managementMapping{{Identity: coreIdentity{InboundTag: "in-a", User: "user-a"}, Group: "ken"}}
+	globalInboundLimit := int64(1000)
+	settings.MaxGlobalInboundConnections = &globalInboundLimit
 	if err := newCoreClient(path).apply(context.Background(), settings); err != nil {
 		t.Fatal(err)
 	}
-	if len(received.Limits) != 1 || received.Limits[0].MaxOutboundTCPActive != nil || len(received.PortLimits) != 1 || received.PortLimits[0].MaxOutboundTCPActive == nil || *received.PortLimits[0].MaxOutboundTCPActive != 10 || len(received.ManagementMappings) != 1 || received.ManagementMappings[0].Group != "ken" || len(received.ManagementLimits) != 1 || received.ManagementLimits[0].MaxOutboundTCPActive == nil || *received.ManagementLimits[0].MaxOutboundTCPActive != 20 {
+	if len(received.Limits) != 1 || received.Limits[0].MaxInboundOnlineIPs != nil || received.Limits[0].MaxTotalConnections != nil || received.Limits[0].MaxOutboundTCPActive != nil || received.MaxGlobalInboundConnections == nil || *received.MaxGlobalInboundConnections != 1000 || len(received.PortLimits) != 1 || received.PortLimits[0].MaxInboundConnections == nil || *received.PortLimits[0].MaxInboundConnections != 30 || received.PortLimits[0].MaxOutboundTCPActive == nil || *received.PortLimits[0].MaxOutboundTCPActive != 10 || len(received.ManagementMappings) != 1 || received.ManagementMappings[0].Group != "ken" || len(received.ManagementLimits) != 1 || received.ManagementLimits[0].MaxInboundConnections == nil || *received.ManagementLimits[0].MaxInboundConnections != 100 || received.ManagementLimits[0].MaxOutboundTCPActive == nil || *received.ManagementLimits[0].MaxOutboundTCPActive != 20 {
 		t.Fatalf("null unlimited changed: %#v", received)
 	}
 }

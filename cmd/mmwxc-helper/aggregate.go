@@ -24,6 +24,10 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 	for _, item := range settings.Users {
 		settingsByIdentity[item.Identity] = item
 	}
+	settingsByPort := make(map[string]portConnectionSettings, len(settings.Ports))
+	for _, item := range settings.Ports {
+		settingsByPort[item.InboundTag] = item
+	}
 	runtimeUsers := append([]coreUserSnapshot(nil), core.Users...)
 	knownUsers := make(map[coreIdentity]struct{}, len(runtimeUsers))
 	for _, user := range runtimeUsers {
@@ -154,8 +158,8 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 		if len(users) == 1 {
 			inbound.User = users[0].Identity.User
 			inbound.Attribution = "single_user_inbound"
-			inbound.MaxOnlineIPs = settingsByIdentity[users[0].Identity].MaxInboundOnlineIPs
 		}
+		inbound.MaxOnlineIPs = settingsByPort[inbound.InboundTag].MaxInboundOnlineIPs
 		if core.Version >= 2 && len(users) > 0 {
 			inbound.Attribution = "core_identity_tuple"
 		}
@@ -185,6 +189,7 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 			User:                           user.Identity.User,
 			InboundPort:                    user.InboundPort,
 			InboundActive:                  user.InboundActive,
+			InboundCurrent:                 user.InboundCurrent,
 			CurrentTotal:                   user.CurrentTotal,
 			InboundTCP:                     user.InboundTCP,
 			InboundOnlineIPs:               append([]onlineIP(nil), user.InboundOnlineIPs...),
@@ -202,12 +207,15 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 			RejectedPortNewRateLimit:       user.RejectedPortNewRateLimit,
 			RejectedOnlineIPLimit:          user.RejectedOnlineIPLimit,
 			RejectedGlobalTotalLimit:       user.RejectedGlobalTotalLimit,
-			MaxInboundOnlineIPs:            limit.MaxInboundOnlineIPs,
-			MaxTotalConnections:            limit.MaxTotalConnections,
-			MaxOutboundTCPActive:           limit.MaxOutboundTCPActive,
-			MaxOutboundTCPNewPerSecond:     limit.MaxOutboundTCPNewPerSecond,
+			RejectedUserInboundLimit:       user.RejectedUserInboundLimit,
+			RejectedPortInboundLimit:       user.RejectedPortInboundLimit,
+			RejectedUserOnlineIPLimit:      user.RejectedUserOnlineIPLimit,
+			RejectedPortOnlineIPLimit:      user.RejectedPortOnlineIPLimit,
+			RejectedGlobalInboundLimit:     user.RejectedGlobalInboundLimit,
 			MaxPortOutboundTCPActive:       user.MaxPortOutboundTCPActive,
 			MaxPortOutboundTCPNewPerSecond: user.MaxPortOutboundTCPNewPerSecond,
+			MaxPortInboundConnections:      user.MaxPortInboundConnections,
+			MaxPortInboundOnlineIPs:        user.MaxPortInboundOnlineIPs,
 			CloseWaitTimeoutSeconds:        effectiveCloseWait(settings, limit),
 			Source:                         "xray_core_runtime",
 			ManagementGroup:                user.ManagementGroup,

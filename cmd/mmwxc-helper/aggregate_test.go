@@ -76,11 +76,11 @@ func TestAggregateV2UsesCoreIdentityTupleStatesAndLimits(t *testing.T) {
 	if len(inbounds) != 1 || inbounds[0].Attribution != "core_identity_tuple" || inbounds[0].TCP.TimeWait != 1 || inbounds[0].OnlineIPCount != 1 {
 		t.Fatalf("v2 inbound was not sourced from Core: %#v", inbounds)
 	}
-	if len(users) != 1 || users[0].CurrentTotal != 7 || users[0].OutboundTCP.SynSent != 1 || users[0].MaxTotalConnections == nil || *users[0].MaxTotalConnections != 50 {
+	if len(users) != 1 || users[0].CurrentTotal != 7 || users[0].OutboundTCP.SynSent != 1 || users[0].MaxTotalConnections != nil {
 		t.Fatalf("v2 user snapshot mismatch: %#v", users)
 	}
 	config := connectionSettings{GlobalTotalLimitEnabled: true, MaxGlobalTotalConnections: &globalLimit, Users: settings.Users}.coreConfig()
-	if config.MaxGlobalTotalConnections == nil || *config.MaxGlobalTotalConnections != 500 || config.Limits[0].MaxTotalConnections == nil || *config.Limits[0].MaxTotalConnections != 50 {
+	if config.MaxGlobalTotalConnections == nil || *config.MaxGlobalTotalConnections != 500 || config.Limits[0].MaxTotalConnections != nil {
 		t.Fatalf("limits were not propagated to Core config: %#v", config)
 	}
 }
