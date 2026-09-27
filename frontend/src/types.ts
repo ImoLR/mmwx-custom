@@ -1257,6 +1257,12 @@ export type UserConnectionsResponse = {
   connections?: Record<string, number>;
 };
 
+export type HelperUserConnectionsResponse = UserConnectionsResponse & {
+  server_connections?: Record<string, Record<string, number>>;
+  available_server_ids?: string[];
+  stale_timeout_seconds?: number;
+};
+
 export type UserSpeedsResponse = {
   success: boolean;
   user_speeds?: Record<string, number>;

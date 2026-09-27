@@ -64,6 +64,7 @@ import type {
   TrafficRange,
   TrafficSummary,
   UserConnectionsResponse,
+  HelperUserConnectionsResponse,
   UserSpeedsResponse,
   UsersTrafficResponse,
   XrayConfigResponse,
@@ -770,6 +771,13 @@ export function fetchUsers(token: string) {
 
 export function fetchUserConnections(token: string) {
   return request<UserConnectionsResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/traffic/user-connections"), token);
+}
+
+export function fetchHelperUserConnections(token: string, signal?: AbortSignal) {
+  return requestCustomApi<HelperUserConnectionsResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/agent/user-connections"), {
+    signal,
+    headers: { "MM-Authorization": token },
+  });
 }
 
 export function fetchUserSpeeds(token: string, serverId: number) {

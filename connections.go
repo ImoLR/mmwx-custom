@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -71,6 +72,79 @@ func (a *app) connectionMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"success": false, "message": "method not allowed"})
 	}
+}
+
+// helperUserConnectionsHandler exposes the live, identity-attributed inbound
+// connection counts reported by Custom Core. The formal controller already
+// supplies counts for Embedded Xray, so this endpoint deliberately includes
+// only fresh External-mode Helper snapshots; callers can safely add both maps
+// without double counting an Embedded server that also has Helper installed.
+func (a *app) helperUserConnectionsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"success": false, "message": "method not allowed"})
+		return
+	}
+	if err := a.authorizeOperatorRequest(r); err != nil {
+		writeOperatorAuthorizationError(w, err)
+		return
+	}
+	store, ok := a.adminStore.(remoteServerModeStore)
+	if !ok || store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "message": "remote server runtime store unavailable"})
+		return
+	}
+
+	a.connectionMu.Lock()
+	records := make(map[string]serverDetailedConnectionRecord, len(a.detailedConnections))
+	for serverID, record := range a.detailedConnections {
+		records[serverID] = record
+	}
+	a.connectionMu.Unlock()
+
+	external := make(map[string]bool, len(records))
+	for serverID := range records {
+		runtime, err := store.RemoteServerRuntime(r.Context(), serverID)
+		if err != nil {
+			continue
+		}
+		external[serverID] = runtime.XrayMode == "external"
+	}
+	connections, serverConnections, availableServerIDs := aggregateHelperUserConnections(time.Now(), records, external)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true, "connections": connections, "server_connections": serverConnections,
+		"available_server_ids": availableServerIDs, "stale_timeout_seconds": int(helperStaleTimeout.Seconds()),
+	})
+}
+
+func aggregateHelperUserConnections(now time.Time, records map[string]serverDetailedConnectionRecord, external map[string]bool) (map[string]int64, map[string]map[string]int64, []string) {
+	connections := make(map[string]int64)
+	serverConnections := make(map[string]map[string]int64)
+	availableServerIDs := make([]string, 0, len(records))
+	for serverID, record := range records {
+		if !external[serverID] || record.UpdatedAt.IsZero() || now.Sub(record.UpdatedAt) > helperStaleTimeout {
+			continue
+		}
+		perServer := make(map[string]int64)
+		for _, group := range record.Snapshot.ManagementGroups {
+			username := strings.TrimSpace(group.Username)
+			if username == "" {
+				continue
+			}
+			count := group.InboundCurrent
+			if record.Snapshot.Core.Version < 4 {
+				count = group.InboundActive
+			}
+			if count <= 0 {
+				continue
+			}
+			perServer[username] += count
+			connections[username] += count
+		}
+		serverConnections[serverID] = perServer
+		availableServerIDs = append(availableServerIDs, serverID)
+	}
+	sort.Strings(availableServerIDs)
+	return connections, serverConnections, availableServerIDs
 }
 
 func (a *app) listConnectionMetrics(w http.ResponseWriter, r *http.Request) {

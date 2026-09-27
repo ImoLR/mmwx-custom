@@ -82,6 +82,7 @@ import {
   fetchTrafficPeriod,
   fetchTrafficSummary,
   fetchUserConnections,
+  fetchHelperUserConnections,
   fetchUserSpeeds,
   fetchXrayRecoveryStatus,
   fetchXrayServiceStatus,
@@ -314,6 +315,8 @@ function Dashboard({
   const [periodLoading, setPeriodLoading] = useState(true);
   const [trafficDialog, setTrafficDialog] = useState<"nodes" | "users" | null>(null);
   const periodRequestId = useRef(0);
+  const formalUserConnectionsRef = useRef<Record<string, number>>({});
+  const helperUserConnectionsRef = useRef<Record<string, number>>({});
 
   const refreshUserSpeeds = useCallback(
     async (servers: RemoteServer[]) => {
@@ -333,12 +336,13 @@ function Dashboard({
     setLoading(true);
     setError("");
     try {
-      const [summary, remoteServers, connections, adminTraffic, helperConnections] = await Promise.all([
+      const [summary, remoteServers, connections, adminTraffic, helperConnections, helperUserConnections] = await Promise.all([
         fetchTrafficSummary(session.token),
         fetchRemoteServers(session.token),
         fetchUserConnections(session.token),
         fetchAdminTraffic(session.token),
         fetchConnectionMetrics(session.token),
+        fetchHelperUserConnections(session.token),
       ]);
 
       const servers = remoteServers.servers ?? [];
@@ -352,12 +356,14 @@ function Dashboard({
         return { ...server, agent_version: result.value.current };
       });
 
+      formalUserConnectionsRef.current = connections.connections ?? {};
+      helperUserConnectionsRef.current = helperUserConnections.connections ?? {};
       setState((current) => ({
         ...current,
         summary,
         systemMetrics: current.systemMetrics,
         servers: serversWithAgentVersions,
-        userConnections: connections.connections ?? {},
+        userConnections: mergeUserConnectionCounts(formalUserConnectionsRef.current, helperUserConnectionsRef.current),
         userSpeeds: aggregateUserSpeeds(speedResults),
         adminTraffic,
         connectionMetrics: helperConnections.metrics ?? {},
@@ -366,6 +372,19 @@ function Dashboard({
       setError(err instanceof Error ? err.message : "Dashboard 加载失败");
     } finally {
       setLoading(false);
+    }
+  }, [session.token]);
+
+  const refreshHelperUserConnections = useCallback(async () => {
+    try {
+      const response = await fetchHelperUserConnections(session.token);
+      helperUserConnectionsRef.current = response.connections ?? {};
+      setState((current) => ({
+        ...current,
+        userConnections: mergeUserConnectionCounts(formalUserConnectionsRef.current, helperUserConnectionsRef.current),
+      }));
+    } catch {
+      // Preserve the last fresh Helper snapshot; the endpoint itself excludes stale records.
     }
   }, [session.token]);
 
@@ -436,6 +455,15 @@ function Dashboard({
     }, SYSTEM_METRICS_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [activeTab, refreshNodeConnections]);
+
+  useEffect(() => {
+    if (activeTab !== "overview") return;
+    void refreshHelperUserConnections();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshHelperUserConnections();
+    }, SYSTEM_METRICS_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [activeTab, refreshHelperUserConnections]);
 
   useEffect(() => {
     if (activeTab !== "overview") return;
@@ -576,12 +604,15 @@ function Dashboard({
         const snapshot = JSON.parse(event.data as string) as RealtimeSnapshot;
         if (snapshot.type !== "realtime") return;
         if (snapshot.servers) void refreshUserSpeeds(snapshot.servers);
+        if (snapshot.userConnections) formalUserConnectionsRef.current = snapshot.userConnections;
         setState((current) => ({
           ...current,
           servers: snapshot.servers ? mergeServerSnapshots(current.servers, snapshot.servers) : current.servers,
           summary: snapshot.trafficSummary ?? current.summary,
           adminTraffic: snapshot.adminTraffic ?? current.adminTraffic,
-          userConnections: snapshot.userConnections ?? current.userConnections,
+          userConnections: snapshot.userConnections
+            ? mergeUserConnectionCounts(formalUserConnectionsRef.current, helperUserConnectionsRef.current)
+            : current.userConnections,
         }));
       } catch {
         // Ignore malformed websocket frames; the dashboard will keep the last valid snapshot.
@@ -3872,6 +3903,14 @@ function formatUserRealtime(connections?: number, speed?: number) {
   parts.push(`🔌 ${connections}`);
   if (speed) parts.push(`⚡ ${formatSpeed(speed)}`);
   return parts.join(" · ");
+}
+
+function mergeUserConnectionCounts(formal: Record<string, number>, helper: Record<string, number>) {
+  const merged = { ...formal };
+  for (const [username, count] of Object.entries(helper)) {
+    if (count > 0) merged[username] = (merged[username] ?? 0) + count;
+  }
+  return merged;
 }
 
 function formatPercent(value?: number | null) {
