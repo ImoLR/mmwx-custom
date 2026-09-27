@@ -22,6 +22,8 @@ import {
 } from "lucide-react";
 import {
   controlRemoteService,
+  deleteRoutingRulePreset,
+  fetchRoutingRulePresets,
   fetchXrayConfig,
   fetchXrayInbounds,
   fetchNginxServerDomains,
@@ -42,6 +44,7 @@ import {
   generateXrayX25519,
   probeCustomRealityDomain,
   saveXrayConfig,
+  saveRoutingRulePreset,
   saveXraySystemConfig,
   installXrayWarp,
   removeXrayWarp,
@@ -51,7 +54,7 @@ import {
   updateXrayWarpLicense,
   updateRemoteServerDomain,
 } from "./api";
-import type { RemoteServer, XrayNode, XrayObject, XrayServerNIC, XraySystemConfig, XrayWarpStatus } from "./types";
+import type { RemoteServer, RoutingRulePreset, XrayNode, XrayObject, XrayServerNIC, XraySystemConfig, XrayWarpStatus } from "./types";
 
 type Tab = "config" | "inbounds" | "outbounds" | "routing";
 type Notice = { kind: "success" | "error"; text: string } | null;
@@ -155,6 +158,16 @@ function asString(value: unknown) {
 
 function asNumber(value: unknown) {
   return typeof value === "number" ? value : Number(value) || 0;
+}
+
+function asStringArray(value: unknown) {
+  if (Array.isArray(value)) return value.map(asString).map((item) => item.trim()).filter(Boolean);
+  const single = asString(value).trim();
+  return single ? [single] : [];
+}
+
+function cloneObject(value: XrayObject) {
+  return JSON.parse(JSON.stringify(value)) as XrayObject;
 }
 
 function asObject(value: unknown): XrayObject {
@@ -486,6 +499,7 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
   const [inbounds, setInbounds] = useState<XrayObject[]>([]);
   const [outbounds, setOutbounds] = useState<XrayObject[]>([]);
   const [routing, setRouting] = useState<XrayObject>({ domainStrategy: "AsIs", rules: [], balancers: [] });
+  const [routingPresets, setRoutingPresets] = useState<RoutingRulePreset[]>([]);
   const [nodes, setNodes] = useState<XrayNode[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState("");
   const [editor, setEditor] = useState<{ kind: "inbound" | "outbound" | "rule" | "balancer" | "view"; item: XrayObject; index?: number; originalTag?: string } | null>(null);
@@ -538,6 +552,11 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
     setRouting(response.routing || { domainStrategy: "AsIs", rules: [], balancers: [] });
   }, [server.id, token]);
 
+  const refreshRoutingPresets = useCallback(async () => {
+    const response = await fetchRoutingRulePresets(token);
+    setRoutingPresets(response.presets || []);
+  }, [token]);
+
   const refreshTab = useCallback(async (target = tab) => {
     setLoading(true);
     setNotice(null);
@@ -552,7 +571,7 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
         setNodes(nodeResponse.nodes || []);
       }
       if (target === "routing") {
-        const [, , , nodeResponse] = await Promise.all([refreshRouting(), refreshOutbounds(), refreshInbounds(), fetchXrayNodes(token)]);
+        const [, , , , nodeResponse] = await Promise.all([refreshRouting(), refreshRoutingPresets(), refreshOutbounds(), refreshInbounds(), fetchXrayNodes(token)]);
         setNodes(nodeResponse.nodes || []);
       }
     } catch (error) {
@@ -560,7 +579,7 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
     } finally {
       setLoading(false);
     }
-  }, [refreshConfig, refreshInbounds, refreshOutbounds, refreshRouting, server.id, tab, token]);
+  }, [refreshConfig, refreshInbounds, refreshOutbounds, refreshRouting, refreshRoutingPresets, server.id, tab, token]);
 
   useEffect(() => {
     void refreshTab(tab);
@@ -627,6 +646,7 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
     setBusy(`save-${editor.kind}`);
     setNotice(null);
     try {
+      let completionNotice: Notice = { kind: "success", text: "保存成功，远端数据已重新读取" };
       if (editor.kind === "inbound") {
         const inbound = sanitizeInbound(item);
         const tag = asString(item.tag).trim();
@@ -668,6 +688,13 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
         }
         await restartAfterRouting();
         await refreshRouting();
+        try {
+          const presetName = asString(item.marktag).trim() || `路由至 ${asString(item.balancerTag || item.outboundTag) || "未指定目标"}`;
+          await saveRoutingRulePreset(token, presetName, item);
+          await refreshRoutingPresets();
+        } catch (presetError) {
+          completionNotice = { kind: "error", text: `规则已保存并生效，但最近使用记录保存失败：${getError(presetError, "未知错误")}` };
+        }
       } else if (editor.kind === "balancer") {
         const balancers = [...(Array.isArray(routing.balancers) ? routing.balancers as XrayObject[] : [])];
         if (editor.index == null) balancers.push(item); else balancers[editor.index] = item;
@@ -676,9 +703,24 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
         await refreshRouting();
       }
       setEditor(null);
-      setNotice({ kind: "success", text: "保存成功，远端数据已重新读取" });
+      setNotice(completionNotice);
     } catch (error) {
       setNotice({ kind: "error", text: getError(error, "保存失败") });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function removeRoutingPreset(preset: RoutingRulePreset) {
+    if (!window.confirm(`确认删除快捷规则“${preset.name}”？这不会删除已经生效的 Xray 路由。`)) return;
+    setBusy(`remove-preset-${preset.id}`);
+    setNotice(null);
+    try {
+      await deleteRoutingRulePreset(token, preset.id);
+      setRoutingPresets((current) => current.filter((item) => item.id !== preset.id));
+      setNotice({ kind: "success", text: "快捷规则已删除；现有 Xray 路由未改变" });
+    } catch (error) {
+      setNotice({ kind: "error", text: getError(error, "删除快捷规则失败") });
     } finally {
       setBusy("");
     }
@@ -806,7 +848,7 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
 
       {!loading && tab === "routing" && <section className="xray-list-section">
         <div className="xray-routing-base"><label><span>域名策略</span><select value={asString(routing.domainStrategy) || "AsIs"} onChange={(event) => setRouting((value) => ({ ...value, domainStrategy: event.target.value }))}>{["AsIs", "IPIfNonMatch", "IPOnDemand"].map((value) => <option key={value} value={value}>{domainStrategyLabels[value]}</option>)}</select></label><button type="button" disabled={Boolean(busy)} onClick={() => void (async () => { if (!window.confirm("确认保存路由基础配置并重启 Xray？")) return; setBusy("routing-base"); try { await mutateXrayRouting(token, server.id, { action: "set", routing }); await restartAfterRouting(); await refreshRouting(); setNotice({ kind: "success", text: "路由配置已保存并重启" }); } catch (error) { setNotice({ kind: "error", text: getError(error, "保存失败") }); } finally { setBusy(""); } })()}><Save />保存</button></div>
-        <div className="xray-quick-row">
+        <div className="xray-quick-block"><div className="xray-quick-heading"><strong>内置快捷规则</strong><span>选择后可继续编辑，保存才会应用</span></div><div className="xray-quick-row">
           <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", protocol: ["bittorrent"], outboundTag: "block", marktag: "ban-bt" } })}>禁止 BT</button>
           <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", ip: ["geoip:cn"], outboundTag: "block", marktag: "ban-cn-ip" } })}>禁止访问大陆 IP</button>
           <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", ip: ["geoip:private"], outboundTag: "block", marktag: "ban-private" } })}>禁止内网访问</button>
@@ -816,7 +858,8 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
           <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", domain: ["geosite:category-pt"], outboundTag: "warp-v4", marktag: "home-bypass-warp" } })}>家宽常用（走 WARP）</button>
           <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", domain: ["geosite:tiktok"], outboundTag: asString(outbounds[0]?.tag) || "direct", marktag: "tiktok" } })}>抖音解锁</button>
           <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", domain: ["domain:emby.media"], outboundTag: asString(outbounds[0]?.tag) || "direct", marktag: "emby" } })}>RFC EMBY</button>
-        </div>
+        </div></div>
+        {routingPresets.length > 0 && <div className="xray-custom-quick"><div className="xray-quick-heading"><strong>最近使用 / 自定义快捷规则</strong><span>按当前管理员账号同步，最多保留 20 条</span></div><div className="xray-custom-quick-grid">{routingPresets.map((preset) => <div className="xray-custom-quick-item" key={preset.id}><button type="button" className="xray-custom-quick-open" onClick={() => setEditor({ kind: "rule", item: cloneObject(preset.rule) })}><strong>{preset.name}</strong><span>{preset.rule.balancerTag ? `负载均衡：${asString(preset.rule.balancerTag)}` : `出站：${asString(preset.rule.outboundTag) || "--"}`}</span></button><button type="button" className="xray-custom-quick-delete" disabled={Boolean(busy)} onClick={() => void removeRoutingPreset(preset)} title="删除快捷规则" aria-label={`删除快捷规则 ${preset.name}`}><Trash2 /></button></div>)}</div></div>}
         <ListHeader title={`路由规则 (${rules.length})`} action="自定义规则" onAdd={() => setEditor({ kind: "rule", item: { type: "field", outboundTag: outbounds[0]?.tag || "direct" } })} />
         {rules.length === 0 ? <Empty text="当前没有路由规则" /> : rules.map((item, index) => <article className="xray-item" key={`rule-${index}`}>
           <div className="xray-item-head"><div><strong>{displayMarkTag(item.marktag, index)}</strong><p>{item.balancerTag ? `负载均衡：${asString(item.balancerTag)}` : `出站：${asString(item.outboundTag) || "--"}`}</p></div><span>#{index + 1}</span></div>
@@ -827,7 +870,7 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
         {balancers.map((item, index) => <article className="xray-item" key={`balancer-${index}`}><div className="xray-item-head"><div><strong>{asString(item.tag) || `负载均衡 ${index + 1}`}</strong><p>{Array.isArray(item.selector) ? item.selector.join(", ") : "--"}</p></div><span>{({ random: "随机", roundRobin: "轮询", leastPing: "最低延迟", leastLoad: "最低负载" } as Record<string, string>)[asString(asObject(item.strategy).type)] || asString(asObject(item.strategy).type) || "随机"}</span></div><ItemActions onView={() => setEditor({ kind: "view", item })} onEdit={() => setEditor({ kind: "balancer", item, index })} onDelete={() => void removeItem("balancer", index, item)} busy={Boolean(busy)} /></article>)}
       </section>}
 
-      {editor && <ObjectEditor editor={editor} server={server} token={token} username={username} nodes={nodes} outbounds={outbounds} balancers={balancers} usedPorts={inbounds.map((item) => asNumber(item.port)).filter(Boolean)} pending={busy.startsWith("save-")} onCancel={() => setEditor(null)} onSave={(item) => void saveEditor(item)} />}
+      {editor && <ObjectEditor editor={editor} server={server} token={token} username={username} nodes={nodes} inbounds={inbounds} outbounds={outbounds} balancers={balancers} usedPorts={inbounds.map((item) => asNumber(item.port)).filter(Boolean)} pending={busy.startsWith("save-")} onCancel={() => setEditor(null)} onSave={(item) => void saveEditor(item)} />}
       {warpOpen && <WarpManager server={server} token={token} onClose={() => setWarpOpen(false)} onChanged={() => void refreshOutbounds()} />}
     </div>
   );
@@ -888,7 +931,7 @@ export function ManagedNodeCreateDialog({ servers, token, username, onClose, onC
 
   if (server && item) return <>
     {error && <div className="xray-global-error" role="alert">{error}</div>}
-    <ObjectEditor editor={{ kind: "inbound", item }} server={server} token={token} username={username} nodes={nodes} outbounds={[]} balancers={[]} usedPorts={usedPorts} pending={busy} onCancel={onClose} onSave={(next) => void save(next)} />
+    <ObjectEditor editor={{ kind: "inbound", item }} server={server} token={token} username={username} nodes={nodes} inbounds={[]} outbounds={[]} balancers={[]} usedPorts={usedPorts} pending={busy} onCancel={onClose} onSave={(next) => void save(next)} />
   </>;
 
   return <div className="node-dialog-layer" role="presentation" onClick={onClose}>
@@ -919,7 +962,54 @@ function ItemActions({ onView, onEdit, onDelete, moveUp, moveDown, busy }: { onV
   return <div className="xray-item-actions"><button type="button" disabled={busy} onClick={onView} title="查看 JSON" aria-label="查看 JSON"><Eye /><span>查看</span></button>{onEdit && <button type="button" disabled={busy} onClick={onEdit} title="编辑" aria-label="编辑"><Edit3 /><span>编辑</span></button>}{moveUp && <button type="button" disabled={busy} onClick={moveUp} title="上移" aria-label="上移"><ArrowUp /></button>}{moveDown && <button type="button" disabled={busy} onClick={moveDown} title="下移" aria-label="下移"><ArrowDown /></button>}{onDelete && <button type="button" disabled={busy} onClick={onDelete} className="danger" title="删除" aria-label="删除"><Trash2 /><span>删除</span></button>}</div>;
 }
 
-function ObjectEditor({ editor, server, token, username, nodes, outbounds, balancers, usedPorts, pending, onCancel, onSave }: { editor: { kind: "inbound" | "outbound" | "rule" | "balancer" | "view"; item: XrayObject; originalTag?: string }; server: RemoteServer; token: string; username: string; nodes: XrayNode[]; outbounds: XrayObject[]; balancers: XrayObject[]; usedPorts: number[]; pending: boolean; onCancel: () => void; onSave: (item: XrayObject) => void }) {
+type RoutingChoice = { value: string; label: string; detail?: string; historical?: boolean };
+
+function routingInboundChoices(inbounds: XrayObject[]): RoutingChoice[] {
+  return inbounds.map((inbound) => {
+    const tag = asString(inbound.tag).trim();
+    const port = asNumber(inbound.port);
+    const protocol = asString(inbound.protocol).trim();
+    return { value: tag, label: port ? `${port} · ${tag}` : tag, detail: protocol || undefined };
+  }).filter((choice) => choice.value);
+}
+
+function routingUserChoices(inbounds: XrayObject[], inboundTags: string[]): RoutingChoice[] {
+  const selectedTags = new Set(inboundTags);
+  const choices = new Map<string, RoutingChoice>();
+  for (const inbound of inbounds) {
+    const tag = asString(inbound.tag).trim();
+    if (selectedTags.size > 0 && !selectedTags.has(tag)) continue;
+    const clients = asObject(inbound.settings).clients;
+    if (!Array.isArray(clients)) continue;
+    for (const rawClient of clients) {
+      const email = asString(asObject(rawClient).email).trim();
+      if (!email || choices.has(email)) continue;
+      const displayName = email.includes("__") ? email.split("__", 1)[0] : email;
+      choices.set(email, { value: email, label: displayName || email, detail: tag ? `${email} · ${tag}` : email });
+    }
+  }
+  return [...choices.values()];
+}
+
+function RoutingMultiPicker({ label, values, choices, onChange }: { label: string; values: string[]; choices: RoutingChoice[]; onChange: (values: string[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const selected = new Set(values);
+  const known = new Map(choices.map((choice) => [choice.value, choice]));
+  const options = [...choices, ...values.filter((value) => !known.has(value)).map((value) => ({ value, label: value, detail: "历史配置值（当前数据源中已不存在）", historical: true }))];
+  const normalizedSearch = search.trim().toLowerCase();
+  const filtered = options.filter((choice) => !normalizedSearch || `${choice.label} ${choice.value} ${choice.detail || ""}`.toLowerCase().includes(normalizedSearch));
+  function toggle(value: string) {
+    onChange(selected.has(value) ? values.filter((item) => item !== value) : [...values, value]);
+  }
+  return <div className="xray-multi-field wide">
+    <div className="xray-multi-label"><span>{label}</span><button type="button" onClick={() => { setSearch(""); setOpen(true); }}><Search />选择（{values.length}）</button></div>
+    {values.length > 0 ? <div className="xray-multi-chips">{values.map((value) => { const choice = known.get(value); return <span key={value} className={choice ? "" : "historical"} title={choice?.detail || "历史配置值"}>{choice?.label || value}<button type="button" onClick={() => onChange(values.filter((item) => item !== value))} aria-label={`移除 ${value}`}><X /></button></span>; })}</div> : <p className="xray-multi-empty">未选择时不限制{label}</p>}
+    {open && <div className="xray-picker-layer" role="presentation" onClick={() => setOpen(false)}><section className="xray-picker-dialog" role="dialog" aria-modal="true" aria-label={`选择${label}`} onClick={(event) => event.stopPropagation()}><header><div><strong>选择{label}</strong><span>可多选；历史值会保留并单独标记</span></div><button type="button" onClick={() => setOpen(false)} aria-label="关闭"><X /></button></header><label className="xray-picker-search"><Search /><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`搜索${label}、标识或端口`} /></label><div className="xray-picker-list">{filtered.length === 0 ? <p>没有匹配项</p> : filtered.map((choice) => <label className={`xray-picker-option${choice.historical ? " historical" : ""}`} key={choice.value}><input type="checkbox" checked={selected.has(choice.value)} onChange={() => toggle(choice.value)} /><span><strong>{choice.label}</strong>{choice.detail && <small>{choice.detail}</small>}</span>{choice.historical && <em>历史值</em>}</label>)}</div><footer><span>已选择 {values.length} 项</span><button type="button" className="primary" onClick={() => setOpen(false)}><Check />完成</button></footer></section></div>}
+  </div>;
+}
+
+function ObjectEditor({ editor, server, token, username, nodes, inbounds, outbounds, balancers, usedPorts, pending, onCancel, onSave }: { editor: { kind: "inbound" | "outbound" | "rule" | "balancer" | "view"; item: XrayObject; originalTag?: string }; server: RemoteServer; token: string; username: string; nodes: XrayNode[]; inbounds: XrayObject[]; outbounds: XrayObject[]; balancers: XrayObject[]; usedPorts: number[]; pending: boolean; onCancel: () => void; onSave: (item: XrayObject) => void }) {
   const [item, setItem] = useState<XrayObject>(() => JSON.parse(JSON.stringify(editor.item)) as XrayObject);
   const [advanced, setAdvanced] = useState(false);
   const [json, setJson] = useState(() => JSON.stringify(editor.item, null, 2));
@@ -961,7 +1051,9 @@ function ObjectEditor({ editor, server, token, username, nodes, outbounds, balan
         {editor.kind === "rule" && <>
           <label><span>规则名称（Mark Tag）</span><input value={asString(item.marktag)} onChange={(event) => set("marktag", event.target.value)} placeholder="例如：入一" /></label>
           <label><span>网络</span><select value={asString(item.network)} onChange={(event) => set("network", event.target.value || undefined)}><option value="">不限</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="tcp,udp">TCP + UDP</option></select></label>
-          {["domain", "ip", "protocol", "inboundTag", "user", "source"].map((key) => <label className="wide" key={key}><span>{routingFieldLabels[key]}（每行一项）</span><textarea value={Array.isArray(item[key]) ? (item[key] as unknown[]).join("\n") : asString(item[key])} onChange={(event) => set(key, event.target.value.split(/\n|,/).map((value) => value.trim()).filter(Boolean))} /></label>)}
+          {["domain", "ip", "protocol", "source"].map((key) => <label className="wide" key={key}><span>{routingFieldLabels[key]}（每行一项）</span><textarea value={Array.isArray(item[key]) ? (item[key] as unknown[]).join("\n") : asString(item[key])} onChange={(event) => set(key, event.target.value.split(/\n|,/).map((value) => value.trim()).filter(Boolean))} /></label>)}
+          <RoutingMultiPicker label="入站标识" values={asStringArray(item.inboundTag)} choices={routingInboundChoices(inbounds)} onChange={(values) => set("inboundTag", values.length ? values : undefined)} />
+          <RoutingMultiPicker label="用户身份" values={asStringArray(item.user)} choices={routingUserChoices(inbounds, asStringArray(item.inboundTag))} onChange={(values) => set("user", values.length ? values : undefined)} />
           {["port", "sourcePort", "attrs"].map((key) => <label key={key}><span>{routingFieldLabels[key]}</span><input value={asString(item[key])} onChange={(event) => set(key, event.target.value || undefined)} /></label>)}
           <label><span>目标类型</span><select value={item.balancerTag ? "balancer" : "outbound"} onChange={(event) => setItem((current) => event.target.value === "balancer" ? { ...current, outboundTag: undefined, balancerTag: asString(balancers[0]?.tag) } : { ...current, balancerTag: undefined, outboundTag: asString(outbounds[0]?.tag) })}><option value="outbound">出站</option><option value="balancer">负载均衡</option></select></label>
           <label><span>目标 *</span><select value={asString(item.balancerTag || item.outboundTag)} onChange={(event) => item.balancerTag != null ? set("balancerTag", event.target.value) : set("outboundTag", event.target.value)}>{(item.balancerTag != null ? balancers : outbounds).map((value) => <option key={asString(value.tag)} value={asString(value.tag)}>{asString(value.tag)}</option>)}</select></label>

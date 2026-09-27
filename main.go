@@ -166,6 +166,10 @@ func main() {
 			_ = adminStore.Close()
 			log.Fatalf("[mmwx-custom] connection ownership migration failed: %v", err)
 		}
+		if err := adminStore.EnsureUIMetadataSchema(context.Background()); err != nil {
+			_ = adminStore.Close()
+			log.Fatalf("[mmwx-custom] UI metadata migration failed: %v", err)
+		}
 		defer adminStore.Close()
 	}
 	api.helperState, err = openHelperState(getenv("MMWXC_HELPER_STATE_FILE", defaultHelperStatePath), helperInstallTokenTTLFromEnv())
@@ -200,6 +204,8 @@ func main() {
 	mux.HandleFunc("/api/custom/agent/update-progress", api.withCORS(api.helperUpdateProgressHandler))
 	mux.HandleFunc("/api/custom/releases", api.withCORS(api.releaseInfoHandler))
 	mux.HandleFunc("/api/custom/settings/github-accelerator", api.withCORS(api.githubAcceleratorHandler))
+	mux.HandleFunc("/api/custom/ui/service-groups", api.withCORS(api.uiServiceGroupsHandler))
+	mux.HandleFunc("/api/custom/ui/routing-presets", api.withCORS(api.uiRoutingPresetsHandler))
 	mux.Handle("/api/", api.withCORSHandler(mmwxAPIProxy(mmwxAPITarget)))
 	mux.Handle("/", spaHandler(getenv("MMWXC_FRONTEND_DIR", defaultFrontendDir)))
 
@@ -238,7 +244,7 @@ func (a *app) withCORS(next http.HandlerFunc) http.HandlerFunc {
 			if _, ok := a.allowedOrigins[origin]; ok {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 				w.Header().Set("Access-Control-Allow-Headers", "Authorization, MM-Authorization, Content-Type")
 			}
 		}

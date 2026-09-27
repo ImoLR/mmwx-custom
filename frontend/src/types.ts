@@ -704,6 +704,33 @@ export type XrayRoutingResponse = {
   routing?: XrayObject;
 };
 
+export type CustomServiceGroup = {
+  id: string;
+  name: string;
+  server_ids: number[];
+};
+
+export type CustomServiceGroupsResponse = {
+  success?: boolean;
+  exists: boolean;
+  groups: CustomServiceGroup[];
+  revision: number;
+  updated_at?: string;
+};
+
+export type RoutingRulePreset = {
+  id: number;
+  name: string;
+  rule: XrayObject;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RoutingRulePresetsResponse = {
+  success?: boolean;
+  presets: RoutingRulePreset[];
+};
+
 export type XrayNode = {
   id: number;
   raw_url?: string;

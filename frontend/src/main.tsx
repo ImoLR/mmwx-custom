@@ -70,6 +70,7 @@ import {
   expectXrayRecovery,
   fetchAgentVersionInfo,
   fetchConnectionMetrics,
+  fetchCustomServiceGroups,
   fetchAdminTraffic,
   fetchDNSProviders,
   fetchMasterUrl,
@@ -93,6 +94,7 @@ import {
   restoreXraySnapshot,
   saveSession,
   saveGitHubAcceleratorSettings,
+  saveCustomServiceGroups,
   streamAgentAction,
   syncRemoteNodeAddress,
   syncRemoteNodes,
@@ -109,6 +111,7 @@ import type {
   CustomAgentStatusResponse,
   CoreModeResponse,
   CustomReleaseInfoResponse,
+  CustomServiceGroup,
   DNSProvider,
   NodeTrafficItem,
   PeriodUserTrafficItem,
@@ -300,7 +303,9 @@ function Dashboard({
   const [runtimeXrayStatus, setRuntimeXrayStatus] = useState<{ serverId: number; running?: boolean; version?: string } | null>(null);
   const [xrayActionBusy, setXrayActionBusy] = useState(false);
   const [serviceViewMode, setServiceViewMode] = useState<"grid" | "list">("grid");
-  const [serviceGroups, setServiceGroups] = useState<ServiceGroup[]>(() => loadServiceGroups(session.username));
+  const [serviceGroups, setServiceGroups] = useState<ServiceGroup[]>([]);
+  const [serviceGroupsReady, setServiceGroupsReady] = useState(false);
+  const [serviceGroupError, setServiceGroupError] = useState("");
   const [activeServiceGroupId, setActiveServiceGroupId] = useState(ALL_SERVICE_GROUP_ID);
   const [serviceGroupDialogOpen, setServiceGroupDialogOpen] = useState(false);
   const [serviceMenuServer, setServiceMenuServer] = useState<RemoteServer | null>(null);
@@ -673,8 +678,8 @@ function Dashboard({
     if (activeServiceGroupId === ALL_SERVICE_GROUP_ID) return state.servers;
     const group = serviceGroups.find((item) => item.id === activeServiceGroupId);
     if (!group) return state.servers;
-    const ids = new Set(group.serverIds);
-    return state.servers.filter((server) => ids.has(server.id));
+    const serversByID = new Map(state.servers.map((server) => [server.id, server]));
+    return group.serverIds.map((serverID) => serversByID.get(serverID)).filter((server): server is RemoteServer => Boolean(server));
   }, [activeServiceGroupId, serviceGroups, state.servers]);
   const visibleServiceTotals = useMemo(() => calculateTotals(visibleServiceServers), [visibleServiceServers]);
 
@@ -689,17 +694,70 @@ function Dashboard({
   }, [selectedServerId, state.servers]);
 
   useEffect(() => {
-    setServiceGroups(loadServiceGroups(session.username));
+    let current = true;
+    setServiceGroupsReady(false);
+    setServiceGroupError("");
     setActiveServiceGroupId(ALL_SERVICE_GROUP_ID);
-  }, [session.username]);
+    void (async () => {
+      try {
+        const response = await fetchCustomServiceGroups(session.token);
+        if (!current) return;
+        if (response.exists) {
+          setServiceGroups(serviceGroupsFromAPI(response.groups));
+          setServiceGroupsReady(true);
+          return;
+        }
+        const legacy = loadLegacyServiceGroups(session.username);
+        if (legacy.length === 0) {
+          setServiceGroups([]);
+          setServiceGroupsReady(true);
+          return;
+        }
+        try {
+          const migrated = await saveCustomServiceGroups(session.token, serviceGroupsToAPI(legacy), true);
+          if (!current) return;
+          setServiceGroups(serviceGroupsFromAPI(migrated.groups));
+          removeLegacyServiceGroups(session.username);
+          setServiceGroupsReady(true);
+        } catch {
+          const latest = await fetchCustomServiceGroups(session.token);
+          if (!current) return;
+          if (latest.exists) {
+            setServiceGroups(serviceGroupsFromAPI(latest.groups));
+            setServiceGroupsReady(true);
+          } else {
+            setServiceGroups(legacy);
+            setServiceGroupsReady(false);
+            setServiceGroupError("旧分组仍保留在当前浏览器，但上传服务器失败；请重试后再编辑。");
+          }
+        }
+      } catch (error) {
+        if (!current) return;
+        setServiceGroups(loadLegacyServiceGroups(session.username));
+        setServiceGroupsReady(false);
+        setServiceGroupError(error instanceof Error ? error.message : "读取服务器分组失败；未覆盖当前浏览器中的旧分组。");
+      }
+    })();
+    return () => { current = false; };
+  }, [session.token, session.username]);
 
   useEffect(() => {
     setServiceGroups((current) => sanitizeServiceGroups(current, state.servers));
   }, [state.servers]);
 
-  useEffect(() => {
-    saveServiceGroups(session.username, serviceGroups);
-  }, [session.username, serviceGroups]);
+  const persistServiceGroups = useCallback(async (groups: ServiceGroup[]) => {
+    if (!serviceGroupsReady) return false;
+    const next = sanitizeServiceGroups(groups, state.servers);
+    try {
+      const response = await saveCustomServiceGroups(session.token, serviceGroupsToAPI(next));
+      setServiceGroups(serviceGroupsFromAPI(response.groups));
+      setServiceGroupError("");
+      return true;
+    } catch (error) {
+      setServiceGroupError(error instanceof Error ? error.message : "保存服务器分组失败");
+      return false;
+    }
+  }, [serviceGroupsReady, session.token, state.servers]);
 
   useEffect(() => {
     if (activeServiceGroupId === ALL_SERVICE_GROUP_ID) return;
@@ -773,6 +831,8 @@ function Dashboard({
           connectionMetrics={state.connectionMetrics}
           totals={visibleServiceTotals}
           viewMode={serviceViewMode}
+          groupError={serviceGroupError}
+          groupsReady={serviceGroupsReady}
           onViewModeChange={setServiceViewMode}
           onSelectServiceGroup={setActiveServiceGroupId}
           onOpenGroupManager={() => setServiceGroupDialogOpen(true)}
@@ -844,7 +904,8 @@ function Dashboard({
           servers={state.servers}
           groups={serviceGroups}
           activeGroupId={activeServiceGroupId}
-          onGroupsChange={setServiceGroups}
+          initialError={serviceGroupError}
+          onGroupsChange={persistServiceGroups}
           onActiveGroupChange={setActiveServiceGroupId}
           onClose={() => setServiceGroupDialogOpen(false)}
         />
@@ -1301,6 +1362,8 @@ function ServiceManagementPage({
   connectionMetrics,
   totals,
   viewMode,
+  groupError,
+  groupsReady,
   onViewModeChange,
   onSelectServiceGroup,
   onOpenGroupManager,
@@ -1315,6 +1378,8 @@ function ServiceManagementPage({
   connectionMetrics: Record<string, ConnectionMetric>;
   totals: { upload: number; download: number };
   viewMode: "grid" | "list";
+  groupError: string;
+  groupsReady: boolean;
   onViewModeChange: (mode: "grid" | "list") => void;
   onSelectServiceGroup: (groupId: string) => void;
   onOpenGroupManager: () => void;
@@ -1393,11 +1458,12 @@ function ServiceManagementPage({
             );
           })}
         </div>
-        <button className="service-group-manage-button" type="button" onClick={onOpenGroupManager}>
+        <button className="service-group-manage-button" type="button" disabled={!groupsReady} onClick={onOpenGroupManager}>
           <Tags />
           <span>分组</span>
         </button>
       </section>
+      {groupError && <div className="service-group-error" role="status"><AlertTriangle /><span>{groupError}</span></div>}
 
       <section className={`service-server-list ${viewMode}`}>
         {servers.length ? (
@@ -1425,6 +1491,7 @@ function ServiceGroupDialog({
   servers,
   groups,
   activeGroupId,
+  initialError,
   onGroupsChange,
   onActiveGroupChange,
   onClose,
@@ -1432,14 +1499,24 @@ function ServiceGroupDialog({
   servers: RemoteServer[];
   groups: ServiceGroup[];
   activeGroupId: string;
-  onGroupsChange: (groups: ServiceGroup[]) => void;
+  initialError: string;
+  onGroupsChange: (groups: ServiceGroup[]) => Promise<boolean>;
   onActiveGroupChange: (groupId: string) => void;
   onClose: () => void;
 }) {
   const [newGroupName, setNewGroupName] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState(() => activeGroupId === ALL_SERVICE_GROUP_ID ? groups[0]?.id ?? "" : activeGroupId);
   const [renameValue, setRenameValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [dialogError, setDialogError] = useState(initialError);
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
+  const serversByID = useMemo(() => new Map(servers.map((server) => [server.id, server])), [servers]);
+  const orderedServers = useMemo(() => {
+    if (!selectedGroup) return servers;
+    const selected = selectedGroup.serverIds.map((id) => serversByID.get(id)).filter((server): server is RemoteServer => Boolean(server));
+    const selectedIDs = new Set(selectedGroup.serverIds);
+    return [...selected, ...servers.filter((server) => !selectedIDs.has(server.id))];
+  }, [selectedGroup, servers, serversByID]);
 
   useEffect(() => {
     if (!selectedGroupId && groups[0]) setSelectedGroupId(groups[0].id);
@@ -1452,18 +1529,30 @@ function ServiceGroupDialog({
     setRenameValue(selectedGroup?.name ?? "");
   }, [selectedGroup?.id, selectedGroup?.name]);
 
-  function createGroup(event: React.FormEvent) {
+  async function commitGroups(nextGroups: ServiceGroup[]) {
+    setSaving(true);
+    setDialogError("");
+    try {
+      const saved = await onGroupsChange(nextGroups);
+      if (!saved) setDialogError("保存失败，服务器上的分组没有更改。");
+      return saved;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function createGroup(event: React.FormEvent) {
     event.preventDefault();
     const name = normalizeServiceGroupName(newGroupName);
     if (!name || serviceGroupNameExists(groups, name)) return;
     const group = { id: createServiceGroupId(), name, serverIds: [] };
-    onGroupsChange([...groups, group]);
+    if (!await commitGroups([...groups, group])) return;
     setSelectedGroupId(group.id);
     onActiveGroupChange(group.id);
     setNewGroupName("");
   }
 
-  function renameGroup(event: React.FormEvent) {
+  async function renameGroup(event: React.FormEvent) {
     event.preventDefault();
     if (!selectedGroup) return;
     const name = normalizeServiceGroupName(renameValue);
@@ -1471,31 +1560,50 @@ function ServiceGroupDialog({
       setRenameValue(selectedGroup.name);
       return;
     }
-    onGroupsChange(groups.map((group) => group.id === selectedGroup.id ? { ...group, name } : group));
+    await commitGroups(groups.map((group) => group.id === selectedGroup.id ? { ...group, name } : group));
   }
 
-  function deleteGroup(groupId: string) {
+  async function deleteGroup(groupId: string) {
     const group = groups.find((item) => item.id === groupId);
     if (!group) return;
     if (!window.confirm(`删除分组「${group.name}」？服务器不会被删除。`)) return;
     const nextGroups = groups.filter((item) => item.id !== groupId);
-    onGroupsChange(nextGroups);
+    if (!await commitGroups(nextGroups)) return;
     if (activeGroupId === groupId) onActiveGroupChange(ALL_SERVICE_GROUP_ID);
     if (selectedGroupId === groupId) setSelectedGroupId(nextGroups[0]?.id ?? "");
   }
 
-  function toggleServer(serverId: number, checked: boolean) {
+  async function toggleServer(serverId: number, checked: boolean) {
     if (!selectedGroup) return;
     const currentIds = new Set(selectedGroup.serverIds);
     if (checked) currentIds.add(serverId);
     else currentIds.delete(serverId);
-    onGroupsChange(groups.map((group) => group.id === selectedGroup.id ? { ...group, serverIds: [...currentIds] } : group));
+    await commitGroups(groups.map((group) => group.id === selectedGroup.id ? { ...group, serverIds: [...currentIds] } : group));
   }
 
-  function setAllServers(checked: boolean) {
+  async function setAllServers(checked: boolean) {
     if (!selectedGroup) return;
     const serverIds = checked ? servers.map((server) => server.id) : [];
-    onGroupsChange(groups.map((group) => group.id === selectedGroup.id ? { ...group, serverIds } : group));
+    await commitGroups(groups.map((group) => group.id === selectedGroup.id ? { ...group, serverIds } : group));
+  }
+
+  async function moveGroup(groupId: string, delta: -1 | 1) {
+    const index = groups.findIndex((group) => group.id === groupId);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= groups.length) return;
+    const next = [...groups];
+    [next[index], next[target]] = [next[target], next[index]];
+    await commitGroups(next);
+  }
+
+  async function moveServer(serverId: number, delta: -1 | 1) {
+    if (!selectedGroup) return;
+    const index = selectedGroup.serverIds.indexOf(serverId);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= selectedGroup.serverIds.length) return;
+    const serverIds = [...selectedGroup.serverIds];
+    [serverIds[index], serverIds[target]] = [serverIds[target], serverIds[index]];
+    await commitGroups(groups.map((group) => group.id === selectedGroup.id ? { ...group, serverIds } : group));
   }
 
   return (
@@ -1508,11 +1616,12 @@ function ServiceGroupDialog({
           </button>
         </div>
         <div className="service-dialog-body service-group-dialog-body">
+          {dialogError && <div className="service-group-error" role="status"><AlertTriangle /><span>{dialogError}</span></div>}
           <section className="service-group-section">
             <h4>新建分组</h4>
             <form className="service-group-create" onSubmit={createGroup}>
               <input value={newGroupName} maxLength={28} onChange={(event) => setNewGroupName(event.target.value)} placeholder="输入组名，例如 香港节点" />
-              <button type="submit" disabled={!normalizeServiceGroupName(newGroupName) || serviceGroupNameExists(groups, newGroupName)}>
+              <button type="submit" disabled={saving || !normalizeServiceGroupName(newGroupName) || serviceGroupNameExists(groups, newGroupName)}>
                 <Plus />
                 <span>新增</span>
               </button>
@@ -1532,9 +1641,11 @@ function ServiceGroupDialog({
                       <span>{group.name}</span>
                       <em>{group.serverIds.length} 台</em>
                     </button>
-                    <button type="button" onClick={() => deleteGroup(group.id)} aria-label={`删除 ${group.name}`}>
-                      <Trash2 />
-                    </button>
+                    <div className="service-group-row-actions">
+                      <button type="button" disabled={saving || groups[0]?.id === group.id} onClick={() => void moveGroup(group.id, -1)} aria-label={`上移 ${group.name}`}><ArrowUp /></button>
+                      <button type="button" disabled={saving || groups[groups.length - 1]?.id === group.id} onClick={() => void moveGroup(group.id, 1)} aria-label={`下移 ${group.name}`}><ArrowDown /></button>
+                      <button type="button" disabled={saving} onClick={() => void deleteGroup(group.id)} aria-label={`删除 ${group.name}`}><Trash2 /></button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1548,29 +1659,37 @@ function ServiceGroupDialog({
               <h4>编辑分组</h4>
               <form className="service-group-rename" onSubmit={renameGroup}>
                 <input value={renameValue} maxLength={28} onChange={(event) => setRenameValue(event.target.value)} />
-                <button type="submit" disabled={!normalizeServiceGroupName(renameValue) || normalizeServiceGroupName(renameValue) === selectedGroup.name}>
+                <button type="submit" disabled={saving || !normalizeServiceGroupName(renameValue) || normalizeServiceGroupName(renameValue) === selectedGroup.name}>
                   <CheckCircle2 />
                   <span>保存名称</span>
                 </button>
               </form>
               <div className="service-group-bulk">
-                <button type="button" onClick={() => setAllServers(true)}>全选</button>
-                <button type="button" onClick={() => setAllServers(false)}>清空</button>
+                <button type="button" disabled={saving} onClick={() => void setAllServers(true)}>全选</button>
+                <button type="button" disabled={saving} onClick={() => void setAllServers(false)}>清空</button>
               </div>
               <div className="service-group-server-list">
-                {servers.map((server) => (
-                  <label className="service-group-server-row" key={server.id}>
+                {orderedServers.map((server) => {
+                  const selectedIndex = selectedGroup.serverIds.indexOf(server.id);
+                  return <div className="service-group-server-row" key={server.id}>
+                    <label>
                     <input
                       type="checkbox"
                       checked={selectedGroup.serverIds.includes(server.id)}
-                      onChange={(event) => toggleServer(server.id, event.target.checked)}
+                      disabled={saving}
+                      onChange={(event) => void toggleServer(server.id, event.target.checked)}
                     />
                     <span>
                       <strong>{server.name}</strong>
                       <small>{displayServerAddress(server) || "地址未填写"}</small>
                     </span>
-                  </label>
-                ))}
+                    </label>
+                    {selectedIndex >= 0 && <div className="service-group-server-actions">
+                      <button type="button" disabled={saving || selectedIndex === 0} onClick={() => void moveServer(server.id, -1)} aria-label={`在分组中上移 ${server.name}`}><ArrowUp /></button>
+                      <button type="button" disabled={saving || selectedIndex === selectedGroup.serverIds.length - 1} onClick={() => void moveServer(server.id, 1)} aria-label={`在分组中下移 ${server.name}`}><ArrowDown /></button>
+                    </div>}
+                  </div>;
+                })}
               </div>
             </section>
           )}
@@ -3356,7 +3475,7 @@ function serviceGroupsStorageKey(username: string) {
   return `${SERVICE_GROUPS_STORAGE_PREFIX}${username || "default"}`;
 }
 
-function loadServiceGroups(username: string): ServiceGroup[] {
+function loadLegacyServiceGroups(username: string): ServiceGroup[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = window.localStorage.getItem(serviceGroupsStorageKey(username));
@@ -3369,13 +3488,21 @@ function loadServiceGroups(username: string): ServiceGroup[] {
   }
 }
 
-function saveServiceGroups(username: string, groups: ServiceGroup[]) {
+function removeLegacyServiceGroups(username: string) {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(serviceGroupsStorageKey(username), JSON.stringify(groups));
+    window.localStorage.removeItem(serviceGroupsStorageKey(username));
   } catch {
-    // Keep the in-memory grouping if the browser refuses localStorage writes.
+    // Server state is authoritative even when legacy storage cannot be removed.
   }
+}
+
+function serviceGroupsFromAPI(groups: CustomServiceGroup[]): ServiceGroup[] {
+  return groups.map((group) => ({ id: group.id, name: group.name, serverIds: [...group.server_ids] }));
+}
+
+function serviceGroupsToAPI(groups: ServiceGroup[]): CustomServiceGroup[] {
+  return groups.map((group) => ({ id: group.id, name: group.name, server_ids: [...group.serverIds] }));
 }
 
 function sanitizeServiceGroups(groups: unknown, servers: RemoteServer[]): ServiceGroup[] {

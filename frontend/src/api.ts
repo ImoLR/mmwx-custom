@@ -73,6 +73,10 @@ import type {
   XrayObject,
   XrayOutboundsResponse,
   XrayRoutingResponse,
+  CustomServiceGroup,
+  CustomServiceGroupsResponse,
+  RoutingRulePreset,
+  RoutingRulePresetsResponse,
   XrayServerNICsResponse,
   XrayServiceStatusResponse,
   XrayRecoveryStatusResponse,
@@ -1411,5 +1415,33 @@ export function mutateXrayRouting(token: string, serverId: number, body: { actio
   return request<{ success?: boolean; message?: string }>(remoteUrl("/api/admin/remote/routing", serverId), token, {
     method: "POST",
     body: JSON.stringify(body),
+  });
+}
+
+export function fetchCustomServiceGroups(token: string) {
+  return request<CustomServiceGroupsResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/ui/service-groups"), token);
+}
+
+export function saveCustomServiceGroups(token: string, groups: CustomServiceGroup[], onlyIfEmpty = false) {
+  return request<CustomServiceGroupsResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/ui/service-groups"), token, {
+    method: "PUT",
+    body: JSON.stringify({ groups, only_if_empty: onlyIfEmpty }),
+  });
+}
+
+export function fetchRoutingRulePresets(token: string) {
+  return request<RoutingRulePresetsResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/ui/routing-presets"), token);
+}
+
+export function saveRoutingRulePreset(token: string, name: string, rule: XrayObject) {
+  return request<{ success?: boolean; preset: RoutingRulePreset }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/ui/routing-presets"), token, {
+    method: "POST",
+    body: JSON.stringify({ name, rule }),
+  });
+}
+
+export function deleteRoutingRulePreset(token: string, id: number) {
+  return request<{ success?: boolean }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/ui/routing-presets?id=${encodeURIComponent(String(id))}`), token, {
+    method: "DELETE",
   });
 }
