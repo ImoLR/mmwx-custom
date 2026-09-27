@@ -37,6 +37,18 @@ type remoteServerModeStore interface {
 	SetRemoteServerXrayMode(context.Context, string, string) error
 }
 
+type userTrafficCounter struct {
+	ServerID  string
+	Identity  string
+	Uplink    int64
+	Downlink  int64
+	UpdatedAt time.Time
+}
+
+type userTrafficCounterStore interface {
+	UserTrafficCounters(context.Context) ([]userTrafficCounter, error)
+}
+
 type remoteServerRuntime struct {
 	XrayMode      string     `json:"xray_mode"`
 	XrayRunning   bool       `json:"xray_running"`
@@ -160,6 +172,34 @@ func (s *postgresAdminSessionStore) RemoteServerRuntime(ctx context.Context, ser
 		runtime.LastHeartbeat = &value
 	}
 	return runtime, nil
+}
+
+func (s *postgresAdminSessionStore) UserTrafficCounters(ctx context.Context) ([]userTrafficCounter, error) {
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT server_id, email, GREATEST(COALESCE(uplink, 0), 0),
+		       GREATEST(COALESCE(downlink, 0), 0), updated_at
+		FROM user_email_traffic
+		WHERE COALESCE(email, '') <> ''
+		ORDER BY server_id, email`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []userTrafficCounter{}
+	for rows.Next() {
+		var serverID int64
+		var item userTrafficCounter
+		if err := rows.Scan(&serverID, &item.Identity, &item.Uplink, &item.Downlink, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		item.ServerID = strconv.FormatInt(serverID, 10)
+		item.Identity = strings.TrimSpace(item.Identity)
+		item.UpdatedAt = item.UpdatedAt.UTC()
+		result = append(result, item)
+	}
+	return result, rows.Err()
 }
 
 func (s *postgresAdminSessionStore) SetRemoteServerXrayMode(ctx context.Context, serverID, mode string) error {

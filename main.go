@@ -123,6 +123,9 @@ type app struct {
 	connectionMetrics   map[string]connectionMetrics
 	detailedConnections map[string]serverDetailedConnectionRecord
 	helperRate          map[string]time.Time
+	userRateMu          sync.Mutex
+	userRateBaselines   map[string]userRateBaseline
+	userRateOwnership   map[string]userRateOwnershipCacheEntry
 
 	geoMu       sync.Mutex
 	geoCache    map[string]geoCacheEntry
@@ -150,6 +153,8 @@ func main() {
 		connectionMetrics:   make(map[string]connectionMetrics),
 		detailedConnections: make(map[string]serverDetailedConnectionRecord),
 		helperRate:          make(map[string]time.Time),
+		userRateBaselines:   make(map[string]userRateBaseline),
+		userRateOwnership:   make(map[string]userRateOwnershipCacheEntry),
 		geoCache:            make(map[string]geoCacheEntry),
 		geoInflight:         make(map[string]*geoInflightCall),
 		geoSlots:            make(chan struct{}, 4),

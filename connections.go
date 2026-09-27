@@ -101,18 +101,42 @@ func (a *app) helperUserConnectionsHandler(w http.ResponseWriter, r *http.Reques
 	}
 	a.connectionMu.Unlock()
 
-	external := make(map[string]bool, len(records))
+	counterStore, countersAvailable := a.adminStore.(userTrafficCounterStore)
+	counters := []userTrafficCounter{}
+	if countersAvailable {
+		if loaded, err := counterStore.UserTrafficCounters(r.Context()); err == nil {
+			counters = loaded
+		} else {
+			countersAvailable = false
+		}
+	}
+	serverIDs := make(map[string]struct{}, len(records)+len(counters))
 	for serverID := range records {
+		serverIDs[serverID] = struct{}{}
+	}
+	for _, counter := range counters {
+		serverIDs[counter.ServerID] = struct{}{}
+	}
+	external := make(map[string]bool, len(serverIDs))
+	modes := make(map[string]string, len(serverIDs))
+	for serverID := range serverIDs {
 		runtime, err := store.RemoteServerRuntime(r.Context(), serverID)
 		if err != nil {
 			continue
 		}
+		modes[serverID] = runtime.XrayMode
 		external[serverID] = runtime.XrayMode == "external"
 	}
-	connections, serverConnections, availableServerIDs := aggregateHelperUserConnections(time.Now(), records, external)
+	now := time.Now().UTC()
+	connections, serverConnections, availableServerIDs := aggregateHelperUserConnections(now, records, external)
+	userRates := map[string]normalizedUserRate{}
+	if countersAvailable {
+		userRates = a.normalizedUserRates(r.Context(), now, counters, records, modes)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true, "connections": connections, "server_connections": serverConnections,
 		"available_server_ids": availableServerIDs, "stale_timeout_seconds": int(helperStaleTimeout.Seconds()),
+		"user_rates": userRates, "rate_available": countersAvailable, "rate_stale_timeout_seconds": int(userRateStaleTimeout.Seconds()),
 	})
 }
 

@@ -83,7 +83,6 @@ import {
   fetchTrafficSummary,
   fetchUserConnections,
   fetchHelperUserConnections,
-  fetchUserSpeeds,
   fetchXrayRecoveryStatus,
   fetchXrayServiceStatus,
   fetchXraySnapshots,
@@ -109,6 +108,7 @@ import type {
   ConnectionMetric,
   AgentVersionInfo,
   HelperInstallTokenResponse,
+  HelperUserConnectionsResponse,
   CustomAgentStatusResponse,
   CoreModeResponse,
   CustomReleaseInfoResponse,
@@ -318,20 +318,6 @@ function Dashboard({
   const formalUserConnectionsRef = useRef<Record<string, number>>({});
   const helperUserConnectionsRef = useRef<Record<string, number>>({});
 
-  const refreshUserSpeeds = useCallback(
-    async (servers: RemoteServer[]) => {
-      if (servers.length === 0) {
-        setState((current) => ({ ...current, userSpeeds: {} }));
-        return;
-      }
-
-      const results = await Promise.allSettled(servers.map((server) => fetchUserSpeeds(session.token, server.id)));
-      const userSpeeds = aggregateUserSpeeds(results);
-      setState((current) => ({ ...current, userSpeeds }));
-    },
-    [session.token],
-  );
-
   const loadDashboard = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -346,10 +332,7 @@ function Dashboard({
       ]);
 
       const servers = remoteServers.servers ?? [];
-      const [speedResults, agentVersionResults] = await Promise.all([
-        Promise.allSettled(servers.map((server) => fetchUserSpeeds(session.token, server.id))),
-        Promise.allSettled(servers.map((server) => fetchAgentVersionInfo(session.token, server.id))),
-      ]);
+      const agentVersionResults = await Promise.allSettled(servers.map((server) => fetchAgentVersionInfo(session.token, server.id)));
       const serversWithAgentVersions = servers.map((server, index) => {
         const result = agentVersionResults[index];
         if (result?.status !== "fulfilled" || !result.value.current) return server;
@@ -364,7 +347,7 @@ function Dashboard({
         systemMetrics: current.systemMetrics,
         servers: serversWithAgentVersions,
         userConnections: mergeUserConnectionCounts(formalUserConnectionsRef.current, helperUserConnectionsRef.current),
-        userSpeeds: aggregateUserSpeeds(speedResults),
+        userSpeeds: normalizedUserSpeeds(helperUserConnections),
         adminTraffic,
         connectionMetrics: helperConnections.metrics ?? {},
       }));
@@ -382,6 +365,7 @@ function Dashboard({
       setState((current) => ({
         ...current,
         userConnections: mergeUserConnectionCounts(formalUserConnectionsRef.current, helperUserConnectionsRef.current),
+        userSpeeds: normalizedUserSpeeds(response),
       }));
     } catch {
       // Preserve the last fresh Helper snapshot; the endpoint itself excludes stale records.
@@ -603,7 +587,6 @@ function Dashboard({
       try {
         const snapshot = JSON.parse(event.data as string) as RealtimeSnapshot;
         if (snapshot.type !== "realtime") return;
-        if (snapshot.servers) void refreshUserSpeeds(snapshot.servers);
         if (snapshot.userConnections) formalUserConnectionsRef.current = snapshot.userConnections;
         setState((current) => ({
           ...current,
@@ -669,7 +652,7 @@ function Dashboard({
       window.removeEventListener("focus", reconnectNow);
       ws?.close();
     };
-  }, [refreshUserSpeeds, session.token]);
+  }, [session.token]);
 
   const totals = useMemo(() => calculateTotals(state.servers), [state.servers]);
   const periodNodes = state.period?.range === trafficRange ? state.nodes : [];
@@ -3672,13 +3655,10 @@ function serverRegionFieldKey(server: RemoteServer) {
   ].join("|");
 }
 
-function aggregateUserSpeeds(results: PromiseSettledResult<Awaited<ReturnType<typeof fetchUserSpeeds>>>[]) {
+function normalizedUserSpeeds(response: HelperUserConnectionsResponse) {
   const speeds: Record<string, number> = {};
-  for (const result of results) {
-    if (result.status !== "fulfilled") continue;
-    for (const [username, speed] of Object.entries(result.value.user_speeds ?? {})) {
-      speeds[username] = (speeds[username] ?? 0) + speed;
-    }
+  for (const [username, rate] of Object.entries(response.user_rates ?? {})) {
+    if (rate.rate_fresh && rate.total_bytes_per_second > 0) speeds[username] = rate.total_bytes_per_second;
   }
   return speeds;
 }

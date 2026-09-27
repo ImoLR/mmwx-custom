@@ -1261,6 +1261,23 @@ export type HelperUserConnectionsResponse = UserConnectionsResponse & {
   server_connections?: Record<string, Record<string, number>>;
   available_server_ids?: string[];
   stale_timeout_seconds?: number;
+  rate_available?: boolean;
+  rate_stale_timeout_seconds?: number;
+  user_rates?: Record<string, {
+    upload_bytes_per_second: number;
+    download_bytes_per_second: number;
+    total_bytes_per_second: number;
+    rate_updated_at?: string;
+    rate_fresh: boolean;
+    sources?: Array<{
+      server_id: string;
+      identity: string;
+      mode: string;
+      upload_bytes_per_second: number;
+      download_bytes_per_second: number;
+      rate_updated_at: string;
+    }>;
+  }>;
 };
 
 export type UserSpeedsResponse = {
