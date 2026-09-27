@@ -24,7 +24,7 @@ const (
 	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
 	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
 	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
-	helperVersion        = "v0.6.5"
+	helperVersion        = "v0.6.6"
 )
 
 type config struct {
@@ -102,6 +102,7 @@ func main() {
 	state.MachineID = machineID
 	onlineTracker := newOnlineIPTracker()
 	nftables := newNftablesManager(cfg.EnableNft)
+	machineProtection := newMachineProtectionManager()
 	lifecycle := newLifecycleManager(core)
 	executor := &commandExecutor{lifecycle: lifecycle, core: core, state: &state, client: client, config: cfg}
 	lifecycle.progress = executor.reportUpdateProgress
@@ -140,6 +141,10 @@ func main() {
 	}
 	if *printOnly {
 		snapshot := collectDetailedSnapshot(context.Background(), core, onlineTracker, state.Settings)
+		// Print mode is diagnostic and must not mutate firewall state. Report the
+		// most recently persisted reconcile result instead.
+		machineStatus := state.MachineProtection
+		snapshot.MachineProtection = &machineStatus
 		_ = json.NewEncoder(os.Stdout).Encode(snapshot)
 		return
 	}
@@ -156,6 +161,11 @@ func main() {
 		}
 		cancelApply()
 		snapshot := collectDetailedSnapshot(context.Background(), core, onlineTracker, state.Settings)
+		machineCtx, cancelMachine := context.WithTimeout(context.Background(), 5*time.Second)
+		machineStatus := machineProtection.reconcile(machineCtx, state.Settings.MachineProtection, snapshot.System, machineControlledPorts(snapshot))
+		cancelMachine()
+		snapshot.MachineProtection = &machineStatus
+		state.MachineProtection = machineStatus
 		if snapshot.Core.Available {
 			applyNftables(nftables, snapshot, state.Settings)
 		}
@@ -193,6 +203,13 @@ func main() {
 		cancelApply()
 		if snapshot.Core.Available {
 			applyNftables(nftables, snapshot, state.Settings)
+		}
+		machineCtx, cancelMachine = context.WithTimeout(context.Background(), 5*time.Second)
+		machineStatus = machineProtection.reconcile(machineCtx, state.Settings.MachineProtection, snapshot.System, machineControlledPorts(snapshot))
+		cancelMachine()
+		state.MachineProtection = machineStatus
+		if err := saveLocalState(cfg.StatePath, state); err != nil {
+			log.Printf("[mmwxc-helper] save machine protection state failed: %v", err)
 		}
 	}
 

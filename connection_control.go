@@ -32,22 +32,30 @@ type serverUserConnectionSettings struct {
 
 type serverPortConnectionSettings struct {
 	InboundTag                 string `json:"inbound_tag"`
+	MaxTotalConnections        *int64 `json:"max_total_connections"`
 	MaxInboundConnections      *int64 `json:"max_inbound_connections"`
 	MaxInboundOnlineIPs        *int   `json:"max_inbound_online_ips"`
 	MaxOutboundTCPActive       *int64 `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond *int   `json:"max_outbound_tcp_new_per_second"`
 }
 
+type serverMachineProtectionSettings struct {
+	Enabled   bool   `json:"enabled"`
+	MaxActive *int64 `json:"max_active"`
+	MaxTotal  *int64 `json:"max_total"`
+}
+
 type serverConnectionSettings struct {
-	DefaultCloseWaitTimeoutSeconds *int64                         `json:"default_close_wait_timeout_seconds"`
-	OnlineIPGracePeriodSeconds     int64                          `json:"online_ip_grace_period_seconds"`
-	GlobalTotalLimitEnabled        bool                           `json:"global_total_limit_enabled"`
-	MaxGlobalTotalConnections      *int64                         `json:"max_global_total_connections"`
-	MaxGlobalInboundConnections    *int64                         `json:"max_global_inbound_connections"`
-	Users                          []serverUserConnectionSettings `json:"users"`
-	Ports                          []serverPortConnectionSettings `json:"ports"`
-	ManagementUsers                []serverManagementUserSettings `json:"management_users"`
-	ManagementMappings             []serverManagementMapping      `json:"management_mappings,omitempty"`
+	MachineProtection              *serverMachineProtectionSettings `json:"machine_protection,omitempty"`
+	DefaultCloseWaitTimeoutSeconds *int64                           `json:"default_close_wait_timeout_seconds"`
+	OnlineIPGracePeriodSeconds     int64                            `json:"online_ip_grace_period_seconds"`
+	GlobalTotalLimitEnabled        bool                             `json:"global_total_limit_enabled"`
+	MaxGlobalTotalConnections      *int64                           `json:"max_global_total_connections"`
+	MaxGlobalInboundConnections    *int64                           `json:"max_global_inbound_connections"`
+	Users                          []serverUserConnectionSettings   `json:"users"`
+	Ports                          []serverPortConnectionSettings   `json:"ports"`
+	ManagementUsers                []serverManagementUserSettings   `json:"management_users"`
+	ManagementMappings             []serverManagementMapping        `json:"management_mappings,omitempty"`
 }
 
 type serverTCPStateCounts struct {
@@ -62,6 +70,7 @@ type serverTCPStateCounts struct {
 	LastAck     int64 `json:"last_ack"`
 	Closing     int64 `json:"closing"`
 	Close       int64 `json:"close"`
+	Listen      int64 `json:"listen"`
 	Unknown     int64 `json:"unknown"`
 }
 
@@ -109,7 +118,9 @@ type serverProxyUserConnections struct {
 	RejectedActiveLimit            uint64                   `json:"rejected_active_limit"`
 	RejectedNewRateLimit           uint64                   `json:"rejected_new_rate_limit"`
 	RejectedUserTotalLimit         uint64                   `json:"rejected_user_total_limit"`
+	RejectedUserCombinedLimit      uint64                   `json:"rejected_user_combined_limit"`
 	RejectedPortTotalLimit         uint64                   `json:"rejected_port_total_limit"`
+	RejectedPortCombinedLimit      uint64                   `json:"rejected_port_combined_limit"`
 	RejectedUserNewRateLimit       uint64                   `json:"rejected_user_new_rate_limit"`
 	RejectedPortNewRateLimit       uint64                   `json:"rejected_port_new_rate_limit"`
 	RejectedOnlineIPLimit          uint64                   `json:"rejected_online_ip_limit"`
@@ -126,6 +137,7 @@ type serverProxyUserConnections struct {
 	MaxPortOutboundTCPActive       *int64                   `json:"max_port_outbound_tcp_active"`
 	MaxPortOutboundTCPNewPerSecond *int                     `json:"max_port_outbound_tcp_new_per_second"`
 	MaxPortInboundConnections      *int64                   `json:"max_port_inbound_connections"`
+	MaxPortTotalConnections        *int64                   `json:"max_port_total_connections"`
 	MaxPortInboundOnlineIPs        *int                     `json:"max_port_inbound_online_ips"`
 	CloseWaitTimeoutSeconds        *int64                   `json:"close_wait_timeout_seconds"`
 	Source                         string                   `json:"source"`
@@ -148,14 +160,40 @@ type serverCoreConnectionStatus struct {
 	Error     string    `json:"error,omitempty"`
 }
 
+type serverMachineProtectionStatus struct {
+	Supported        bool                            `json:"supported"`
+	Configured       serverMachineProtectionSettings `json:"configured"`
+	Effective        bool                            `json:"effective"`
+	Blocking         bool                            `json:"blocking"`
+	ThresholdReason  string                          `json:"threshold_reason,omitempty"`
+	Active           int64                           `json:"active"`
+	Total            int64                           `json:"total"`
+	ControlledPorts  []uint32                        `json:"controlled_ports"`
+	LastReconciledAt time.Time                       `json:"last_reconciled_at,omitempty"`
+	LastError        string                          `json:"last_error,omitempty"`
+}
+
+type serverCoreAccounting struct {
+	Total               int64 `json:"total"`
+	Attributed          int64 `json:"attributed"`
+	Unattributed        int64 `json:"unattributed"`
+	InboundCurrent      int64 `json:"inbound_current"`
+	OutboundActive      int64 `json:"outbound_active"`
+	OutboundPending     int64 `json:"outbound_pending"`
+	TrackerTotal        int64 `json:"tracker_total"`
+	ReconciliationDelta int64 `json:"reconciliation_delta"`
+	Balanced            bool  `json:"balanced"`
+}
+
 type serverDetailedConnectionSnapshot struct {
-	System           serverTCPStateCounts               `json:"system"`
-	Inbounds         []serverInboundConnections         `json:"inbounds"`
-	ProxyUsers       []serverProxyUserConnections       `json:"proxy_users"`
-	ManagementGroups []serverManagementGroupConnections `json:"management_groups"`
-	Global           serverGlobalConnections            `json:"global"`
-	Core             serverCoreConnectionStatus         `json:"core"`
-	SampledAt        time.Time                          `json:"sampled_at"`
+	System            serverTCPStateCounts               `json:"system"`
+	Inbounds          []serverInboundConnections         `json:"inbounds"`
+	ProxyUsers        []serverProxyUserConnections       `json:"proxy_users"`
+	ManagementGroups  []serverManagementGroupConnections `json:"management_groups"`
+	Global            serverGlobalConnections            `json:"global"`
+	Core              serverCoreConnectionStatus         `json:"core"`
+	MachineProtection *serverMachineProtectionStatus     `json:"machine_protection,omitempty"`
+	SampledAt         time.Time                          `json:"sampled_at"`
 }
 
 type helperDetailedMetricsRequest struct {
@@ -203,6 +241,18 @@ func cloneServerConnectionSettings(settings serverConnectionSettings) serverConn
 }
 
 func validateServerConnectionSettings(settings serverConnectionSettings) error {
+	if settings.MachineProtection != nil {
+		machine := settings.MachineProtection
+		if machine.MaxActive != nil && *machine.MaxActive <= 0 {
+			return errors.New("machine max_active must be positive when set")
+		}
+		if machine.MaxTotal != nil && *machine.MaxTotal <= 0 {
+			return errors.New("machine max_total must be positive when set")
+		}
+		if machine.Enabled && machine.MaxActive == nil && machine.MaxTotal == nil {
+			return errors.New("machine protection requires max_active or max_total")
+		}
+	}
 	if settings.OnlineIPGracePeriodSeconds < 1 || settings.OnlineIPGracePeriodSeconds > 3600 {
 		return errors.New("online_ip_grace_period_seconds must be between 1 and 3600")
 	}
@@ -241,6 +291,9 @@ func validateServerConnectionSettings(settings serverConnectionSettings) error {
 			return fmt.Errorf("duplicate management user settings for %s", username)
 		}
 		seenManagement[username] = struct{}{}
+		if user.MaxTotalConnections != nil && *user.MaxTotalConnections <= 0 {
+			return errors.New("management max_total_connections must be positive when set")
+		}
 		if user.MaxInboundConnections != nil && *user.MaxInboundConnections < 0 {
 			return errors.New("management max_inbound_connections must be non-negative")
 		}
@@ -264,6 +317,9 @@ func validateServerConnectionSettings(settings serverConnectionSettings) error {
 			return fmt.Errorf("duplicate port settings for %s", tag)
 		}
 		seenPorts[tag] = struct{}{}
+		if port.MaxTotalConnections != nil && *port.MaxTotalConnections <= 0 {
+			return errors.New("port max_total_connections must be positive when set")
+		}
 		if port.MaxInboundConnections != nil && *port.MaxInboundConnections < 0 {
 			return errors.New("port max_inbound_connections must be non-negative")
 		}
@@ -278,6 +334,49 @@ func validateServerConnectionSettings(settings serverConnectionSettings) error {
 		}
 	}
 	return nil
+}
+
+func helperSupportsMachineProtection(version string) bool {
+	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
+	if before, _, found := strings.Cut(version, "-"); found {
+		version = before
+	}
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	major, errMajor := strconv.Atoi(parts[0])
+	minor, errMinor := strconv.Atoi(parts[1])
+	patch, errPatch := strconv.Atoi(parts[2])
+	if errMajor != nil || errMinor != nil || errPatch != nil {
+		return false
+	}
+	return major > 0 || minor > 6 || (minor == 6 && patch >= 6)
+}
+
+func settingsForHelper(settings serverConnectionSettings, helperVersion string) serverConnectionSettings {
+	settings = cloneServerConnectionSettings(settings)
+	if !helperSupportsMachineProtection(helperVersion) {
+		settings.MachineProtection = nil
+	}
+	return settings
+}
+
+func coreAccounting(snapshot serverDetailedConnectionSnapshot) serverCoreAccounting {
+	accounting := serverCoreAccounting{Total: snapshot.Global.CurrentTotal, InboundCurrent: snapshot.Global.CurrentInbound}
+	for _, runtime := range snapshot.ProxyUsers {
+		accounting.TrackerTotal += runtime.CurrentTotal
+		accounting.OutboundActive += runtime.OutboundActive
+		accounting.OutboundPending += runtime.OutboundPending
+		if strings.TrimSpace(runtime.ManagementGroup) == "" {
+			accounting.Unattributed += runtime.CurrentTotal
+		} else {
+			accounting.Attributed += runtime.CurrentTotal
+		}
+	}
+	accounting.ReconciliationDelta = accounting.Total - accounting.TrackerTotal
+	accounting.Balanced = accounting.ReconciliationDelta == 0 && accounting.Total == accounting.Attributed+accounting.Unattributed
+	return accounting
 }
 
 func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Request) {
@@ -356,7 +455,7 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 			settings.ManagementMappings = mappings
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "settings": sortedConnectionSettings(settings), "command": command})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "settings": sortedConnectionSettings(settingsForHelper(settings, request.HelperVersion)), "command": command})
 }
 
 func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
@@ -371,6 +470,14 @@ func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
 	}
 	if snapshot.Global.CurrentTotal < 0 || snapshot.Global.CurrentInbound < 0 {
 		return errors.New("negative global connection count")
+	}
+	if machine := snapshot.MachineProtection; machine != nil {
+		if machine.Active < 0 || machine.Total < 0 {
+			return errors.New("negative machine protection count")
+		}
+		if len(machine.ControlledPorts) > 10000 {
+			return errors.New("too many machine protection ports")
+		}
 	}
 	for _, inbound := range snapshot.Inbounds {
 		if err := validateTCPStateCounts(inbound.TCP, "inbound"); err != nil {
@@ -414,7 +521,7 @@ func tcpStateValues(counts serverTCPStateCounts) []int64 {
 	return []int64{
 		counts.Total, counts.Established, counts.SynSent, counts.SynRecv,
 		counts.FinWait1, counts.FinWait2, counts.TimeWait, counts.CloseWait,
-		counts.LastAck, counts.Closing, counts.Close, counts.Unknown,
+		counts.LastAck, counts.Closing, counts.Close, counts.Listen, counts.Unknown,
 	}
 }
 
@@ -436,6 +543,9 @@ func normalizeDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) server
 	}
 	if snapshot.ManagementGroups == nil {
 		snapshot.ManagementGroups = []serverManagementGroupConnections{}
+	}
+	if snapshot.MachineProtection != nil && snapshot.MachineProtection.ControlledPorts == nil {
+		snapshot.MachineProtection.ControlledPorts = []uint32{}
 	}
 	for index := range snapshot.Inbounds {
 		if snapshot.Inbounds[index].OnlineIPs == nil {
@@ -492,6 +602,15 @@ func (a *app) serverConnectionsHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
 			return
 		}
+		if settings.MachineProtection != nil && settings.MachineProtection.Enabled {
+			a.connectionMu.Lock()
+			record, exists := a.detailedConnections[serverID]
+			a.connectionMu.Unlock()
+			if !exists || record.Snapshot.MachineProtection == nil || !record.Snapshot.MachineProtection.Supported {
+				writeJSON(w, http.StatusConflict, map[string]any{"success": false, "message": "machine protection is not supported by the current Helper; upgrade Helper first"})
+				return
+			}
+		}
 		settings.ManagementMappings = a.helperState.connectionSettings(serverID).ManagementMappings
 		if err := a.helperState.setConnectionSettings(serverID, settings); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "failed to persist settings"})
@@ -520,7 +639,7 @@ func (a *app) writeServerConnections(w http.ResponseWriter, r *http.Request, ser
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true, "available": available, "stale_timeout_seconds": int(helperStaleTimeout.Seconds()),
-		"record": record, "settings": settings, "management": management, "ownership_error": ownershipError,
+		"record": record, "settings": settings, "management": management, "core_accounting": coreAccounting(record.Snapshot), "ownership_error": ownershipError,
 	})
 }
 

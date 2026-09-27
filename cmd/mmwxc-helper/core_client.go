@@ -46,22 +46,29 @@ func (client *coreClient) snapshot(ctx context.Context) (coreSnapshotResponse, e
 	if err := decoder.Decode(&snapshot); err != nil {
 		return coreSnapshotResponse{}, fmt.Errorf("decode core snapshot: %w", err)
 	}
-	if snapshot.Version != 1 && snapshot.Version != 2 && snapshot.Version != 3 && snapshot.Version != 4 {
+	if snapshot.Version != 1 && snapshot.Version != 2 && snapshot.Version != 3 && snapshot.Version != 4 && snapshot.Version != 5 {
 		return coreSnapshotResponse{}, fmt.Errorf("unsupported core interface version %d", snapshot.Version)
 	}
 	return snapshot, nil
 }
 
 func (client *coreClient) apply(ctx context.Context, settings connectionSettings) error {
-	legacy, err := client.applyConfig(ctx, settings.coreConfig())
+	unknownFields, err := client.applyConfig(ctx, settings.coreConfig())
 	if err == nil {
 		return nil
 	}
-	if !legacy {
+	if !unknownFields {
 		return err
 	}
-	_, retryErr := client.applyConfig(ctx, settings.legacyCoreConfig())
-	return retryErr
+	unknownFields, err = client.applyConfig(ctx, settings.coreConfigV4())
+	if err == nil {
+		return nil
+	}
+	if !unknownFields {
+		return err
+	}
+	_, err = client.applyConfig(ctx, settings.legacyCoreConfig())
+	return err
 }
 
 func (client *coreClient) applyConfig(ctx context.Context, config any) (bool, error) {

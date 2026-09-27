@@ -21,7 +21,7 @@ const widths = [360, 375, 390, 412];
 const tcp = (overrides = {}) => ({
   tcp_total: 24, established: 8, syn_sent: 1, syn_recv: 0,
   fin_wait_1: 1, fin_wait_2: 0, time_wait: 12, close_wait: 0,
-  last_ack: 1, closing: 0, close: 1, unknown: 0, ...overrides,
+  last_ack: 1, closing: 0, close: 1, listen: 1, unknown: 0, ...overrides,
 });
 const proxy = (tag, user, port, outbound) => ({
   identity: { inbound_tag: tag, user }, inbound_tag: tag, user, inbound_port: port,
@@ -30,27 +30,34 @@ const proxy = (tag, user, port, outbound) => ({
   outbound_pending: 1, outbound_tcp: tcp({ tcp_total: outbound + 1, established: outbound, time_wait: 1 }),
   outbound_new_rate: 2, outbound_new_total: 300, outbound_rejected_total: 5,
   rejected_active_limit: 2, rejected_new_rate_limit: 1, rejected_user_total_limit: 1,
-  rejected_port_total_limit: 2, rejected_user_new_rate_limit: 1, rejected_port_new_rate_limit: 1,
-  rejected_online_ip_limit: 0, rejected_global_total_limit: 0, max_inbound_online_ips: null,
+  rejected_user_combined_limit: 0, rejected_port_total_limit: 2, rejected_port_combined_limit: 0,
+  rejected_user_new_rate_limit: 1, rejected_port_new_rate_limit: 1, rejected_online_ip_limit: 0,
+  rejected_global_total_limit: 0, rejected_user_inbound_limit: 0, rejected_port_inbound_limit: 0,
+  rejected_user_online_ip_limit: 0, rejected_port_online_ip_limit: 0, rejected_global_inbound_limit: 0,
+  max_inbound_online_ips: null,
   max_total_connections: null, max_outbound_tcp_active: null, max_outbound_tcp_new_per_second: null,
   close_wait_timeout_seconds: null, source: "xray_core_runtime", management_group: "ken",
 });
 const proxyA = proxy("shadowsocks2022-10015", "proto-a", 10015, 8);
 const proxyB = proxy("vless-10016", "proto-b", 10016, 6);
 const aggregate = {
-  group: "ken", current_total: 20, inbound_active: 6, inbound_tcp: tcp({ tcp_total: 6, established: 6, time_wait: 0 }),
+  group: "ken", current_total: 20, inbound_active: 6, inbound_current: 6, inbound_tcp: tcp({ tcp_total: 6, established: 6, time_wait: 0 }),
   inbound_online_ips: [{ ip: "198.51.100.23", connections: 6 }], outbound_active: 14, outbound_pending: 2,
   outbound_tcp: tcp(), outbound_new_rate: 4, outbound_new_total: 600, outbound_rejected_total: 10,
-  rejected_user_total_limit: 2, rejected_user_new_rate_limit: 2, rejected_port_total_limit: 4,
-  rejected_port_new_rate_limit: 2, rejected_online_ip_limit: 0, rejected_global_total_limit: 0,
-  max_outbound_tcp_active: 100, max_outbound_tcp_new_per_second: 20,
+  rejected_user_total_limit: 2, rejected_user_combined_limit: 0, rejected_user_new_rate_limit: 2,
+  rejected_port_total_limit: 4, rejected_port_combined_limit: 0, rejected_port_new_rate_limit: 2,
+  rejected_online_ip_limit: 0, rejected_global_total_limit: 0, rejected_user_inbound_limit: 0,
+  rejected_port_inbound_limit: 0, rejected_user_online_ip_limit: 0, rejected_port_online_ip_limit: 0,
+  rejected_global_inbound_limit: 0, max_total_connections: 300, max_inbound_connections: 200,
+  max_inbound_online_ips: 10, max_outbound_tcp_active: 100, max_outbound_tcp_new_per_second: 20,
 };
 const fixture = {
   success: true, available: true, stale_timeout_seconds: 15,
   settings: {
+    machine_protection: { enabled: true, max_active: 100000, max_total: 200000 },
     default_close_wait_timeout_seconds: null, online_ip_grace_period_seconds: 30,
-    global_total_limit_enabled: true, max_global_total_connections: 500,
-    users: [], management_users: [{ username: "ken", max_outbound_tcp_active: 100, max_outbound_tcp_new_per_second: 20 }],
+    global_total_limit_enabled: true, max_global_total_connections: 500, max_global_inbound_connections: 400,
+    users: [], management_users: [{ username: "ken", max_total_connections: 300, max_inbound_connections: 200, max_inbound_online_ips: 10, max_outbound_tcp_active: 100, max_outbound_tcp_new_per_second: 20 }],
     ports: [
       { inbound_tag: proxyA.inbound_tag, max_outbound_tcp_active: 30, max_outbound_tcp_new_per_second: 10 },
       { inbound_tag: proxyB.inbound_tag, max_outbound_tcp_active: 50, max_outbound_tcp_new_per_second: null },
@@ -69,14 +76,17 @@ const fixture = {
     assignable_users: ["ken", "imolr", "odingAI"], warnings: [],
   },
   record: {
-    server_id: "12", helper_version: "v0.6.0", updated_at: "2026-09-15T10:00:00Z",
+    server_id: "12", helper_version: "v0.6.6", updated_at: "2026-09-15T10:00:00Z",
     snapshot: {
       system: tcp({ tcp_total: 200, established: 82, time_wait: 107 }),
       inbounds: [], proxy_users: [proxyA, proxyB], management_groups: [aggregate],
-      global: { current_total: 40, max_total: 500, rejected_global_total_limit: 0 },
-      core: { available: true, interface_version: 3, started_at: "2026-09-15T10:00:00Z" }, sampled_at: "2026-09-15T10:00:00Z",
+      global: { current_total: 40, max_total: 500, rejected_global_total_limit: 0, current_inbound: 6, max_inbound: 400, rejected_global_inbound_limit: 0 },
+      core: { available: true, interface_version: 5, started_at: "2026-09-15T10:00:00Z" },
+      machine_protection: { supported: true, configured: { enabled: true, max_active: 100000, max_total: 200000 }, effective: true, blocking: false, active: 93, total: 200, controlled_ports: [10015, 10016], last_reconciled_at: "2026-09-15T10:00:00Z" },
+      sampled_at: "2026-09-15T10:00:00Z",
     },
   },
+  core_accounting: { total: 40, attributed: 20, unattributed: 20, inbound_current: 6, outbound_active: 14, outbound_pending: 2, tracker_total: 40, reconciliation_delta: 0, balanced: true },
 };
 
 const fixtureModule = `
@@ -113,11 +123,14 @@ try {
     await page.goto(baseURL, { waitUntil: "networkidle" });
     await page.waitForSelector(".connection-user-fold");
     await assertNoOverflow(page, width, "folded");
+    await assertMinimumFont(page, width);
+    await page.screenshot({ path: path.join(repoRoot, "tests", "visual", "current", `connections-overview-${width}.png`), fullPage: true });
     await page.locator(".connection-user-fold > summary").click();
     await assertNoOverflow(page, width, "user-open");
     await page.locator(".connection-port-fold > summary").first().click();
     await assertNoOverflow(page, width, "port-open");
-    const machineOpen = await page.locator(".connection-manager > details.connection-fold").evaluate((element) => element.hasAttribute("open"));
+    await page.screenshot({ path: path.join(repoRoot, "tests", "visual", "current", `connections-port-${width}.png`), fullPage: true });
+    const machineOpen = await page.locator(".connection-state-fold").evaluate((element) => element.hasAttribute("open"));
     const secondPortOpen = await page.locator(".connection-port-fold").nth(1).evaluate((element) => element.hasAttribute("open"));
     if (machineOpen || secondPortOpen) throw new Error(`${width}px default folding regressed`);
     await context.close();
@@ -126,6 +139,17 @@ try {
 } finally {
   await browser.close();
   await server.close();
+}
+
+async function assertMinimumFont(page, width) {
+  const undersized = await page.locator(".connection-manager *").evaluateAll((elements) => elements
+    .filter((element) => {
+      const style = getComputedStyle(element);
+      return style.display !== "none" && style.visibility !== "hidden" && element.childNodes.length === 1 && element.firstChild?.nodeType === Node.TEXT_NODE && element.textContent?.trim();
+    })
+    .map((element) => ({ text: element.textContent.trim().slice(0, 40), size: Number.parseFloat(getComputedStyle(element).fontSize) }))
+    .filter((item) => item.size < 15));
+  if (undersized.length) throw new Error(`${width}px connection text below 15px: ${JSON.stringify(undersized)}`);
 }
 
 async function assertNoOverflow(page, width, state) {

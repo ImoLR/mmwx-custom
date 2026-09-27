@@ -202,8 +202,7 @@ func summarizeTCP(entries []socketEntry) tcpStateCounts {
 		case tcpClose:
 			counts.Close++
 		case tcpListen:
-			// LISTEN is part of the system TCP table total, but not a live
-			// client connection state.
+			counts.Listen++
 		default:
 			counts.Unknown++
 		}

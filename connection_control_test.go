@@ -22,6 +22,7 @@ func TestValidateServerConnectionSettings(t *testing.T) {
 		MaxOutboundTCPNewPerSecond: intPointer(30),
 	}}
 	valid.MaxGlobalInboundConnections = int64Pointer(1000)
+	valid.MachineProtection = &serverMachineProtectionSettings{Enabled: true, MaxActive: int64Pointer(10000), MaxTotal: int64Pointer(20000)}
 	valid.ManagementUsers = []serverManagementUserSettings{{Username: "ken", MaxInboundConnections: int64Pointer(100), MaxInboundOnlineIPs: intPointer(3), MaxOutboundTCPActive: int64Pointer(100)}}
 	valid.Ports = []serverPortConnectionSettings{{InboundTag: "in-a", MaxInboundConnections: int64Pointer(60), MaxInboundOnlineIPs: intPointer(2), MaxOutboundTCPActive: int64Pointer(30)}}
 	if err := validateServerConnectionSettings(valid); err != nil {
@@ -46,6 +47,11 @@ func TestValidateServerConnectionSettings(t *testing.T) {
 	}
 	invalid = cloneServerConnectionSettings(valid)
 	invalid.GlobalTotalLimitEnabled = true
+	invalid.MachineProtection = &serverMachineProtectionSettings{Enabled: true}
+	if err := validateServerConnectionSettings(invalid); err == nil {
+		t.Fatal("enabled machine protection without thresholds was accepted")
+	}
+	invalid.MachineProtection = valid.MachineProtection
 	if err := validateServerConnectionSettings(invalid); err == nil {
 		t.Fatal("enabled global limit without a value was accepted")
 	}
@@ -68,6 +74,7 @@ func TestHelperStatePersistsConnectionSettings(t *testing.T) {
 		MaxOutboundTCPActive: int64Pointer(10),
 	}}
 	settings.GlobalTotalLimitEnabled = true
+	settings.MachineProtection = &serverMachineProtectionSettings{Enabled: true, MaxActive: int64Pointer(10000)}
 	settings.MaxGlobalTotalConnections = int64Pointer(200)
 	settings.MaxGlobalInboundConnections = int64Pointer(1000)
 	settings.ManagementUsers = []serverManagementUserSettings{{Username: "ken", MaxInboundConnections: int64Pointer(100), MaxInboundOnlineIPs: intPointer(3), MaxOutboundTCPActive: int64Pointer(100)}}
@@ -81,8 +88,41 @@ func TestHelperStatePersistsConnectionSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := reloaded.connectionSettings("7")
-	if len(got.Users) != 1 || got.Users[0].MaxOutboundTCPActive == nil || *got.Users[0].MaxOutboundTCPActive != 10 || got.Users[0].MaxTotalConnections == nil || *got.Users[0].MaxTotalConnections != 20 || len(got.ManagementUsers) != 1 || got.ManagementUsers[0].MaxInboundConnections == nil || *got.ManagementUsers[0].MaxInboundConnections != 100 || len(got.Ports) != 1 || got.Ports[0].MaxInboundOnlineIPs == nil || *got.Ports[0].MaxInboundOnlineIPs != 2 || len(got.ManagementMappings) != 1 || !got.GlobalTotalLimitEnabled || got.MaxGlobalTotalConnections == nil || *got.MaxGlobalTotalConnections != 200 || got.MaxGlobalInboundConnections == nil || *got.MaxGlobalInboundConnections != 1000 {
+	if len(got.Users) != 1 || got.Users[0].MaxOutboundTCPActive == nil || *got.Users[0].MaxOutboundTCPActive != 10 || got.Users[0].MaxTotalConnections == nil || *got.Users[0].MaxTotalConnections != 20 || len(got.ManagementUsers) != 1 || got.ManagementUsers[0].MaxInboundConnections == nil || *got.ManagementUsers[0].MaxInboundConnections != 100 || len(got.Ports) != 1 || got.Ports[0].MaxInboundOnlineIPs == nil || *got.Ports[0].MaxInboundOnlineIPs != 2 || len(got.ManagementMappings) != 1 || !got.GlobalTotalLimitEnabled || got.MaxGlobalTotalConnections == nil || *got.MaxGlobalTotalConnections != 200 || got.MaxGlobalInboundConnections == nil || *got.MaxGlobalInboundConnections != 1000 || got.MachineProtection == nil || got.MachineProtection.MaxActive == nil || *got.MachineProtection.MaxActive != 10000 {
 		t.Fatalf("settings did not persist: %#v", got)
+	}
+}
+
+func TestCoreAccountingExplainsAttributedAndUnattributed(t *testing.T) {
+	snapshot := serverDetailedConnectionSnapshot{
+		Global: serverGlobalConnections{CurrentTotal: 38, CurrentInbound: 14},
+		ProxyUsers: []serverProxyUserConnections{
+			{CurrentTotal: 28, OutboundActive: 14, ManagementGroup: "wings"},
+			{CurrentTotal: 10, OutboundPending: 10},
+		},
+	}
+	got := coreAccounting(snapshot)
+	if got.Total != 38 || got.Attributed != 28 || got.Unattributed != 10 || got.TrackerTotal != 38 || got.OutboundActive != 14 || got.OutboundPending != 10 || !got.Balanced || got.ReconciliationDelta != 0 {
+		t.Fatalf("unexpected core accounting: %#v", got)
+	}
+}
+
+func TestCoreAccountingReportsRealReconciliationDelta(t *testing.T) {
+	snapshot := serverDetailedConnectionSnapshot{Global: serverGlobalConnections{CurrentTotal: 9}, ProxyUsers: []serverProxyUserConnections{{CurrentTotal: 7, ManagementGroup: "ken"}}}
+	got := coreAccounting(snapshot)
+	if got.Unattributed != 0 || got.ReconciliationDelta != 2 || got.Balanced {
+		t.Fatalf("tracker gap was hidden as unattributed: %#v", got)
+	}
+}
+
+func TestMachineProtectionCompatibilityByHelperVersion(t *testing.T) {
+	settings := defaultServerConnectionSettings()
+	settings.MachineProtection = &serverMachineProtectionSettings{Enabled: true, MaxActive: int64Pointer(1000)}
+	if got := settingsForHelper(settings, "v0.6.5"); got.MachineProtection != nil {
+		t.Fatalf("old Helper received an unknown machine field: %#v", got.MachineProtection)
+	}
+	if got := settingsForHelper(settings, "v0.6.6"); got.MachineProtection == nil || !got.MachineProtection.Enabled {
+		t.Fatalf("new Helper did not receive machine settings: %#v", got.MachineProtection)
 	}
 }
 

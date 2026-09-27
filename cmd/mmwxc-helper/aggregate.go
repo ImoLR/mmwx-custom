@@ -179,9 +179,6 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 
 	proxyUsers := make([]proxyUserSnapshot, 0, len(runtimeUsers))
 	for _, user := range runtimeUsers {
-		if !user.Attributed {
-			continue
-		}
 		limit := settingsByIdentity[user.Identity]
 		proxyUsers = append(proxyUsers, proxyUserSnapshot{
 			Identity:                       user.Identity,
@@ -202,7 +199,9 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 			RejectedActiveLimit:            user.RejectedActiveLimit,
 			RejectedNewRateLimit:           user.RejectedNewRateLimit,
 			RejectedUserTotalLimit:         user.RejectedUserTotalLimit,
+			RejectedUserCombinedLimit:      user.RejectedUserCombinedLimit,
 			RejectedPortTotalLimit:         user.RejectedPortTotalLimit,
+			RejectedPortCombinedLimit:      user.RejectedPortCombinedLimit,
 			RejectedUserNewRateLimit:       user.RejectedUserNewRateLimit,
 			RejectedPortNewRateLimit:       user.RejectedPortNewRateLimit,
 			RejectedOnlineIPLimit:          user.RejectedOnlineIPLimit,
@@ -215,6 +214,7 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 			MaxPortOutboundTCPActive:       user.MaxPortOutboundTCPActive,
 			MaxPortOutboundTCPNewPerSecond: user.MaxPortOutboundTCPNewPerSecond,
 			MaxPortInboundConnections:      user.MaxPortInboundConnections,
+			MaxPortTotalConnections:        user.MaxPortTotalConnections,
 			MaxPortInboundOnlineIPs:        user.MaxPortInboundOnlineIPs,
 			CloseWaitTimeoutSeconds:        effectiveCloseWait(settings, limit),
 			Source:                         "xray_core_runtime",
@@ -236,6 +236,7 @@ func addTCPCounts(target *tcpStateCounts, source tcpStateCounts) {
 	target.LastAck += source.LastAck
 	target.Closing += source.Closing
 	target.Close += source.Close
+	target.Listen += source.Listen
 	target.Unknown += source.Unknown
 }
 
@@ -263,6 +264,7 @@ func addSocketState(target *tcpStateCounts, state string) {
 	case tcpClose:
 		target.Close++
 	case tcpListen:
+		target.Listen++
 	default:
 		target.Unknown++
 	}

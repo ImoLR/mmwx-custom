@@ -6148,8 +6148,8 @@ button {
 .connection-attribution,
 .connection-boundary {
   color: var(--muted);
-  font-size: 14px;
-  line-height: 1.55;
+  font-size: 16px;
+  line-height: 1.65;
 }
 
 .connection-manager-toolbar button {
@@ -6179,8 +6179,8 @@ button {
   padding: 11px 12px;
   border: 1px solid currentColor;
   border-radius: 8px;
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 16px;
+  line-height: 1.6;
 }
 
 .connection-message.error {
@@ -6193,9 +6193,14 @@ button {
   background: color-mix(in srgb, var(--success) 8%, var(--card));
 }
 
+.connection-message.neutral {
+  color: var(--muted);
+  background: var(--fill);
+}
+
 .connection-section {
   min-width: 0;
-  padding: 14px;
+  padding: 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
 }
@@ -6207,15 +6212,93 @@ button {
 
 .connection-section-head h4 {
   margin: 0;
-  font-size: 18px;
+  font-size: 21px;
+}
+
+.connection-section-head h5 {
+  margin: 0;
+  font-size: 19px;
+}
+
+.connection-section-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.connection-level {
+  color: var(--muted);
+  font-size: 15px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 .connection-source {
   max-width: 54%;
   color: var(--muted);
   text-align: right;
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.connection-summary-grid,
+.connection-core-accounting,
+.connection-effective-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.connection-summary-grid > div,
+.connection-core-accounting > span,
+.connection-effective-grid > span {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  padding: 11px;
+  border-radius: 7px;
+  background: var(--fill);
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.connection-summary-grid strong,
+.connection-core-accounting strong,
+.connection-effective-grid strong {
+  color: var(--text);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+.connection-definition {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.connection-state-fold,
+.connection-protection-block {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.connection-protection-block {
+  display: grid;
+  gap: 12px;
+}
+
+.connection-protection-block .connection-section-head {
+  margin-bottom: 0;
+}
+
+.connection-core-accounting {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 12px;
 }
 
 .connection-stat-grid {
@@ -6250,11 +6333,11 @@ button {
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 15px;
 }
 
 .connection-stat-grid strong {
-  font-size: 20px;
+  font-size: 22px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -6292,7 +6375,7 @@ button {
 
 .connection-inline-stats strong {
   color: var(--text);
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .connection-subsection {
@@ -6314,7 +6397,7 @@ button {
 
 .connection-subsection > div:first-child > span {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 15px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -6329,7 +6412,8 @@ button {
 .connection-rejection-grid span,
 .connection-global-summary span {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 15px;
+  line-height: 1.5;
 }
 
 .connection-rejection-grid strong,
@@ -6357,11 +6441,11 @@ button {
 .connection-ip-list code {
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .connection-ip-list strong {
-  font-size: 14px;
+  font-size: 15px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -6381,7 +6465,8 @@ button {
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 15px;
+  line-height: 1.5;
 }
 
 .connection-limit-grid input {
@@ -6426,9 +6511,16 @@ button {
   gap: 3px;
 }
 
+.connection-toggle > span > strong,
+.connection-subsection > div:first-child > strong,
+.connection-assignment > strong {
+  font-size: 15px;
+}
+
 .connection-toggle small {
   color: var(--muted);
-  line-height: 1.4;
+  font-size: 15px;
+  line-height: 1.55;
 }
 
 .connection-save {
@@ -6472,7 +6564,7 @@ button {
   gap: 10px;
   cursor: pointer;
   list-style: none;
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 700;
 }
 
@@ -6502,7 +6594,7 @@ button {
 .connection-fold > summary small {
   min-width: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 15px;
   font-weight: 400;
   line-height: 1.4;
   overflow-wrap: anywhere;
@@ -6511,7 +6603,7 @@ button {
 .connection-fold > summary > strong {
   margin-left: auto;
   flex: 0 0 auto;
-  font-size: 13px;
+  font-size: 16px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -6570,7 +6662,7 @@ button {
 .connection-identity > strong {
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: 13px;
+  font-size: 16px;
 }
 
 .connection-assignment {
@@ -6614,7 +6706,8 @@ button {
   display: block;
   margin-top: 10px;
   color: var(--text-secondary);
-  line-height: 1.55;
+  font-size: 15px;
+  line-height: 1.65;
 }
 
 .connection-remove-assignment {
@@ -6675,6 +6768,24 @@ button {
   .connection-stat-grid.compact,
   .connection-limit-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 430px) {
+  .connection-section {
+    padding: 13px;
+  }
+
+  .connection-core-accounting {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .connection-fold > summary > strong {
+    display: none;
+  }
+
+  .connection-source {
+    max-width: 48%;
   }
 }
 

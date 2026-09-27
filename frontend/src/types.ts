@@ -203,6 +203,11 @@ export type UserConnectionSettings = {
 };
 
 export type ServerConnectionSettings = {
+  machine_protection?: {
+    enabled: boolean;
+    max_active: number | null;
+    max_total: number | null;
+  } | null;
   default_close_wait_timeout_seconds: number | null;
   online_ip_grace_period_seconds: number;
   global_total_limit_enabled: boolean;
@@ -211,6 +216,7 @@ export type ServerConnectionSettings = {
   users: UserConnectionSettings[];
   ports: Array<{
     inbound_tag: string;
+    max_total_connections: number | null;
     max_inbound_connections: number | null;
     max_inbound_online_ips: number | null;
     max_outbound_tcp_active: number | null;
@@ -218,6 +224,7 @@ export type ServerConnectionSettings = {
   }>;
   management_users: Array<{
     username: string;
+    max_total_connections: number | null;
     max_inbound_connections: number | null;
     max_inbound_online_ips: number | null;
     max_outbound_tcp_active: number | null;
@@ -238,6 +245,7 @@ export type TCPStateCounts = {
   last_ack: number;
   closing: number;
   close: number;
+  listen: number;
   unknown: number;
 };
 
@@ -247,6 +255,17 @@ export type DetailedConnectionResponse = {
   stale_timeout_seconds: number;
   settings: ServerConnectionSettings;
   ownership_error?: string;
+  core_accounting: {
+    total: number;
+    attributed: number;
+    unattributed: number;
+    inbound_current: number;
+    outbound_active: number;
+    outbound_pending: number;
+    tracker_total: number;
+    reconciliation_delta: number;
+    balanced: boolean;
+  };
   management: {
     users: Array<{
       username: string;
@@ -254,6 +273,7 @@ export type DetailedConnectionResponse = {
       aggregate: ManagementGroupConnections;
       limits: {
         username: string;
+        max_total_connections: number | null;
         max_inbound_connections: number | null;
         max_inbound_online_ips: number | null;
         max_outbound_tcp_active: number | null;
@@ -270,6 +290,7 @@ export type DetailedConnectionResponse = {
         aggregate: ProxyIdentityConnections;
         limits: {
           inbound_tag: string;
+          max_total_connections: number | null;
           max_inbound_connections: number | null;
           max_inbound_online_ips: number | null;
           max_outbound_tcp_active: number | null;
@@ -332,7 +353,9 @@ export type DetailedConnectionResponse = {
         rejected_active_limit: number;
         rejected_new_rate_limit: number;
         rejected_user_total_limit: number;
+        rejected_user_combined_limit: number;
         rejected_port_total_limit: number;
+        rejected_port_combined_limit: number;
         rejected_user_new_rate_limit: number;
         rejected_port_new_rate_limit: number;
         rejected_online_ip_limit: number;
@@ -365,6 +388,22 @@ export type DetailedConnectionResponse = {
         started_at?: string;
         error?: string;
       };
+      machine_protection?: {
+        supported: boolean;
+        configured: {
+          enabled: boolean;
+          max_active: number | null;
+          max_total: number | null;
+        };
+        effective: boolean;
+        blocking: boolean;
+        threshold_reason?: string;
+        active: number;
+        total: number;
+        controlled_ports: number[];
+        last_reconciled_at?: string;
+        last_error?: string;
+      };
       sampled_at: string;
     };
   };
@@ -389,7 +428,9 @@ export type ProxyIdentityConnections = {
   rejected_active_limit: number;
   rejected_new_rate_limit: number;
   rejected_user_total_limit: number;
+  rejected_user_combined_limit: number;
   rejected_port_total_limit: number;
+  rejected_port_combined_limit: number;
   rejected_user_new_rate_limit: number;
   rejected_port_new_rate_limit: number;
   rejected_online_ip_limit: number;
@@ -406,6 +447,7 @@ export type ProxyIdentityConnections = {
   max_port_outbound_tcp_active?: number | null;
   max_port_outbound_tcp_new_per_second?: number | null;
   max_port_inbound_connections?: number | null;
+  max_port_total_connections?: number | null;
   max_port_inbound_online_ips?: number | null;
   close_wait_timeout_seconds: number | null;
   source: string;
@@ -426,8 +468,10 @@ export type ManagementGroupConnections = {
   outbound_new_total: number;
   outbound_rejected_total: number;
   rejected_user_total_limit: number;
+  rejected_user_combined_limit: number;
   rejected_user_new_rate_limit: number;
   rejected_port_total_limit: number;
+  rejected_port_combined_limit: number;
   rejected_port_new_rate_limit: number;
   rejected_online_ip_limit: number;
   rejected_global_total_limit: number;
@@ -437,6 +481,7 @@ export type ManagementGroupConnections = {
   rejected_port_online_ip_limit: number;
   rejected_global_inbound_limit: number;
   max_inbound_connections: number | null;
+  max_total_connections: number | null;
   max_inbound_online_ips: number | null;
   max_outbound_tcp_active: number | null;
   max_outbound_tcp_new_per_second: number | null;

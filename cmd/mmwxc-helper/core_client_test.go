@@ -87,6 +87,19 @@ func TestCoreClientAcceptsV4InboundLimits(t *testing.T) {
 	}
 }
 
+func TestCoreClientAcceptsV5CombinedLimits(t *testing.T) {
+	path := serveUnixHTTP(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"version":5,"started_at":"2026-09-27T00:00:00Z","management_groups":[{"group":"ken","current_total":9,"max_total_connections":20,"rejected_user_combined_limit":2,"rejected_port_combined_limit":3}],"proxy_users":[{"identity":{"inbound_tag":"in-a","user":"proto-a"},"attributed":true,"management_group":"ken","max_port_total_connections":12,"rejected_user_combined_limit":2,"rejected_port_combined_limit":3}]}`))
+	}))
+	snapshot, err := newCoreClient(path).snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.ManagementGroups) != 1 || snapshot.ManagementGroups[0].MaxTotalConnections == nil || *snapshot.ManagementGroups[0].MaxTotalConnections != 20 || snapshot.ManagementGroups[0].RejectedUserCombinedLimit != 2 || len(snapshot.Users) != 1 || snapshot.Users[0].MaxPortTotalConnections == nil || *snapshot.Users[0].MaxPortTotalConnections != 12 || snapshot.Users[0].RejectedPortCombinedLimit != 3 {
+		t.Fatalf("v5 combined-limit data was not decoded: %#v", snapshot)
+	}
+}
+
 func TestCoreClientUnavailable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.sock")
 	if _, err := newCoreClient(path).snapshot(context.Background()); err == nil {
@@ -117,18 +130,20 @@ func TestCoreClientAppliesNullUnlimited(t *testing.T) {
 	portLimit := int64(10)
 	portInboundLimit := int64(30)
 	portIPLimit := 2
-	settings.Ports = []portConnectionSettings{{InboundTag: "in-a", MaxInboundConnections: &portInboundLimit, MaxInboundOnlineIPs: &portIPLimit, MaxOutboundTCPActive: &portLimit}}
+	portTotalLimit := int64(25)
+	settings.Ports = []portConnectionSettings{{InboundTag: "in-a", MaxTotalConnections: &portTotalLimit, MaxInboundConnections: &portInboundLimit, MaxInboundOnlineIPs: &portIPLimit, MaxOutboundTCPActive: &portLimit}}
 	groupLimit := int64(20)
+	groupTotalLimit := int64(40)
 	groupInboundLimit := int64(100)
 	groupIPLimit := 3
-	settings.ManagementUsers = []managementUserSettings{{Username: "ken", MaxInboundConnections: &groupInboundLimit, MaxInboundOnlineIPs: &groupIPLimit, MaxOutboundTCPActive: &groupLimit}}
+	settings.ManagementUsers = []managementUserSettings{{Username: "ken", MaxTotalConnections: &groupTotalLimit, MaxInboundConnections: &groupInboundLimit, MaxInboundOnlineIPs: &groupIPLimit, MaxOutboundTCPActive: &groupLimit}}
 	settings.ManagementMappings = []managementMapping{{Identity: coreIdentity{InboundTag: "in-a", User: "user-a"}, Group: "ken"}}
 	globalInboundLimit := int64(1000)
 	settings.MaxGlobalInboundConnections = &globalInboundLimit
 	if err := newCoreClient(path).apply(context.Background(), settings); err != nil {
 		t.Fatal(err)
 	}
-	if len(received.Limits) != 1 || received.Limits[0].MaxInboundOnlineIPs != nil || received.Limits[0].MaxTotalConnections != nil || received.Limits[0].MaxOutboundTCPActive != nil || received.MaxGlobalInboundConnections == nil || *received.MaxGlobalInboundConnections != 1000 || len(received.PortLimits) != 1 || received.PortLimits[0].MaxInboundConnections == nil || *received.PortLimits[0].MaxInboundConnections != 30 || received.PortLimits[0].MaxOutboundTCPActive == nil || *received.PortLimits[0].MaxOutboundTCPActive != 10 || len(received.ManagementMappings) != 1 || received.ManagementMappings[0].Group != "ken" || len(received.ManagementLimits) != 1 || received.ManagementLimits[0].MaxInboundConnections == nil || *received.ManagementLimits[0].MaxInboundConnections != 100 || received.ManagementLimits[0].MaxOutboundTCPActive == nil || *received.ManagementLimits[0].MaxOutboundTCPActive != 20 {
+	if len(received.Limits) != 1 || received.Limits[0].MaxInboundOnlineIPs != nil || received.Limits[0].MaxTotalConnections != nil || received.Limits[0].MaxOutboundTCPActive != nil || received.MaxGlobalInboundConnections == nil || *received.MaxGlobalInboundConnections != 1000 || len(received.PortLimits) != 1 || received.PortLimits[0].MaxTotalConnections == nil || *received.PortLimits[0].MaxTotalConnections != 25 || received.PortLimits[0].MaxInboundConnections == nil || *received.PortLimits[0].MaxInboundConnections != 30 || received.PortLimits[0].MaxOutboundTCPActive == nil || *received.PortLimits[0].MaxOutboundTCPActive != 10 || len(received.ManagementMappings) != 1 || received.ManagementMappings[0].Group != "ken" || len(received.ManagementLimits) != 1 || received.ManagementLimits[0].MaxTotalConnections == nil || *received.ManagementLimits[0].MaxTotalConnections != 40 || received.ManagementLimits[0].MaxInboundConnections == nil || *received.ManagementLimits[0].MaxInboundConnections != 100 || received.ManagementLimits[0].MaxOutboundTCPActive == nil || *received.ManagementLimits[0].MaxOutboundTCPActive != 20 {
 		t.Fatalf("null unlimited changed: %#v", received)
 	}
 }
@@ -143,14 +158,22 @@ func TestCoreClientFallsBackToV2ConfigDuringRollingUpgrade(t *testing.T) {
 		}
 		if requests == 1 {
 			if _, exists := body["management_mappings"]; !exists {
-				t.Error("v3 config was not attempted first")
+				t.Error("v5 config was not attempted first")
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"json: unknown field max_total_connections"}`))
+			return
+		}
+		if requests == 2 {
+			if _, exists := body["management_mappings"]; !exists {
+				t.Error("v4 compatibility config lost management mappings")
 			}
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"json: unknown field management_mappings"}`))
 			return
 		}
 		if _, exists := body["management_mappings"]; exists {
-			t.Error("legacy retry still contained v3 fields")
+			t.Error("legacy v2 retry still contained management fields")
 		}
 		_, _ = w.Write([]byte(`{"success":true}`))
 	}))
@@ -159,8 +182,8 @@ func TestCoreClientFallsBackToV2ConfigDuringRollingUpgrade(t *testing.T) {
 	if err := newCoreClient(path).apply(context.Background(), settings); err != nil {
 		t.Fatal(err)
 	}
-	if requests != 2 {
-		t.Fatalf("requests=%d, want 2", requests)
+	if requests != 3 {
+		t.Fatalf("requests=%d, want 3", requests)
 	}
 }
 

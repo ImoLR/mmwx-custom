@@ -105,3 +105,30 @@ func TestAggregateV2IncludesConfiguredInboundsAndUsersBeforeTraffic(t *testing.T
 		t.Fatalf("configured users = %#v", users)
 	}
 }
+
+func TestAggregateV5PreservesUnattributedCoreTotalsAndCombinedCounters(t *testing.T) {
+	tracker := newOnlineIPTracker()
+	attributedIdentity := coreIdentity{InboundTag: "in-a", User: "proto-a"}
+	portTotal := int64(30)
+	core := coreSnapshotResponse{
+		Version: 5,
+		Users: []coreUserSnapshot{
+			{
+				Identity: attributedIdentity, Attributed: true, InboundPort: 10015, CurrentTotal: 28,
+				ManagementGroup: "wings", RejectedUserCombinedLimit: 2, RejectedPortCombinedLimit: 3,
+				MaxPortTotalConnections: &portTotal,
+			},
+			{Attributed: false, CurrentTotal: 10, OutboundPending: 10},
+		},
+	}
+	_, users := tracker.aggregate(nil, core, defaultConnectionSettings())
+	if len(users) != 2 {
+		t.Fatalf("Core unattributed tracker entry was dropped: %#v", users)
+	}
+	if users[0].CurrentTotal != 28 || users[0].RejectedUserCombinedLimit != 2 || users[0].RejectedPortCombinedLimit != 3 || users[0].MaxPortTotalConnections == nil || *users[0].MaxPortTotalConnections != 30 {
+		t.Fatalf("v5 attributed fields were not preserved: %#v", users[0])
+	}
+	if users[1].CurrentTotal != 10 || users[1].OutboundPending != 10 || users[1].ManagementGroup != "" || users[1].Identity != (coreIdentity{}) {
+		t.Fatalf("unattributed Core total changed meaning: %#v", users[1])
+	}
+}

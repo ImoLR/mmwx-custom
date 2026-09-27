@@ -124,14 +124,24 @@ Helper and Core upgrades post authenticated phase transitions (`dispatching`,
 terminal success/failure/rollback state) to the Custom controller. A normal
 Helper heartbeat preserves the most recent phase instead of erasing it.
 
-Core API v4 registers supported data-plane inbounds and their configured user
+Core API v5 registers supported data-plane inbounds and their configured user
 identities when Xray instantiates the configuration, so zero-traffic users are
 reported immediately. Inbound admission runs after protocol authentication and
 before routing, with server, management-user, and port logical-connection limits
-plus management-user and port online-IP limits. Identity remains an attribution
-key rather than an administrator limit layer. Existing outbound controls are
-unchanged. Internal control-plane handlers such as the local Xray API inbound
-are intentionally excluded from connection statistics.
+plus management-user and port online-IP limits. Management-user and port total
+limits now cover authenticated inbound active, physical outbound active, and
+physical outbound pending together. Identity remains an attribution key rather
+than an administrator limit layer. Existing outbound-active controls remain
+separate. Internal control-plane handlers such as the local Xray API inbound are
+intentionally excluded from connection statistics.
+
+Helper v0.6.6 adds an optional machine-level TCP guard outside the Core. It
+reconciles only its own `inet mmwxc_machine_protection` nftables table and, once
+the configured Linux TCP Active or Total threshold is reached, rejects new TCP
+connections only on the currently reported Core inbound ports. Loopback and
+established/related traffic are explicitly exempt; SSH, Agent, and Helper control
+traffic are outside those business-port matches. Invalid configuration or rule
+application fails open and is reported through configured/effective/error state.
 
 The `external.ownership.arm` management step installs that drop-in and releases
 the old Custom service ports before the controller asks the official Agent to

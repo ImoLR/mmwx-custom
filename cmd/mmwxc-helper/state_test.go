@@ -16,6 +16,8 @@ func TestLocalStatePersistenceAndUnlimitedNull(t *testing.T) {
 		t.Fatalf("unexpected defaults: %#v", state)
 	}
 	value := int64(20)
+	state.Settings.MachineProtection = &machineProtectionSettings{Enabled: true, MaxActive: &value}
+	state.MachineProtection = machineProtectionStatus{Supported: true, Configured: *state.Settings.MachineProtection, Effective: true, ControlledPorts: []uint32{10017}}
 	state.Settings.DefaultCloseWaitTimeoutSeconds = &value
 	state.Settings.ManagementUsers = []managementUserSettings{{Username: "ken", MaxOutboundTCPActive: &value}}
 	state.Settings.Ports = []portConnectionSettings{{InboundTag: "in-a", MaxOutboundTCPActive: &value}}
@@ -29,6 +31,9 @@ func TestLocalStatePersistenceAndUnlimitedNull(t *testing.T) {
 	}
 	if loaded.Settings.DefaultCloseWaitTimeoutSeconds == nil || *loaded.Settings.DefaultCloseWaitTimeoutSeconds != 20 {
 		t.Fatalf("state did not round-trip: %#v", loaded)
+	}
+	if loaded.Settings.MachineProtection == nil || !loaded.Settings.MachineProtection.Enabled || loaded.Settings.MachineProtection.MaxActive == nil || *loaded.Settings.MachineProtection.MaxActive != 20 || !loaded.MachineProtection.Effective || len(loaded.MachineProtection.ControlledPorts) != 1 {
+		t.Fatalf("machine protection state did not survive helper restart: %#v", loaded)
 	}
 	if len(loaded.Settings.ManagementUsers) != 1 || loaded.Settings.ManagementUsers[0].Username != "ken" || len(loaded.Settings.Ports) != 1 || loaded.Settings.Ports[0].InboundTag != "in-a" || len(loaded.Settings.ManagementMappings) != 1 || loaded.Settings.ManagementMappings[0].Group != "ken" {
 		t.Fatalf("management mapping/limits did not persist: %#v", loaded.Settings)

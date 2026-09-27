@@ -36,6 +36,7 @@ type connectionOwnershipStore interface {
 
 type serverManagementUserSettings struct {
 	Username                   string `json:"username"`
+	MaxTotalConnections        *int64 `json:"max_total_connections"`
 	MaxInboundConnections      *int64 `json:"max_inbound_connections"`
 	MaxInboundOnlineIPs        *int   `json:"max_inbound_online_ips"`
 	MaxOutboundTCPActive       *int64 `json:"max_outbound_tcp_active"`
@@ -61,8 +62,10 @@ type serverManagementGroupConnections struct {
 	OutboundNewTotal           uint64               `json:"outbound_new_total"`
 	OutboundRejectedTotal      uint64               `json:"outbound_rejected_total"`
 	RejectedUserTotalLimit     uint64               `json:"rejected_user_total_limit"`
+	RejectedUserCombinedLimit  uint64               `json:"rejected_user_combined_limit"`
 	RejectedUserNewRateLimit   uint64               `json:"rejected_user_new_rate_limit"`
 	RejectedPortTotalLimit     uint64               `json:"rejected_port_total_limit"`
+	RejectedPortCombinedLimit  uint64               `json:"rejected_port_combined_limit"`
 	RejectedPortNewRateLimit   uint64               `json:"rejected_port_new_rate_limit"`
 	RejectedOnlineIPLimit      uint64               `json:"rejected_online_ip_limit"`
 	RejectedGlobalTotalLimit   uint64               `json:"rejected_global_total_limit"`
@@ -72,6 +75,7 @@ type serverManagementGroupConnections struct {
 	RejectedPortOnlineIPLimit  uint64               `json:"rejected_port_online_ip_limit"`
 	RejectedGlobalInboundLimit uint64               `json:"rejected_global_inbound_limit"`
 	MaxInboundConnections      *int64               `json:"max_inbound_connections"`
+	MaxTotalConnections        *int64               `json:"max_total_connections"`
 	MaxInboundOnlineIPs        *int                 `json:"max_inbound_online_ips"`
 	MaxOutboundTCPActive       *int64               `json:"max_outbound_tcp_active"`
 	MaxOutboundTCPNewPerSecond *int                 `json:"max_outbound_tcp_new_per_second"`
@@ -211,6 +215,9 @@ func buildManagementView(snapshot serverDetailedConnectionSnapshot, settings ser
 				aggregate.Username = relation.ManagementUsername
 				if aggregate.MaxInboundConnections == nil {
 					aggregate.MaxInboundConnections = limit.MaxInboundConnections
+				}
+				if aggregate.MaxTotalConnections == nil {
+					aggregate.MaxTotalConnections = limit.MaxTotalConnections
 				}
 				if aggregate.MaxInboundOnlineIPs == nil {
 					aggregate.MaxInboundOnlineIPs = limit.MaxInboundOnlineIPs
@@ -576,7 +583,9 @@ func addProxyUserConnections(target *serverProxyUserConnections, source serverPr
 	target.RejectedActiveLimit += source.RejectedActiveLimit
 	target.RejectedNewRateLimit += source.RejectedNewRateLimit
 	target.RejectedUserTotalLimit += source.RejectedUserTotalLimit
+	target.RejectedUserCombinedLimit += source.RejectedUserCombinedLimit
 	target.RejectedPortTotalLimit += source.RejectedPortTotalLimit
+	target.RejectedPortCombinedLimit += source.RejectedPortCombinedLimit
 	target.RejectedUserNewRateLimit += source.RejectedUserNewRateLimit
 	target.RejectedPortNewRateLimit += source.RejectedPortNewRateLimit
 	target.RejectedOnlineIPLimit += source.RejectedOnlineIPLimit

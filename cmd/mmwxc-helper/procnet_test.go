@@ -21,7 +21,7 @@ func TestParseProcNetTCPIPv4AndStates(t *testing.T) {
 		t.Fatalf("unexpected first entry: %#v", got)
 	}
 	counts := summarizeTCP(entries)
-	if counts.Total != 2 || counts.Established != 1 {
+	if counts.Total != 2 || counts.Established != 1 || counts.Listen != 1 {
 		t.Fatalf("unexpected counts: %#v", counts)
 	}
 }
