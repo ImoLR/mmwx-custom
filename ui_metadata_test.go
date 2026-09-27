@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -114,6 +115,31 @@ func TestServiceGroupsRoundTripPreservesGroupAndServerOrder(t *testing.T) {
 	}
 	if response.Groups[0].ID != "tokyo" || response.Groups[0].ServerIDs[0] != 14 || response.Groups[0].ServerIDs[1] != 5 {
 		t.Fatalf("order was not preserved: %#v", response.Groups)
+	}
+}
+
+func TestUIMetadataFrontendUsesPlainCustomTransport(t *testing.T) {
+	source, err := os.ReadFile("frontend/src/api.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	start := strings.Index(text, "export function fetchCustomServiceGroups")
+	if start < 0 {
+		t.Fatal("Custom UI metadata API functions were not found")
+	}
+	metadataAPI := text[start:]
+	if got := strings.Count(metadataAPI, "return requestCustomApi<"); got != 5 {
+		t.Fatalf("Custom UI metadata endpoints using plain Custom transport=%d, want 5", got)
+	}
+	if strings.Contains(metadataAPI, "return request<") {
+		t.Fatal("Custom UI metadata must not use the formal secure-channel request transport")
+	}
+	if got := strings.Count(metadataAPI, `headers: { "MM-Authorization": token`); got != 5 {
+		t.Fatalf("Custom UI metadata endpoints carrying admin session=%d, want 5", got)
+	}
+	if got := strings.Count(metadataAPI, `"Content-Type": "application/json"`); got != 2 {
+		t.Fatalf("Custom UI metadata JSON mutations with explicit content type=%d, want 2", got)
 	}
 }
 
