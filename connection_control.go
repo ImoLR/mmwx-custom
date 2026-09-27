@@ -492,6 +492,7 @@ func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
 			}
 		}
 	}
+	var exactCoreTotal int64
 	for _, user := range snapshot.ProxyUsers {
 		if user.CurrentTotal < 0 || user.InboundActive < 0 || user.InboundCurrent < 0 || user.OutboundActive < 0 || user.OutboundPending < 0 || user.OutboundNewRate < 0 {
 			return errors.New("negative proxy user connection count")
@@ -502,6 +503,10 @@ func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
 		if err := validateTCPStateCounts(user.OutboundTCP, "proxy user outbound"); err != nil {
 			return err
 		}
+		if snapshot.Core.Version >= 6 && user.CurrentTotal != user.InboundTCP.Total+user.OutboundTCP.Total {
+			return errors.New("proxy user Total does not match exact TCP states")
+		}
+		exactCoreTotal += user.CurrentTotal
 	}
 	for _, group := range snapshot.ManagementGroups {
 		if strings.TrimSpace(group.Username) == "" || group.CurrentTotal < 0 || group.InboundActive < 0 || group.InboundCurrent < 0 || group.OutboundActive < 0 || group.OutboundPending < 0 || group.OutboundNewRate < 0 {
@@ -513,6 +518,12 @@ func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
 		if err := validateTCPStateCounts(group.OutboundTCP, "management group outbound"); err != nil {
 			return err
 		}
+		if snapshot.Core.Version >= 6 && group.CurrentTotal != group.InboundTCP.Total+group.OutboundTCP.Total {
+			return errors.New("management user Total does not match exact TCP states")
+		}
+	}
+	if snapshot.Core.Version >= 6 && snapshot.Global.CurrentTotal != exactCoreTotal {
+		return errors.New("Core Total does not reconcile to exact attributed and unattributed TCP states")
 	}
 	return nil
 }

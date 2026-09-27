@@ -100,6 +100,19 @@ func TestCoreClientAcceptsV5CombinedLimits(t *testing.T) {
 	}
 }
 
+func TestCoreClientAcceptsV6UnifiedTotal(t *testing.T) {
+	path := serveUnixHTTP(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"version":6,"started_at":"2026-09-28T00:00:00Z","global":{"current_total":2},"proxy_users":[{"identity":{"inbound_tag":"in-a","user":"proto-a"},"attributed":true,"current_total":2,"inbound_tcp":{"tcp_total":1,"close_wait":1},"outbound_tcp":{"tcp_total":1,"time_wait":1}}]}`))
+	}))
+	snapshot, err := newCoreClient(path).snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Version != 6 || snapshot.Global.CurrentTotal != 2 || len(snapshot.Users) != 1 || snapshot.Users[0].InboundTCP.CloseWait != 1 || snapshot.Users[0].OutboundTCP.TimeWait != 1 {
+		t.Fatalf("v6 unified Total data was not decoded: %#v", snapshot)
+	}
+}
+
 func TestCoreClientUnavailable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.sock")
 	if _, err := newCoreClient(path).snapshot(context.Background()); err == nil {

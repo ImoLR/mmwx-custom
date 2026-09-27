@@ -17,7 +17,8 @@ layers:
 
 - The `ImoLR/Xray-core-mmwx` branch `custom-connection-control` attributes an
   authenticated inbound user to the final physical outbound TCP dial. It owns
-  active/NEW accounting, rejection, and session-owned CLOSE_WAIT cleanup.
+  exact tuple/state accounting, NEW admission, rejection, and session-owned
+  CLOSE_WAIT timeout cleanup.
 - `mmwxc-helper` reads Linux `/proc/net/tcp*`, aggregates inbound ports and
   online source IPs, persists the last controller settings, reapplies them
   after Core reconnects, and optionally owns one dedicated nftables table for
@@ -48,13 +49,15 @@ The controller endpoints are:
   settings. Empty JSON values are represented by `null` and mean unlimited or
   inherited, depending on the field.
 
-System TCP states and Xray user-level physical sockets are intentionally kept
-separate. A Linux TIME_WAIT entry is never presented as a user-owned outbound
-socket. IPv4 online identities use the exact address; IPv6 identities use a
-masked `/64` so privacy addresses from one delegated client prefix do not
-consume independent slots. Per-user IP enforcement is disabled for an inbound
-port shared by multiple authenticated users because the firewall cannot know
-the Xray-authenticated identity.
+System TCP states and Xray-owned physical sockets are intentionally kept
+separate. Core API v6 reports a TIME_WAIT or CLOSE_WAIT entry only when its
+exact four-tuple is still owned by one retained Core socket record; tuple reuse
+is de-duplicated and unknown machine rows are never guessed into Core totals.
+IPv4 online identities use the exact address; IPv6 identities use a masked
+`/64` so privacy addresses from one delegated client prefix do not consume
+independent slots. Per-user IP enforcement is disabled for an inbound port
+shared by multiple authenticated users because the firewall cannot know the
+Xray-authenticated identity.
 
 `MMWXC_HELPER_ENABLE_NFTABLES` defaults to `false`. When explicitly enabled,
 the Helper validates a complete replacement ruleset with `nft -c` before it

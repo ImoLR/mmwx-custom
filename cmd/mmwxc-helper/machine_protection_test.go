@@ -43,14 +43,13 @@ func TestMachineProtectionThresholdsAndControlPlaneExemptions(t *testing.T) {
 	}}
 	settings := machineProtectionSettings{Enabled: true, MaxActive: int64Value(10), MaxTotal: int64Value(200)}
 	status := manager.reconcile(context.Background(), &settings, tcpStateCounts{Total: 150, Established: 10, TimeWait: 140}, []uint32{10017, 10016, 10017})
-	if !status.Effective || !status.Blocking || status.ThresholdReason != "active" {
+	if !status.Effective || status.Blocking || status.ThresholdReason != "" {
 		t.Fatalf("unexpected threshold status: %#v", status)
 	}
 	for _, expected := range []string{
 		"table inet " + machineProtectionTableName,
 		"iifname \"lo\" return",
 		"ct state established,related return",
-		"tcp dport { 10016, 10017 } ct state new",
 	} {
 		if !strings.Contains(script, expected) {
 			t.Fatalf("machine protection script missing %q:\n%s", expected, script)
@@ -60,6 +59,20 @@ func TestMachineProtectionThresholdsAndControlPlaneExemptions(t *testing.T) {
 		if strings.Contains(script, forbidden) {
 			t.Fatalf("machine protection script contains unsafe control-plane matcher %q:\n%s", forbidden, script)
 		}
+	}
+}
+
+func TestMachineProtectionLegacyActiveIsCompatibilityFallbackOnly(t *testing.T) {
+	manager := &machineProtectionManager{supported: true, now: time.Now, run: func(_ context.Context, data []byte, remove bool) error {
+		if remove || !strings.Contains(string(data), "ct state new counter drop") {
+			t.Fatalf("legacy active fallback did not install the blocking rule: remove=%v script=%s", remove, data)
+		}
+		return nil
+	}}
+	settings := machineProtectionSettings{Enabled: true, MaxActive: int64Value(10)}
+	status := manager.reconcile(context.Background(), &settings, tcpStateCounts{Total: 150, Established: 10, TimeWait: 140}, []uint32{10017})
+	if !status.Effective || !status.Blocking || status.ThresholdReason != "active_compat" {
+		t.Fatalf("unexpected legacy threshold status: %#v", status)
 	}
 }
 

@@ -18,7 +18,8 @@ func ownershipSnapshot(tag string, port uint32, identities ...string) serverDeta
 	for index, identity := range identities {
 		snapshot.ProxyUsers = append(snapshot.ProxyUsers, serverProxyUserConnections{
 			Identity: serverConnectionIdentity{InboundTag: tag, User: identity}, InboundTag: tag, User: identity,
-			InboundPort: port, OutboundActive: int64(index + 1), OutboundNewRate: index + 1,
+			InboundPort: port, CurrentTotal: int64(index + 1), OutboundActive: int64(index + 1), OutboundNewRate: index + 1,
+			OutboundTCP: serverTCPStateCounts{Total: int64(index + 1), Established: int64(index + 1)},
 		})
 	}
 	return snapshot
@@ -59,7 +60,7 @@ func TestManagementAggregateUsesCoreGroupAcrossMultiplePorts(t *testing.T) {
 		{InboundTag: "in-b", ManagementUsername: "ken", ProtocolIdentity: "proto-b", Source: connectionSourceBinding},
 	}}
 	view, mappings := buildManagementView(snapshot, defaultServerConnectionSettings(), ownership)
-	if len(view.Users) != 1 || len(view.Users[0].Ports) != 2 || len(mappings) != 2 || view.Users[0].Aggregate.OutboundActive != 18 || view.Users[0].Aggregate.CurrentTotal != 27 {
+	if len(view.Users) != 1 || len(view.Users[0].Ports) != 2 || len(mappings) != 2 || view.Users[0].Aggregate.OutboundActive != 18 || view.Users[0].Aggregate.CurrentTotal != 2 || view.Users[0].Aggregate.OutboundTCP.Total != 2 {
 		t.Fatalf("cross-port management aggregate = view=%#v mappings=%#v", view, mappings)
 	}
 }

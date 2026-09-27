@@ -25,7 +25,7 @@ const tcp = (overrides = {}) => ({
 });
 const proxy = (tag, user, port, outbound) => ({
   identity: { inbound_tag: tag, user }, inbound_tag: tag, user, inbound_port: port,
-  current_total: outbound + 3, inbound_active: 3, inbound_tcp: tcp({ tcp_total: 3, established: 3, time_wait: 0 }),
+  current_total: outbound + 4, inbound_active: 3, inbound_tcp: tcp({ tcp_total: 3, established: 3, time_wait: 0 }),
   inbound_online_ips: [{ ip: "198.51.100.23", connections: 3 }], outbound_active: outbound,
   outbound_pending: 1, outbound_tcp: tcp({ tcp_total: outbound + 1, established: outbound, time_wait: 1 }),
   outbound_new_rate: 2, outbound_new_total: 300, outbound_rejected_total: 5,
@@ -41,9 +41,9 @@ const proxy = (tag, user, port, outbound) => ({
 const proxyA = proxy("shadowsocks2022-10015", "proto-a", 10015, 8);
 const proxyB = proxy("vless-10016", "proto-b", 10016, 6);
 const aggregate = {
-  group: "ken", current_total: 20, inbound_active: 6, inbound_current: 6, inbound_tcp: tcp({ tcp_total: 6, established: 6, time_wait: 0 }),
+  group: "ken", current_total: 22, inbound_active: 6, inbound_current: 6, inbound_tcp: tcp({ tcp_total: 6, established: 6, time_wait: 0 }),
   inbound_online_ips: [{ ip: "198.51.100.23", connections: 6 }], outbound_active: 14, outbound_pending: 2,
-  outbound_tcp: tcp(), outbound_new_rate: 4, outbound_new_total: 600, outbound_rejected_total: 10,
+  outbound_tcp: tcp({ tcp_total: 16, established: 14, time_wait: 2, syn_sent: 0, fin_wait_1: 0, last_ack: 0, close: 0, listen: 0 }), outbound_new_rate: 4, outbound_new_total: 600, outbound_rejected_total: 10,
   rejected_user_total_limit: 2, rejected_user_combined_limit: 0, rejected_user_new_rate_limit: 2,
   rejected_port_total_limit: 4, rejected_port_combined_limit: 0, rejected_port_new_rate_limit: 2,
   rejected_online_ip_limit: 0, rejected_global_total_limit: 0, rejected_user_inbound_limit: 0,
@@ -76,17 +76,17 @@ const fixture = {
     assignable_users: ["ken", "imolr", "odingAI"], warnings: [],
   },
   record: {
-    server_id: "12", helper_version: "v0.6.6", updated_at: "2026-09-15T10:00:00Z",
+    server_id: "12", helper_version: "v0.6.7", updated_at: "2026-09-15T10:00:00Z",
     snapshot: {
       system: tcp({ tcp_total: 200, established: 82, time_wait: 107 }),
       inbounds: [], proxy_users: [proxyA, proxyB], management_groups: [aggregate],
-      global: { current_total: 40, max_total: 500, rejected_global_total_limit: 0, current_inbound: 6, max_inbound: 400, rejected_global_inbound_limit: 0 },
-      core: { available: true, interface_version: 5, started_at: "2026-09-15T10:00:00Z" },
+      global: { current_total: 22, max_total: 500, rejected_global_total_limit: 0, current_inbound: 6, max_inbound: 400, rejected_global_inbound_limit: 0 },
+      core: { available: true, interface_version: 6, started_at: "2026-09-15T10:00:00Z" },
       machine_protection: { supported: true, configured: { enabled: true, max_active: 100000, max_total: 200000 }, effective: true, blocking: false, active: 93, total: 200, controlled_ports: [10015, 10016], last_reconciled_at: "2026-09-15T10:00:00Z" },
       sampled_at: "2026-09-15T10:00:00Z",
     },
   },
-  core_accounting: { total: 40, attributed: 20, unattributed: 20, inbound_current: 6, outbound_active: 14, outbound_pending: 2, tracker_total: 40, reconciliation_delta: 0, balanced: true },
+  core_accounting: { total: 22, attributed: 22, unattributed: 0, inbound_current: 6, outbound_active: 14, outbound_pending: 2, tracker_total: 22, reconciliation_delta: 0, balanced: true },
 };
 
 const fixtureModule = `

@@ -124,20 +124,25 @@ Helper and Core upgrades post authenticated phase transitions (`dispatching`,
 terminal success/failure/rollback state) to the Custom controller. A normal
 Helper heartbeat preserves the most recent phase instead of erasing it.
 
-Core API v5 registers supported data-plane inbounds and their configured user
+Core API v6 registers supported data-plane inbounds and their configured user
 identities when Xray instantiates the configuration, so zero-traffic users are
 reported immediately. Inbound admission runs after protocol authentication and
 before routing, with server, management-user, and port logical-connection limits
-plus management-user and port online-IP limits. Management-user and port total
-limits now cover authenticated inbound active, physical outbound active, and
-physical outbound pending together. Identity remains an attribution key rather
-than an administrator limit layer. Existing outbound-active controls remain
-separate. Internal control-plane handlers such as the local Xray API inbound are
-intentionally excluded from connection statistics.
+plus management-user and port online-IP limits. The administrator-facing Total
+is now the exact, de-duplicated TCP-state count owned by the Fork Core: it
+includes attributable inbound/outbound TIME_WAIT and CLOSE_WAIT, while unknown
+machine sockets and internal reservations are not exposed as Total. User Total
+is the sum of its Port totals. Internal pending reservations remain only for
+race-safe admission. CLOSE_WAIT timeout handling rechecks that the same owned
+socket is still in CLOSE_WAIT before Core closes it; zero or blank disables the
+fallback and TIME_WAIT is never force-closed. Identity remains an attribution
+key rather than an administrator limit layer. Internal control-plane handlers
+such as the local Xray API inbound are intentionally excluded from connection
+statistics.
 
-Helper v0.6.6 adds an optional machine-level TCP guard outside the Core. It
+Helper v0.6.7 retains the optional machine-level TCP guard outside the Core. It
 reconciles only its own `inet mmwxc_machine_protection` nftables table and, once
-the configured Linux TCP Active or Total threshold is reached, rejects new TCP
+the configured Linux TCP Total threshold is reached, rejects new TCP
 connections only on the currently reported Core inbound ports. Loopback and
 established/related traffic are explicitly exempt; SSH, Agent, and Helper control
 traffic are outside those business-port matches. Invalid configuration or rule
@@ -167,13 +172,14 @@ outbound `ESTABLISHED`, `SYN_*`, `FIN_WAIT*`, `TIME_WAIT`, `CLOSE_WAIT`,
 that has not completed protocol authentication is intentionally not assigned
 to a user.
 
-Per-user total, online-IP, outbound-active, and outbound-NEW/s limits plus the
-optional global total limit are persisted by the Helper and enforced inside
-the Core. They reserve/reject only new authenticated inbound or physical
-outbound resources and never terminate connections that were already accepted.
-The total-limit definition is authenticated inbound active + physical outbound
-active + physical outbound pending; closed `TIME_WAIT` records are reported but
-do not consume a limit slot.
+Machine, Core, management-user, and port Total limits are persisted by the
+Helper and enforced at their owning layer. Core/User/Port Total uses the exact
+de-duplicated TCP states described above, including attributable TIME_WAIT and
+CLOSE_WAIT. Internal pending/live reservations close the admission race but are
+not exposed as another administrator Total. Limits reject only new controlled
+connections and never terminate already accepted connections or force-clear
+TIME_WAIT. Legacy active-only fields remain compatible but are no longer the
+primary administrator limit.
 
 Normal installation does not require users to type a server id or token. The
 recommended flow is:

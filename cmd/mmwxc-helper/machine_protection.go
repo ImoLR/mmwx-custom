@@ -57,14 +57,18 @@ func validateMachineProtection(settings machineProtectionSettings) error {
 }
 
 func machineProtectionThreshold(settings machineProtectionSettings, active, total int64) (bool, string) {
-	reasons := make([]string, 0, 2)
-	if settings.MaxActive != nil && active >= *settings.MaxActive {
-		reasons = append(reasons, "active")
-	}
 	if settings.MaxTotal != nil && total >= *settings.MaxTotal {
-		reasons = append(reasons, "total")
+		return true, "total"
 	}
-	return len(reasons) > 0, strings.Join(reasons, ",")
+	if settings.MaxTotal != nil {
+		return false, ""
+	}
+	// max_active is retained only as a compatibility fallback for old saved
+	// settings. Once max_total exists, the unified Machine Total is authoritative.
+	if settings.MaxActive != nil && active >= *settings.MaxActive {
+		return true, "active_compat"
+	}
+	return false, ""
 }
 
 func renderMachineProtectionNft(ports []uint32, blocking bool) string {
