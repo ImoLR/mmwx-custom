@@ -105,15 +105,17 @@ type geoInflightCall struct {
 }
 
 type app struct {
-	allowedOrigins map[string]struct{}
-	apiToken       string
-	adminStore     adminSessionStore
-	geoIPToken     string
-	helperTokens   map[string]string
-	helperState    *helperState
-	releaseCache   *releaseCache
-	mmwxAPITarget  *url.URL
-	publicURL      string
+	allowedOrigins         map[string]struct{}
+	apiToken               string
+	adminStore             adminSessionStore
+	geoIPToken             string
+	helperTokens           map[string]string
+	helperState            *helperState
+	releaseCache           *releaseCache
+	mmwxAPITarget          *url.URL
+	officialInternalTarget *url.URL
+	publicURL              string
+	userStatusTasks        *managedUserStatusTaskStore
 
 	mu      sync.Mutex
 	lastCPU cpuTimes
@@ -143,21 +145,27 @@ func main() {
 	if err != nil {
 		log.Fatalf("[mmwx-custom] invalid MMWX_API_TARGET: %v", err)
 	}
+	officialInternalTarget, err := url.Parse(getenv("MMWXC_OFFICIAL_INTERNAL_TARGET", "http://127.0.0.1:12889"))
+	if err != nil || officialInternalTarget.Scheme == "" || officialInternalTarget.Host == "" {
+		log.Fatalf("[mmwx-custom] invalid MMWXC_OFFICIAL_INTERNAL_TARGET")
+	}
 	api := &app{
-		allowedOrigins:      parseOrigins(getenv("MMWXC_ALLOWED_ORIGINS", defaultOrigins)),
-		apiToken:            os.Getenv("MMWXC_API_TOKEN"),
-		geoIPToken:          getenv("MMWXC_GEOIP_TOKEN", defaultGeoIPToken),
-		helperTokens:        parseHelperTokens(os.Getenv("MMWXC_HELPER_TOKENS")),
-		mmwxAPITarget:       mmwxAPITarget,
-		publicURL:           strings.TrimRight(os.Getenv("MMWXC_PUBLIC_URL"), "/"),
-		connectionMetrics:   make(map[string]connectionMetrics),
-		detailedConnections: make(map[string]serverDetailedConnectionRecord),
-		helperRate:          make(map[string]time.Time),
-		userRateBaselines:   make(map[string]userRateBaseline),
-		userRateOwnership:   make(map[string]userRateOwnershipCacheEntry),
-		geoCache:            make(map[string]geoCacheEntry),
-		geoInflight:         make(map[string]*geoInflightCall),
-		geoSlots:            make(chan struct{}, 4),
+		allowedOrigins:         parseOrigins(getenv("MMWXC_ALLOWED_ORIGINS", defaultOrigins)),
+		apiToken:               os.Getenv("MMWXC_API_TOKEN"),
+		geoIPToken:             getenv("MMWXC_GEOIP_TOKEN", defaultGeoIPToken),
+		helperTokens:           parseHelperTokens(os.Getenv("MMWXC_HELPER_TOKENS")),
+		mmwxAPITarget:          mmwxAPITarget,
+		officialInternalTarget: officialInternalTarget,
+		publicURL:              strings.TrimRight(os.Getenv("MMWXC_PUBLIC_URL"), "/"),
+		userStatusTasks:        newManagedUserStatusTaskStore(),
+		connectionMetrics:      make(map[string]connectionMetrics),
+		detailedConnections:    make(map[string]serverDetailedConnectionRecord),
+		helperRate:             make(map[string]time.Time),
+		userRateBaselines:      make(map[string]userRateBaseline),
+		userRateOwnership:      make(map[string]userRateOwnershipCacheEntry),
+		geoCache:               make(map[string]geoCacheEntry),
+		geoInflight:            make(map[string]*geoInflightCall),
+		geoSlots:               make(chan struct{}, 4),
 	}
 	adminStore, err := openPostgresAdminSessionStore(getenv("MMWXC_ADMIN_DB_CONFIG", defaultAdminDatabaseConfigPath))
 	if err != nil {
@@ -217,6 +225,8 @@ func main() {
 	mux.HandleFunc("/api/custom/ui/service-groups", api.withCORS(api.uiServiceGroupsHandler))
 	mux.HandleFunc("/api/custom/ui/routing-presets", api.withCORS(api.uiRoutingPresetsHandler))
 	mux.HandleFunc("/api/custom/users/", api.withCORS(api.userManagementHandler))
+	mux.HandleFunc("/api/custom/user-status-tasks", api.withCORS(api.userStatusTaskHandler))
+	mux.HandleFunc("/api/custom/user-status-tasks/", api.withCORS(api.userStatusTaskHandler))
 	mux.Handle("/api/", api.withCORSHandler(mmwxAPIProxy(mmwxAPITarget)))
 	mux.Handle("/", spaHandler(getenv("MMWXC_FRONTEND_DIR", defaultFrontendDir)))
 

@@ -34,7 +34,7 @@ import {
   createManagedUserTelegramInvite,
   resetManagedUserPassword,
   resetManagedUserTraffic,
-  setManagedUserStatus,
+  setManagedUserStatusTask,
   unassignManagedUserPackage,
   unbindManagedUserTelegram,
   updateManagedUserLimits,
@@ -43,7 +43,7 @@ import {
   updateManagedUserShortCode,
 } from "./api";
 import type { ManagedPackage, ManagedUser, ManagedUserDeletionPreview, UserSubaccount, XrayNode } from "./types";
-import { fetchUserManagementData, writeAndVerifyManagedUserStatus } from "./user-management-state";
+import { fetchUserManagementData, withManagedUserStatusPending, writeAndVerifyManagedUserStatus } from "./user-management-state";
 
 type Notice = { tone: "success" | "error" | "info"; text: string } | null;
 type Dialog =
@@ -152,13 +152,15 @@ export function UserManagementPage({ token }: { token: string }) {
   async function changeStatus(user: ManagedUser) {
     if (busy) return;
     const expected = !user.is_active;
-    setBusy(`status-${user.username}`);
     try {
-      const result = await writeAndVerifyManagedUserStatus(
-        user.username,
-        expected,
-        () => setManagedUserStatus(token, user.username, expected),
-        () => fetchManagedUserState(token, user.username),
+      const result = await withManagedUserStatusPending(
+        (pending) => setBusy(pending ? `status-${user.username}` : ""),
+        () => writeAndVerifyManagedUserStatus(
+          user.username,
+          expected,
+          () => setManagedUserStatusTask(token, user.username, expected),
+          () => fetchManagedUserState(token, user.username),
+        ),
       );
       if (result.kind === "unknown") {
         setUnknownStatuses((current) => new Set(current).add(user.username));
@@ -176,8 +178,6 @@ export function UserManagementPage({ token }: { token: string }) {
       void load({ background: true, success });
     } catch (error) {
       setNotice({ tone: "error", text: messageOf(error, "更新用户状态失败") });
-    } finally {
-      setBusy("");
     }
   }
 

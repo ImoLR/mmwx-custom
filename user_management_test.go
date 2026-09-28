@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
 type fakeUserManagementStore struct {
+	mu      sync.RWMutex
 	state   managedUserState
 	preview managedUserDeletionPreview
 	err     error
@@ -26,11 +28,21 @@ func (s *fakeUserManagementStore) RemoteServerExists(context.Context, string) (b
 func (s *fakeUserManagementStore) Close() error { return nil }
 
 func (s *fakeUserManagementStore) ManagedUserState(context.Context, string) (managedUserState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.state, s.err
 }
 
 func (s *fakeUserManagementStore) ManagedUserDeletionPreview(context.Context, string) (managedUserDeletionPreview, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.preview, s.err
+}
+
+func (s *fakeUserManagementStore) setStateActive(active bool) {
+	s.mu.Lock()
+	s.state.IsActive = active
+	s.mu.Unlock()
 }
 
 func TestUserManagementStateReturnsAuthoritativeDatabaseValue(t *testing.T) {

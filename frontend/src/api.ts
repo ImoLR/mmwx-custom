@@ -45,6 +45,7 @@ import type {
   MasterUrlResponse,
   ManagedUsersResponse,
   ManagedUserStateResponse,
+  ManagedUserStatusTaskResponse,
   ManagedUserDeletionPreviewResponse,
   UserSubaccountsResponse,
   CarpoolPublishRequest,
@@ -407,6 +408,14 @@ function base64ToBytes(value: string) {
 
 async function requestCustomApi<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
+  const response = await fetch(path, { ...init, headers });
+  const body = await response.text();
+  return parseJSONBody<T>(response.status, response.headers.get("content-type"), body);
+}
+
+async function requestCustomOperator<T>(path: string, token: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  headers.set("MM-Authorization", token);
   const response = await fetch(path, { ...init, headers });
   const body = await response.text();
   return parseJSONBody<T>(response.status, response.headers.get("content-type"), body);
@@ -1235,6 +1244,43 @@ export function createManagedUser(token: string, body: { username: string; email
 
 export function setManagedUserStatus(token: string, username: string, isActive: boolean) {
   return requestOperation<{ status?: string }>(token, "5c378d4ac426a79f", { username, is_active: isActive });
+}
+
+async function startManagedUserStatusTask(token: string, username: string, isActive: boolean) {
+  const channel = await getSecureChannel(joinUrl(MMWX_API_BASE_URL, "/api/v3"));
+  const path = joinUrl(
+    MMWX_CUSTOM_API_BASE_URL,
+    `/api/custom/user-status-tasks?username=${encodeURIComponent(username)}&is_active=${isActive ? "true" : "false"}`,
+  );
+  return requestWithSecureChannel<ManagedUserStatusTaskResponse>(path, token, {
+    method: "POST",
+    body: JSON.stringify({ op: "5c378d4ac426a79f", payload: { username, is_active: isActive } }),
+  }, channel, false);
+}
+
+function wait(milliseconds: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+export async function setManagedUserStatusTask(token: string, username: string, isActive: boolean) {
+  const started = await startManagedUserStatusTask(token, username, isActive);
+  const deadline = Date.now() + 6 * 60 * 1000;
+  let current = started.task;
+  while (current.status === "pending") {
+    if (Date.now() >= deadline) throw new Error("用户状态任务仍在后台运行，请稍后刷新确认");
+    await wait(750);
+    const response = await requestCustomOperator<ManagedUserStatusTaskResponse>(
+      joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/user-status-tasks/${encodeURIComponent(current.id)}`),
+      token,
+      { cache: "no-store" },
+    );
+    current = response.task;
+  }
+  if (current.status !== "succeeded") {
+    const suffix = current.upstream_status ? `（HTTP ${current.upstream_status}）` : "";
+    throw new Error(`用户状态修改失败${suffix}；数据库状态未改变`);
+  }
+  return current;
 }
 
 export function resetManagedUserPassword(token: string, username: string, newPassword: string) {

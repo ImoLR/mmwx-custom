@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchUserManagementData, writeAndVerifyManagedUserStatus } from "../../frontend/src/user-management-state.ts";
+import { fetchUserManagementData, withManagedUserStatusPending, writeAndVerifyManagedUserStatus } from "../../frontend/src/user-management-state.ts";
 
 const alice = { username: "alice", role: "user", is_active: true };
 
@@ -50,4 +50,16 @@ test("disable and enable remain authoritative after reload", async () => {
   };
   await mutate(false);
   await mutate(true);
+});
+
+test("HTTP 502 always releases the pending state", async () => {
+  const transitions: boolean[] = [];
+  await assert.rejects(
+    withManagedUserStatusPending(
+      (pending) => transitions.push(pending),
+      async () => { throw new Error("请求失败：上游服务暂时不可用（HTTP 502）"); },
+    ),
+    /HTTP 502/,
+  );
+  assert.deepEqual(transitions, [true, false]);
 });

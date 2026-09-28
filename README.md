@@ -72,6 +72,7 @@ npm run dev
 | `MMWXC_ALLOWED_ORIGINS` | development origins | Comma-separated CORS allowlist |
 | `MMWXC_FRONTEND_DIR` | `frontend/dist` | Built Custom UI directory |
 | `MMWX_API_TARGET` | `http://127.0.0.1:12891` | Fork Backend target for `/api/*` proxy |
+| `MMWXC_OFFICIAL_INTERNAL_TARGET` | `http://127.0.0.1:12889` | Direct official-controller target for background user-status tasks; avoids holding the browser/Cloudflare request open |
 | `MMWXC_HELPER_STATE_FILE` | `/etc/mmwx-custom/helper-state.json` | Persistent Custom server identity state |
 | `MMWXC_RELEASE_CACHE_FILE` | `/etc/mmwx-custom/release-cache.json` | Last successful GitHub component metadata cache |
 

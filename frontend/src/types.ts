@@ -907,6 +907,24 @@ export type ManagedUserStateResponse = {
   };
 };
 
+export type ManagedUserStatusTask = {
+  id: string;
+  username: string;
+  expected_active: boolean;
+  status: "pending" | "succeeded" | "failed";
+  message?: string;
+  upstream_status?: number;
+  duration_ms?: number;
+  started_at: string;
+  finished_at?: string;
+  confirmed_active?: boolean;
+};
+
+export type ManagedUserStatusTaskResponse = {
+  success: boolean;
+  task: ManagedUserStatusTask;
+};
+
 export type ManagedUserDeletionPreview = {
   username: string;
   exists: boolean;
