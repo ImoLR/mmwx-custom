@@ -90,6 +90,7 @@ import type {
   XrayWarpStatus,
   WebsiteMutationResponse,
 } from "./types";
+import { formatHTTPError, parseJSONBody } from "./http-error";
 const SESSION_KEY = "mmwx-session";
 const MMWX_API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_MMWX_API_BASE_URL ?? "");
 const MMWX_CUSTOM_API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_MMWX_CUSTOM_API_BASE_URL ?? "");
@@ -156,17 +157,8 @@ async function request<T>(path: string, token?: string, init?: RequestInit): Pro
     const nextChannel = await getSecureChannel(path);
     return requestWithSecureChannel<T>(path, token, init, nextChannel, true);
   }
-  if (!response.ok) {
-    let message = `请求失败 (${response.status})`;
-    try {
-      const body = (await response.json()) as { error?: string; message?: string };
-      message = body.error || body.message || message;
-    } catch {
-      // Keep the status-based message.
-    }
-    throw new Error(message);
-  }
-  return (await response.json()) as T;
+  const body = await response.text();
+  return parseJSONBody<T>(response.status, response.headers.get("content-type"), body);
 }
 
 type SecureChannel = {
@@ -216,20 +208,10 @@ async function requestWithSecureChannel<T>(path: string, token: string | undefin
     ? bytesToText(await decryptEnvelope(channel, base64ToBytes((await response.text()).trim())))
     : await response.text();
 
-  let parsed: unknown = null;
-  if (plaintext.trim()) {
-    try {
-      parsed = JSON.parse(plaintext);
-    } catch {
-      parsed = { error: plaintext };
-    }
-  }
-
   if (!response.ok) {
-    const bodyObject = parsed && typeof parsed === "object" ? parsed as { error?: string; message?: string } : {};
-    throw new Error(bodyObject.error || bodyObject.message || `请求失败 (${response.status})`);
+    throw new Error(formatHTTPError(response.status, response.headers.get("content-type"), plaintext));
   }
-  return parsed as T;
+  return parseJSONBody<T>(response.status, response.headers.get("content-type"), plaintext);
 }
 
 async function secureChannelRequired(response: Response) {
@@ -426,17 +408,8 @@ function base64ToBytes(value: string) {
 async function requestCustomApi<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   const response = await fetch(path, { ...init, headers });
-  if (!response.ok) {
-    let message = `请求失败 (${response.status})`;
-    try {
-      const body = (await response.json()) as { error?: string; message?: string };
-      message = body.error || body.message || message;
-    } catch {
-      // Keep the status-based message.
-    }
-    throw new Error(message);
-  }
-  return (await response.json()) as T;
+  const body = await response.text();
+  return parseJSONBody<T>(response.status, response.headers.get("content-type"), body);
 }
 
 function requestOperation<T>(

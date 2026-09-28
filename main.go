@@ -225,7 +225,7 @@ func main() {
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		WriteTimeout:      customServerWriteTimeout,
 		IdleTimeout:       60 * time.Second,
 	}
 
@@ -281,12 +281,31 @@ func (a *app) healthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "status": "ok"})
 }
 
+const (
+	mmwxProxyResponseHeaderTimeout = 90 * time.Second
+	customServerWriteTimeout       = 95 * time.Second
+)
+
 func mmwxAPIProxy(target *url.URL) http.Handler {
+	return mmwxAPIProxyWithTimeout(target, mmwxProxyResponseHeaderTimeout)
+}
+
+func mmwxAPIProxyWithTimeout(target *url.URL, responseHeaderTimeout time.Duration) http.Handler {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	baseDirector := proxy.Director
 	proxy.Director = func(r *http.Request) {
 		baseDirector(r)
 		r.Host = target.Host
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = responseHeaderTimeout
+	proxy.Transport = transport
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		log.Printf("[mmwx-custom] official API proxy failed method=%s path=%s error=%v", r.Method, r.URL.Path, err)
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"success": false,
+			"message": "upstream service temporarily unavailable",
+		})
 	}
 	return proxy
 }

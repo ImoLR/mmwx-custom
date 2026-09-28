@@ -43,6 +43,7 @@ import {
   updateManagedUserShortCode,
 } from "./api";
 import type { ManagedPackage, ManagedUser, ManagedUserDeletionPreview, UserSubaccount, XrayNode } from "./types";
+import { fetchUserManagementData, writeAndVerifyManagedUserStatus } from "./user-management-state";
 
 type Notice = { tone: "success" | "error" | "info"; text: string } | null;
 type Dialog =
@@ -87,21 +88,31 @@ export function UserManagementPage({ token }: { token: string }) {
   const [dialog, setDialog] = useState<Dialog>(null);
   const [query, setQuery] = useState("");
   const [packageFilter, setPackageFilter] = useState("all");
+  const [unknownStatuses, setUnknownStatuses] = useState<Set<string>>(() => new Set());
   const [view, setView] = useState<"full" | "renewal">(() => localStorage.getItem("users-view-mode") === "package" ? "renewal" : "full");
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const [userResult, packageResult, nodeResult] = await Promise.allSettled([
-      fetchManagedUsers(token),
-      fetchPackages(token),
-      fetchManagedUserNodes(token),
-    ]);
-    if (userResult.status === "fulfilled") setUsers(userResult.value.users ?? []);
-    if (packageResult.status === "fulfilled") setPackages(packageResult.value.packages ?? []);
-    if (nodeResult.status === "fulfilled") setNodes(nodeResult.value.nodes ?? []);
-    const failure = [userResult, packageResult, nodeResult].find((result) => result.status === "rejected");
-    if (failure?.status === "rejected") setNotice({ tone: "error", text: messageOf(failure.reason, "读取用户管理数据失败") });
-    setLoading(false);
+  const load = useCallback(async (options?: { background?: boolean; success?: string }) => {
+    if (!options?.background) setLoading(true);
+    const result = await fetchUserManagementData(
+      () => fetchManagedUsers(token),
+      () => fetchPackages(token),
+      () => fetchManagedUserNodes(token),
+    );
+    if (result.users) {
+      setUsers(result.users);
+      setUnknownStatuses(new Set());
+    }
+    if (result.packages) setPackages(result.packages);
+    if (result.nodes) setNodes(result.nodes);
+    if (result.failures.length > 0) {
+      setNotice({
+        tone: options?.success ? "info" : "error",
+        text: options?.success ? `${options.success}；部分页面数据刷新失败` : result.failures[0],
+      });
+    } else if (options?.success) {
+      setNotice({ tone: "success", text: options.success });
+    }
+    if (!options?.background) setLoading(false);
   }, [token]);
 
   useEffect(() => { void load(); }, [load]);
@@ -143,20 +154,26 @@ export function UserManagementPage({ token }: { token: string }) {
     const expected = !user.is_active;
     setBusy(`status-${user.username}`);
     try {
-      await setManagedUserStatus(token, user.username, expected);
-      const state = await fetchManagedUserState(token, user.username);
-      if (!state.user.exists || state.user.is_active !== expected) {
-        throw new Error("数据库中的用户状态与操作结果不一致");
+      const result = await writeAndVerifyManagedUserStatus(
+        user.username,
+        expected,
+        () => setManagedUserStatus(token, user.username, expected),
+        () => fetchManagedUserState(token, user.username),
+      );
+      if (result.kind === "unknown") {
+        setUnknownStatuses((current) => new Set(current).add(user.username));
+        setNotice({ tone: "error", text: `状态写入请求已完成，但无法确认最终状态：${result.reason}` });
+        return;
       }
-      // This is authoritative database state, not an optimistic UI update.
-      setUsers((current) => current.map((item) => item.username === user.username ? { ...item, is_active: state.user.is_active } : item));
-      const refreshed = await fetchManagedUsers(token);
-      const official = (refreshed.users ?? []).find((item) => item.username === user.username);
-      if (!official || official.is_active !== expected) {
-        throw new Error("正式用户列表尚未返回数据库中的最新状态，请重试刷新");
-      }
-      setUsers(refreshed.users ?? []);
-      setNotice({ tone: "success", text: `用户 ${user.username} 已${expected ? "启用" : "禁用"}` });
+      setUnknownStatuses((current) => {
+        const next = new Set(current);
+        next.delete(user.username);
+        return next;
+      });
+      setUsers((current) => current.map((item) => item.username === user.username ? { ...item, is_active: result.isActive } : item));
+      const success = `用户 ${user.username} 已${expected ? "启用" : "禁用"}`;
+      setNotice({ tone: "success", text: success });
+      void load({ background: true, success });
     } catch (error) {
       setNotice({ tone: "error", text: messageOf(error, "更新用户状态失败") });
     } finally {
@@ -199,7 +216,7 @@ export function UserManagementPage({ token }: { token: string }) {
         <section className={`user-list ${view}`}>
           {visible.map((user) => {
             const pkg = user.package_id ? packageById.get(user.package_id) : undefined;
-            return <UserCard key={user.username} user={user} pkg={pkg} busy={busy} view={view}
+            return <UserCard key={user.username} user={user} statusUnknown={unknownStatuses.has(user.username)} pkg={pkg} busy={busy} view={view}
               onDialog={setDialog}
               onStatus={() => {
                 if (!window.confirm(`确认${user.is_active ? "禁用" : "启用"}用户 ${user.username}？`)) return;
@@ -230,8 +247,8 @@ export function UserManagementPage({ token }: { token: string }) {
   );
 }
 
-function UserCard({ user, pkg, busy, view, onDialog, onStatus, onExtend, onResetTraffic, onDelete }: {
-  user: ManagedUser; pkg?: ManagedPackage; busy: string; view: "full" | "renewal";
+function UserCard({ user, statusUnknown, pkg, busy, view, onDialog, onStatus, onExtend, onResetTraffic, onDelete }: {
+  user: ManagedUser; statusUnknown: boolean; pkg?: ManagedPackage; busy: string; view: "full" | "renewal";
   onDialog: (dialog: Dialog) => void; onStatus: () => void; onExtend: (days: number) => void; onResetTraffic: () => void; onDelete: () => void;
 }) {
   const used = Number(user.traffic_used) || 0;
@@ -242,7 +259,7 @@ function UserCard({ user, pkg, busy, view, onDialog, onStatus, onExtend, onReset
     <article className={`user-card${!user.is_active ? " disabled" : ""}`}>
       <header>
         <div className="user-identity"><span className="user-avatar">{(user.nickname || user.username).slice(0, 1).toUpperCase()}</span><div><h2>{user.username}</h2><p>{user.nickname || "—"}{user.email ? ` · ${user.email}` : ""}</p></div></div>
-        <div className="user-badges"><span>{admin ? "管理员" : "用户"}</span><span className={user.is_active ? "ok" : "off"}>{user.is_active ? "已启用" : "已禁用"}</span></div>
+        <div className="user-badges"><span>{admin ? "管理员" : "用户"}</span><span className={statusUnknown ? "off" : user.is_active ? "ok" : "off"}>{statusUnknown ? "状态待确认" : user.is_active ? "已启用" : "已禁用"}</span></div>
       </header>
       {view === "full" && <div className="user-facts">
         <UserFact label="Telegram" value={user.telegram_id ? `@${user.telegram_username || user.telegram_id}` : "未绑定"} />
@@ -264,7 +281,7 @@ function UserCard({ user, pkg, busy, view, onDialog, onStatus, onExtend, onReset
         <button type="button" onClick={() => onDialog({ kind: "telegram", user })}><Send />Telegram</button>
         {!admin && <button type="button" onClick={() => onDialog({ kind: "password", user })}><KeyRound />重置密码</button>}
         {!admin && <button type="button" onClick={onResetTraffic} disabled={Boolean(busy)}><RotateCcw />重置流量</button>}
-        {!admin && <button type="button" onClick={onStatus} disabled={Boolean(busy)}>{user.is_active ? <UserX /> : <UserCheck />}{user.is_active ? "禁用" : "启用"}</button>}
+        {!admin && <button type="button" onClick={onStatus} disabled={Boolean(busy) || statusUnknown}>{user.is_active ? <UserX /> : <UserCheck />}{statusUnknown ? "先刷新确认" : user.is_active ? "禁用" : "启用"}</button>}
         {!admin && <button className="danger" type="button" onClick={onDelete} disabled={Boolean(busy)}><Trash2 />删除</button>}
       </footer>
     </article>
