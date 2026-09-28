@@ -17,6 +17,54 @@ type fakeUserManagementStore struct {
 	err     error
 }
 
+func (s *fakeUserManagementStore) LifecycleStates(context.Context) (map[string]managedUserLifecycle, error) {
+	return map[string]managedUserLifecycle{}, s.err
+}
+
+func (s *fakeUserManagementStore) LifecycleCredentialRefs(context.Context, string) ([]lifecycleCredentialRef, error) {
+	return nil, s.err
+}
+
+func (s *fakeUserManagementStore) LifecycleInboundConsumerCount(context.Context, int64, string, string, string) (int, error) {
+	return 0, s.err
+}
+
+func (s *fakeUserManagementStore) LifecycleDisabledCredentials(context.Context, string) ([]lifecycleCredentialBackup, error) {
+	return nil, s.err
+}
+
+func (s *fakeUserManagementStore) LatestAccessOperation(context.Context, string, string) (string, error) {
+	return "", s.err
+}
+
+func (s *fakeUserManagementStore) SaveAccessPlan(context.Context, string, string, string, []lifecyclePlanItem) error {
+	return s.err
+}
+
+func (s *fakeUserManagementStore) FinishAccessAttempt(context.Context, string, string, string, int, string) error {
+	return s.err
+}
+
+func (s *fakeUserManagementStore) LatestDeleteOperation(context.Context, string) (string, error) {
+	return "", s.err
+}
+
+func (s *fakeUserManagementStore) SaveDeletePlan(context.Context, string, string, []lifecyclePlanItem) error {
+	return s.err
+}
+
+func (s *fakeUserManagementStore) MarkLifecycleItem(context.Context, string, lifecyclePlanItem) error {
+	return s.err
+}
+
+func (s *fakeUserManagementStore) FinishDeleteAttempt(context.Context, string, string, int, string) error {
+	return s.err
+}
+
+func (s *fakeUserManagementStore) FinalizeManagementUserDeletion(context.Context, string, string) error {
+	return s.err
+}
+
 func (s *fakeUserManagementStore) AuthorizeAdmin(context.Context, string) (bool, error) {
 	return true, nil
 }

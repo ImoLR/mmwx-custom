@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -18,23 +19,24 @@ type managedUserState struct {
 }
 
 type managedUserDeletionPreview struct {
-	Username          string           `json:"username"`
-	Exists            bool             `json:"exists"`
-	Role              string           `json:"role,omitempty"`
-	PackageBindings   int64            `json:"package_bindings"`
-	Subscriptions     int64            `json:"subscriptions"`
-	TelegramBindings  int64            `json:"telegram_bindings"`
-	Subaccounts       int64            `json:"subaccounts"`
-	InboundBindings   int64            `json:"inbound_bindings"`
-	PrivateNodes      int64            `json:"private_nodes"`
-	RoutedRelations   int64            `json:"routed_relations"`
-	UserLimits        int64            `json:"user_limits"`
-	TrafficRecords    int64            `json:"traffic_records"`
-	SessionsAndTokens int64            `json:"sessions_and_tokens"`
-	CustomAssignments int64            `json:"custom_assignments"`
-	OtherPrivate      int64            `json:"other_private"`
-	Details           map[string]int64 `json:"details"`
-	SharedPreserved   []string         `json:"shared_preserved"`
+	Username          string              `json:"username"`
+	Exists            bool                `json:"exists"`
+	Role              string              `json:"role,omitempty"`
+	PackageBindings   int64               `json:"package_bindings"`
+	Subscriptions     int64               `json:"subscriptions"`
+	TelegramBindings  int64               `json:"telegram_bindings"`
+	Subaccounts       int64               `json:"subaccounts"`
+	InboundBindings   int64               `json:"inbound_bindings"`
+	PrivateNodes      int64               `json:"private_nodes"`
+	RoutedRelations   int64               `json:"routed_relations"`
+	UserLimits        int64               `json:"user_limits"`
+	TrafficRecords    int64               `json:"traffic_records"`
+	SessionsAndTokens int64               `json:"sessions_and_tokens"`
+	CustomAssignments int64               `json:"custom_assignments"`
+	OtherPrivate      int64               `json:"other_private"`
+	Details           map[string]int64    `json:"details"`
+	SharedPreserved   []string            `json:"shared_preserved"`
+	InboundPlan       []lifecyclePlanItem `json:"inbound_plan"`
 }
 
 type userManagementStore interface {
@@ -323,7 +325,7 @@ func (a *app) userManagementHandler(w http.ResponseWriter, r *http.Request) {
 	const prefix = "/api/custom/users/"
 	path := strings.TrimPrefix(r.URL.Path, prefix)
 	parts := strings.Split(path, "/")
-	if len(parts) != 2 || parts[0] == "" || (parts[1] != "state" && parts[1] != "deletion-preview") {
+	if len(parts) != 2 || parts[0] == "" || (parts[1] != "state" && parts[1] != "deletion-preview" && parts[1] != "delete" && parts[1] != "access") {
 		writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "not found"})
 		return
 	}
@@ -332,7 +334,8 @@ func (a *app) userManagementHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid username"})
 		return
 	}
-	if r.Method != http.MethodGet {
+	writeAction := parts[1] == "delete" || parts[1] == "access"
+	if (writeAction && r.Method != http.MethodPost) || (!writeAction && r.Method != http.MethodGet) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"success": false, "message": "method not allowed"})
 		return
 	}
@@ -344,6 +347,73 @@ func (a *app) userManagementHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"success": true, "user": state})
+		return
+	}
+	lifecycle, lifecycleOK := a.adminStore.(lifecycleStore)
+	if !lifecycleOK || lifecycle == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "message": "user lifecycle service unavailable"})
+		return
+	}
+	unlock := func() {}
+	if writeAction {
+		unlock = a.lockUserLifecycle(username)
+		defer unlock()
+	}
+	if parts[1] == "access" {
+		state, err := store.ManagedUserState(r.Context(), username)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "failed to read user state"})
+			return
+		}
+		if !state.Exists {
+			writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "user not found"})
+			return
+		}
+		if state.Role == "admin" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "administrator access cannot be managed"})
+			return
+		}
+		var request struct {
+			Enabled *bool `json:"enabled"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&request) != nil || request.Enabled == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid access request"})
+			return
+		}
+		token := strings.TrimSpace(r.Header.Get("MM-Authorization"))
+		if token == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "official operator session is required"})
+			return
+		}
+		operation := lifecycleOperationDisable
+		if *request.Enabled {
+			operation = lifecycleOperationEnable
+		}
+		plan, err := a.buildAccessPlan(r.Context(), token, username, *request.Enabled)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "failed to build user access plan"})
+			return
+		}
+		operationID, err := lifecycle.LatestAccessOperation(r.Context(), username, operation)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "failed to resume user access operation"})
+			return
+		}
+		if operationID == "" {
+			operationID, err = newManagedUserStatusTaskID()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "failed to create user access operation"})
+				return
+			}
+		}
+		if err := lifecycle.SaveAccessPlan(r.Context(), username, operation, operationID, plan); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "failed to persist user access plan"})
+			return
+		}
+		result := a.executeAccessPlan(r.Context(), token, username, operationID, operation, plan)
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "result": result})
 		return
 	}
 	preview, err := store.ManagedUserDeletionPreview(r.Context(), username)
@@ -359,5 +429,38 @@ func (a *app) userManagementHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "administrator accounts cannot be deleted"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "preview": preview})
+	token := strings.TrimSpace(r.Header.Get("MM-Authorization"))
+	if token == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "official operator session is required"})
+		return
+	}
+	plan, err := a.buildDeletionPlan(r.Context(), token, username)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "failed to build user deletion plan"})
+		return
+	}
+	if parts[1] == "deletion-preview" {
+		preview.InboundPlan = plan
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "preview": preview})
+		return
+	}
+	operationID, err := lifecycle.LatestDeleteOperation(r.Context(), username)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "failed to resume user deletion"})
+		return
+	}
+	if operationID == "" {
+		operationID, err = newManagedUserStatusTaskID()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "failed to create user deletion task"})
+			return
+		}
+	}
+	if err := lifecycle.SaveDeletePlan(r.Context(), username, operationID, plan); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "failed to persist user deletion plan"})
+		return
+	}
+	result := a.executeDeletePlan(r.Context(), token, username, operationID, plan)
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "result": result})
+	return
 }

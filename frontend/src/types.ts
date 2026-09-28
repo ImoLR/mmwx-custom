@@ -943,12 +943,58 @@ export type ManagedUserDeletionPreview = {
   other_private: number;
   details: Record<string, number>;
   shared_preserved: string[];
+  inbound_plan: ManagedUserLifecycleItem[];
 };
 
 export type ManagedUserDeletionPreviewResponse = {
   success: boolean;
   preview: ManagedUserDeletionPreview;
 };
+
+export type ManagedUserLifecycleItem = {
+  server_id: number;
+  server_name: string;
+  inbound_tag: string;
+  protocol: string;
+  action: "REMOVE_USER_ONLY" | "DELETE_WHOLE_INBOUND" | "REPLACE_CREDENTIAL" | "CONFLICT";
+  status: "pending" | "completed" | "failed";
+  remaining_users: number;
+  attempts: number;
+  last_error?: string;
+  last_checked_at?: string;
+};
+
+export type ManagedUserLifecycle = {
+  username: string;
+  desired_state: string;
+  effective_state: string;
+  operation?: string;
+  pending_count: number;
+  last_error?: string;
+  updated_at: string;
+};
+
+export type ManagedUserLifecycleResponse = {
+  success: boolean;
+  users: Record<string, ManagedUserLifecycle>;
+};
+
+export type ManagedUserDeleteResult = {
+  username: string;
+  operation_id: string;
+  state: "disabling" | "enabling" | "partially_disabled" | "partially_enabled" | "disabled" | "enabled" | "deleting" | "delete_partial" | "deleted";
+  pending_count: number;
+  user_deleted: boolean;
+  last_error?: string;
+  items: ManagedUserLifecycleItem[];
+};
+
+export type ManagedUserDeleteResponse = {
+  success: boolean;
+  result: ManagedUserDeleteResult;
+};
+
+export type ManagedUserAccessResponse = ManagedUserDeleteResponse;
 
 export type UserSubaccount = {
   type: "routed" | "inbound" | string;

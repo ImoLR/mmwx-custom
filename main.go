@@ -116,6 +116,8 @@ type app struct {
 	officialInternalTarget *url.URL
 	publicURL              string
 	userStatusTasks        *managedUserStatusTaskStore
+	userLifecycleMu        sync.Mutex
+	userLifecycleLocks     map[string]*sync.Mutex
 
 	mu      sync.Mutex
 	lastCPU cpuTimes
@@ -158,6 +160,7 @@ func main() {
 		officialInternalTarget: officialInternalTarget,
 		publicURL:              strings.TrimRight(os.Getenv("MMWXC_PUBLIC_URL"), "/"),
 		userStatusTasks:        newManagedUserStatusTaskStore(),
+		userLifecycleLocks:     make(map[string]*sync.Mutex),
 		connectionMetrics:      make(map[string]connectionMetrics),
 		detailedConnections:    make(map[string]serverDetailedConnectionRecord),
 		helperRate:             make(map[string]time.Time),
@@ -186,6 +189,10 @@ func main() {
 		if err := adminStore.EnsureUserManagementSchema(context.Background()); err != nil {
 			_ = adminStore.Close()
 			log.Fatalf("[mmwx-custom] user management migration failed: %v", err)
+		}
+		if err := adminStore.EnsureUserLifecycleSchema(context.Background()); err != nil {
+			_ = adminStore.Close()
+			log.Fatalf("[mmwx-custom] user lifecycle migration failed: %v", err)
 		}
 		defer adminStore.Close()
 	}
@@ -225,6 +232,7 @@ func main() {
 	mux.HandleFunc("/api/custom/ui/service-groups", api.withCORS(api.uiServiceGroupsHandler))
 	mux.HandleFunc("/api/custom/ui/routing-presets", api.withCORS(api.uiRoutingPresetsHandler))
 	mux.HandleFunc("/api/custom/users/", api.withCORS(api.userManagementHandler))
+	mux.HandleFunc("/api/custom/user-lifecycle", api.withCORS(api.userLifecycleIndexHandler))
 	mux.HandleFunc("/api/custom/user-status-tasks", api.withCORS(api.userStatusTaskHandler))
 	mux.HandleFunc("/api/custom/user-status-tasks/", api.withCORS(api.userStatusTaskHandler))
 	mux.Handle("/api/", api.withCORSHandler(mmwxAPIProxy(mmwxAPITarget)))

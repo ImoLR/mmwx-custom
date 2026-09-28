@@ -4990,6 +4990,12 @@ button {
 .user-renew-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
 .user-card footer { display: flex; flex-wrap: wrap; gap: 7px; border-top: 1px solid var(--line); padding-top: 10px; }
 .user-card footer button { flex: 1 1 118px; min-height: 38px; font-size: var(--user-font-secondary); }
+.user-delete-button { position: relative; isolation: isolate; overflow: hidden; }
+.user-delete-button > svg,
+.user-delete-button > b { position: relative; z-index: 2; }
+.user-delete-button > b { font-weight: 500; }
+.user-delete-button > span { position: absolute; z-index: 1; top: 45%; left: calc(50% + 22px); transform: translate(-50%, -54%); color: currentColor; font-size: 30px; font-weight: 800; line-height: 1; opacity: .32; pointer-events: none; }
+.user-delete-pending { margin: -3px 0 0; color: var(--danger); font-size: var(--user-font-secondary); line-height: 1.45; overflow-wrap: anywhere; }
 .user-empty { min-height: 180px; display: grid; place-items: center; border: 1px dashed var(--line); border-radius: 8px; background: var(--card); color: var(--muted); padding: 24px; text-align: center; }
 .user-empty.small { min-height: 110px; }
 
@@ -5003,6 +5009,19 @@ button {
 .user-dialog > footer button { flex: 1 1 130px; }
 .user-delete-preview { display: grid; gap: 10px; }
 .user-delete-preview > p { margin: 0; color: var(--muted); line-height: 1.5; }
+.user-delete-plan { min-width: 0; display: grid; gap: 7px; }
+.user-delete-plan article { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; }
+.user-delete-plan article > div { min-width: 0; display: grid; gap: 2px; }
+.user-delete-plan article strong,
+.user-delete-plan article span,
+.user-delete-plan article b,
+.user-delete-plan article p { overflow-wrap: anywhere; }
+.user-delete-plan article span { color: var(--muted); font-size: var(--user-font-min); }
+.user-delete-plan article b { color: var(--text); font-size: var(--user-font-secondary); text-align: right; }
+.user-delete-plan article p { grid-column: 1 / -1; margin: 2px 0 0; color: var(--danger); font-size: var(--user-font-min); line-height: 1.45; }
+.user-delete-plan article.completed { border-color: color-mix(in srgb, var(--success) 30%, var(--line)); }
+.user-delete-plan article.failed { border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); }
+.user-delete-empty-plan { border: 1px dashed var(--line); border-radius: 8px; padding: 10px; }
 .user-delete-preview dl { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .user-delete-preview dl > div { min-width: 0; display: flex; justify-content: space-between; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; }
 .user-delete-preview dt { min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
@@ -5080,6 +5099,8 @@ button {
   .user-package > div:first-child { display: grid; }
   .user-package > div:first-child span { text-align: left; }
   .user-client-list { grid-template-columns: minmax(0, 1fr); }
+  .user-delete-plan article { grid-template-columns: minmax(0, 1fr); }
+  .user-delete-plan article b { text-align: left; }
 }
 
 .xray-inbound-wizard {

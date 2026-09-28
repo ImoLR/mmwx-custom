@@ -6,6 +6,8 @@ import {
   Link2,
   PackageCheck,
   Plus,
+  Power,
+  PowerOff,
   RefreshCw,
   RotateCcw,
   Search,
@@ -13,9 +15,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
-  UserCheck,
   UserRoundCog,
-  UserX,
   X,
 } from "lucide-react";
 import {
@@ -26,7 +26,7 @@ import {
   fetchManagedUserNodes,
   fetchManagedUsers,
   fetchManagedUserDeletionPreview,
-  fetchManagedUserState,
+  fetchManagedUserLifecycles,
   fetchManagedUserSubaccounts,
   fetchManagedUserTelegram,
   fetchPackages,
@@ -34,7 +34,7 @@ import {
   createManagedUserTelegramInvite,
   resetManagedUserPassword,
   resetManagedUserTraffic,
-  setManagedUserStatusTask,
+  setManagedUserLifecycleAccess,
   unassignManagedUserPackage,
   unbindManagedUserTelegram,
   updateManagedUserLimits,
@@ -42,8 +42,8 @@ import {
   updateManagedUserRemark,
   updateManagedUserShortCode,
 } from "./api";
-import type { ManagedPackage, ManagedUser, ManagedUserDeletionPreview, UserSubaccount, XrayNode } from "./types";
-import { fetchUserManagementData, withManagedUserStatusPending, writeAndVerifyManagedUserStatus } from "./user-management-state";
+import type { ManagedPackage, ManagedUser, ManagedUserDeleteResult, ManagedUserDeletionPreview, ManagedUserLifecycle, UserSubaccount, XrayNode } from "./types";
+import { fetchUserManagementData } from "./user-management-state";
 
 type Notice = { tone: "success" | "error" | "info"; text: string } | null;
 type Dialog =
@@ -82,32 +82,36 @@ export function UserManagementPage({ token }: { token: string }) {
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [packages, setPackages] = useState<ManagedPackage[]>([]);
   const [nodes, setNodes] = useState<XrayNode[]>([]);
+  const [lifecycles, setLifecycles] = useState<Record<string, ManagedUserLifecycle>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [query, setQuery] = useState("");
   const [packageFilter, setPackageFilter] = useState("all");
-  const [unknownStatuses, setUnknownStatuses] = useState<Set<string>>(() => new Set());
   const [view, setView] = useState<"full" | "renewal">(() => localStorage.getItem("users-view-mode") === "package" ? "renewal" : "full");
 
   const load = useCallback(async (options?: { background?: boolean; success?: string }) => {
     if (!options?.background) setLoading(true);
-    const result = await fetchUserManagementData(
-      () => fetchManagedUsers(token),
-      () => fetchPackages(token),
-      () => fetchManagedUserNodes(token),
-    );
+    const [result, lifecycleResult] = await Promise.all([
+      fetchUserManagementData(
+        () => fetchManagedUsers(token),
+        () => fetchPackages(token),
+        () => fetchManagedUserNodes(token),
+      ),
+      fetchManagedUserLifecycles(token).then((response) => ({ users: response.users, error: "" })).catch((error) => ({ users: {}, error: messageOf(error, "读取用户生命周期失败") })),
+    ]);
     if (result.users) {
       setUsers(result.users);
-      setUnknownStatuses(new Set());
     }
+    setLifecycles(lifecycleResult.users);
     if (result.packages) setPackages(result.packages);
     if (result.nodes) setNodes(result.nodes);
-    if (result.failures.length > 0) {
+    const failures = lifecycleResult.error ? [...result.failures, lifecycleResult.error] : result.failures;
+    if (failures.length > 0) {
       setNotice({
         tone: options?.success ? "info" : "error",
-        text: options?.success ? `${options.success}；部分页面数据刷新失败` : result.failures[0],
+        text: options?.success ? `${options.success}；部分页面数据刷新失败` : failures[0],
       });
     } else if (options?.success) {
       setNotice({ tone: "success", text: options.success });
@@ -149,35 +153,21 @@ export function UserManagementPage({ token }: { token: string }) {
     }
   }
 
-  async function changeStatus(user: ManagedUser) {
+  async function changeAccess(user: ManagedUser, enable: boolean) {
     if (busy) return;
-    const expected = !user.is_active;
+    setBusy(`access-${user.username}`);
     try {
-      const result = await withManagedUserStatusPending(
-        (pending) => setBusy(pending ? `status-${user.username}` : ""),
-        () => writeAndVerifyManagedUserStatus(
-          user.username,
-          expected,
-          () => setManagedUserStatusTask(token, user.username, expected),
-          () => fetchManagedUserState(token, user.username),
-        ),
-      );
-      if (result.kind === "unknown") {
-        setUnknownStatuses((current) => new Set(current).add(user.username));
-        setNotice({ tone: "error", text: `状态写入请求已完成，但无法确认最终状态：${result.reason}` });
-        return;
+      const response = await setManagedUserLifecycleAccess(token, user.username, enable);
+      if (response.result.pending_count > 0) {
+        setNotice({ tone: "error", text: `${enable ? "启用" : "禁用"}未完成，还有 ${response.result.pending_count} 个节点待处理，可再次点击重试。` });
+      } else {
+        setNotice({ tone: "success", text: `用户 ${user.username} 已${enable ? "启用" : "禁用"}` });
       }
-      setUnknownStatuses((current) => {
-        const next = new Set(current);
-        next.delete(user.username);
-        return next;
-      });
-      setUsers((current) => current.map((item) => item.username === user.username ? { ...item, is_active: result.isActive } : item));
-      const success = `用户 ${user.username} 已${expected ? "启用" : "禁用"}`;
-      setNotice({ tone: "success", text: success });
-      void load({ background: true, success });
+      await load({ background: true });
     } catch (error) {
-      setNotice({ tone: "error", text: messageOf(error, "更新用户状态失败") });
+      setNotice({ tone: "error", text: messageOf(error, "更新用户访问状态失败") });
+    } finally {
+      setBusy("");
     }
   }
 
@@ -216,11 +206,11 @@ export function UserManagementPage({ token }: { token: string }) {
         <section className={`user-list ${view}`}>
           {visible.map((user) => {
             const pkg = user.package_id ? packageById.get(user.package_id) : undefined;
-            return <UserCard key={user.username} user={user} statusUnknown={unknownStatuses.has(user.username)} pkg={pkg} busy={busy} view={view}
+            return <UserCard key={user.username} user={user} lifecycle={lifecycles[user.username]} pkg={pkg} busy={busy} view={view}
               onDialog={setDialog}
-              onStatus={() => {
-                if (!window.confirm(`确认${user.is_active ? "禁用" : "启用"}用户 ${user.username}？`)) return;
-                void changeStatus(user);
+              onStatus={(enable) => {
+                if (!window.confirm(`确认${enable ? "启用" : "禁用"}用户 ${user.username}？`)) return;
+                void changeAccess(user, enable);
               }}
               onExtend={(days) => void run(`extend-${user.username}`, () => extendManagedUserPackage(token, user.username, days), `用户 ${user.username} 已续期 ${days} 天`)}
               onResetTraffic={() => {
@@ -242,24 +232,43 @@ export function UserManagementPage({ token }: { token: string }) {
       {dialog?.kind === "accounts" && <AccountsDialog token={token} user={dialog.user} initial={dialog.initial} onClose={() => setDialog(null)} />}
       {dialog?.kind === "subscription" && <SubscriptionDialog user={dialog.user} pkg={dialog.user.package_id ? packageById.get(dialog.user.package_id) : undefined} onClose={() => setDialog(null)} onCopied={(client) => setNotice({ tone: "success", text: `${client} 订阅地址已复制` })} />}
       {dialog?.kind === "telegram" && <TelegramDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onChanged={async (text) => { setDialog(null); setNotice({ tone: "success", text }); await load(); }} />}
-      {dialog?.kind === "delete" && <DeleteUserDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onDeleted={async () => { setDialog(null); setNotice({ tone: "success", text: `用户 ${dialog.user.username} 已删除，用户级关系已重新核对` }); await load(); }} />}
+      {dialog?.kind === "delete" && <DeleteUserDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onResult={async (result) => {
+        if (result.user_deleted) {
+          setDialog(null);
+          setNotice({ tone: "success", text: `用户 ${dialog.user.username} 已删除，用户级关系已重新核对` });
+          await load();
+          return;
+        }
+        setNotice({ tone: "error", text: `删除未完成，还有 ${result.pending_count} 个节点待清理，可再次点击删除重试。` });
+        await load({ background: true });
+      }} />}
     </div>
   );
 }
 
-function UserCard({ user, statusUnknown, pkg, busy, view, onDialog, onStatus, onExtend, onResetTraffic, onDelete }: {
-  user: ManagedUser; statusUnknown: boolean; pkg?: ManagedPackage; busy: string; view: "full" | "renewal";
-  onDialog: (dialog: Dialog) => void; onStatus: () => void; onExtend: (days: number) => void; onResetTraffic: () => void; onDelete: () => void;
+function UserCard({ user, lifecycle, pkg, busy, view, onDialog, onStatus, onExtend, onResetTraffic, onDelete }: {
+  user: ManagedUser; lifecycle?: ManagedUserLifecycle; pkg?: ManagedPackage; busy: string; view: "full" | "renewal";
+  onDialog: (dialog: Dialog) => void; onStatus: (enable: boolean) => void; onExtend: (days: number) => void; onResetTraffic: () => void; onDelete: () => void;
 }) {
   const used = Number(user.traffic_used) || 0;
   const limit = Number(user.traffic_limit) || 0;
   const percent = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
   const admin = user.role === "admin";
+  const deleting = lifecycle?.effective_state === "deleting" || lifecycle?.effective_state === "delete_partial";
+  const pending = deleting ? lifecycle?.pending_count ?? 0 : 0;
+  const accessState = lifecycle?.effective_state ?? "enabled";
+  const accessDisabled = accessState === "disabled" || accessState === "partially_disabled" || accessState === "partially_enabled" || accessState === "enabling";
+  const accessPending = !deleting && (lifecycle?.pending_count ?? 0) > 0;
+  const enableAction = accessState === "disabled" || accessState === "partially_enabled" || accessState === "enabling";
+  const accessOperationLabel = lifecycle?.operation === "enable" ? "启用" : "禁用";
+  const statusLabel = deleting ? pending > 0 ? "删除未完成" : "正在删除"
+    : accessPending ? `${accessOperationLabel}未完成`
+      : accessState === "disabling" ? "正在禁用" : accessState === "enabling" ? "正在启用" : accessDisabled ? "已禁用" : "已启用";
   return (
-    <article className={`user-card${!user.is_active ? " disabled" : ""}`}>
+    <article className={`user-card${accessDisabled ? " disabled" : ""}`}>
       <header>
         <div className="user-identity"><span className="user-avatar">{(user.nickname || user.username).slice(0, 1).toUpperCase()}</span><div><h2>{user.username}</h2><p>{user.nickname || "—"}{user.email ? ` · ${user.email}` : ""}</p></div></div>
-        <div className="user-badges"><span>{admin ? "管理员" : "用户"}</span><span className={statusUnknown ? "off" : user.is_active ? "ok" : "off"}>{statusUnknown ? "状态待确认" : user.is_active ? "已启用" : "已禁用"}</span></div>
+        <div className="user-badges"><span>{admin ? "管理员" : "用户"}</span>{!admin && <span className={deleting || accessDisabled || accessPending ? "off" : "ok"}>{statusLabel}</span>}</div>
       </header>
       {view === "full" && <div className="user-facts">
         <UserFact label="Telegram" value={user.telegram_id ? `@${user.telegram_username || user.telegram_id}` : "未绑定"} />
@@ -281,9 +290,10 @@ function UserCard({ user, statusUnknown, pkg, busy, view, onDialog, onStatus, on
         <button type="button" onClick={() => onDialog({ kind: "telegram", user })}><Send />Telegram</button>
         {!admin && <button type="button" onClick={() => onDialog({ kind: "password", user })}><KeyRound />重置密码</button>}
         {!admin && <button type="button" onClick={onResetTraffic} disabled={Boolean(busy)}><RotateCcw />重置流量</button>}
-        {!admin && <button type="button" onClick={onStatus} disabled={Boolean(busy) || statusUnknown}>{user.is_active ? <UserX /> : <UserCheck />}{statusUnknown ? "先刷新确认" : user.is_active ? "禁用" : "启用"}</button>}
-        {!admin && <button className="danger" type="button" onClick={onDelete} disabled={Boolean(busy)}><Trash2 />删除</button>}
+        {!admin && !deleting && <button type="button" onClick={() => onStatus(enableAction)} disabled={Boolean(busy)}>{enableAction ? <Power /> : <PowerOff />}{enableAction ? "启用" : "禁用"}{accessPending ? ` (${lifecycle?.pending_count ?? 0})` : ""}</button>}
+        {!admin && <button className={`danger user-delete-button${pending > 0 ? " pending" : ""}`} type="button" onClick={onDelete} disabled={Boolean(busy)}>{pending > 0 && <span aria-hidden="true">{pending}</span>}<Trash2 /><b>删除</b></button>}
       </footer>
+      {pending > 0 && <p className="user-delete-pending">删除未完成，还有 {pending} 个节点待清理，可再次点击删除重试。</p>}
     </article>
   );
 }
@@ -373,8 +383,9 @@ function TelegramDialog({ token, user, onClose, onChanged }: { token: string; us
   </DialogShell>;
 }
 
-function DeleteUserDialog({ token, user, onClose, onDeleted }: { token: string; user: ManagedUser; onClose: () => void; onDeleted: () => Promise<void> }) {
+function DeleteUserDialog({ token, user, onClose, onResult }: { token: string; user: ManagedUser; onClose: () => void; onResult: (result: ManagedUserDeleteResult) => Promise<void> }) {
   const [preview, setPreview] = useState<ManagedUserDeletionPreview | null>(null);
+  const [result, setResult] = useState<ManagedUserDeleteResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
@@ -392,10 +403,13 @@ function DeleteUserDialog({ token, user, onClose, onDeleted }: { token: string; 
     setDeleting(true);
     setError("");
     try {
-      await deleteManagedUser(token, user.username);
-      const state = await fetchManagedUserState(token, user.username);
-      if (state.user.exists) throw new Error("正式删除操作返回成功，但数据库中用户仍然存在");
-      await onDeleted();
+      const response = await deleteManagedUser(token, user.username);
+      setResult(response.result);
+      await onResult(response.result);
+      if (!response.result.user_deleted) {
+        const refreshed = await fetchManagedUserDeletionPreview(token, user.username);
+        setPreview(refreshed.preview);
+      }
     } catch (err) {
       setError(messageOf(err, "删除用户失败"));
     } finally {
@@ -417,11 +431,19 @@ function DeleteUserDialog({ token, user, onClose, onDeleted }: { token: string; 
     ["其他用户私有记录", preview.other_private],
   ] : [];
 
-  return <DialogShell title={`删除用户 ${user.username}？`} subtitle="删除由正式服务端事务执行；任一步失败都会回滚。" onClose={deleting ? () => {} : onClose} footer={<><button type="button" onClick={onClose} disabled={deleting}>取消</button><button className="danger" type="button" onClick={() => void confirmDelete()} disabled={!preview || deleting}>{deleting ? "删除中..." : "确认删除"}</button></>}>
+  const plan = result?.items ?? preview?.inbound_plan ?? [];
+
+  return <DialogShell title={`删除用户 ${user.username}？`} subtitle="远程访问逐项清理；成功项保留，失败项可重试。" onClose={deleting ? () => {} : onClose} footer={<><button type="button" onClick={onClose} disabled={deleting}>取消</button><button className="danger" type="button" onClick={() => void confirmDelete()} disabled={!preview || deleting}>{deleting ? "删除中..." : result && !result.user_deleted ? "重试待清理项" : "确认删除"}</button></>}>
     {loading ? <div className="user-empty small">正在从数据库核对关联关系...</div> : preview ? <div className="user-delete-preview">
-      <p>将同时清理或解绑：</p>
+      <p>将逐项清理真实 Inbound，再删除用户私有数据库关系：</p>
+      {plan.length > 0 ? <div className="user-delete-plan">{plan.map((item) => <article key={`${item.server_id}-${item.inbound_tag}`} className={item.status}>
+        <div><strong>{item.server_name || `Server ${item.server_id}`}</strong><span>{item.inbound_tag} · {item.protocol || "未知协议"}</span></div>
+        <b>{item.action === "DELETE_WHOLE_INBOUND" ? "删除整个专属 Inbound" : item.action === "REMOVE_USER_ONLY" ? "仅移除当前用户" : "需要检查"}</b>
+        {item.last_error && <p>{item.last_error}</p>}
+      </article>)}</div> : <p className="user-delete-empty-plan">没有需要清理的远程 Inbound。</p>}
       <dl>{rows.map(([label, count]) => <div key={label}><dt>{label}</dt><dd>{count}</dd></div>)}</dl>
-      <p className="safe">共享服务器、公共节点、公共入站和套餐模板不会删除。</p>
+      <p className="safe">共享服务器、套餐模板、其他用户，以及仍有其他使用者的共享 Inbound 会保留。</p>
+      {result && !result.user_deleted && <p className="user-form-error">删除未完成，还有 {result.pending_count} 个节点待清理，可再次点击删除重试。</p>}
     </div> : null}
     {error && <p className="user-form-error">{error}</p>}
   </DialogShell>;

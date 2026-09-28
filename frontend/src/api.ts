@@ -47,6 +47,9 @@ import type {
   ManagedUserStateResponse,
   ManagedUserStatusTaskResponse,
   ManagedUserDeletionPreviewResponse,
+  ManagedUserDeleteResponse,
+  ManagedUserAccessResponse,
+  ManagedUserLifecycleResponse,
   UserSubaccountsResponse,
   CarpoolPublishRequest,
   PackageForwardChainsResponse,
@@ -1238,6 +1241,12 @@ export function fetchManagedUserDeletionPreview(token: string, username: string)
   });
 }
 
+export function fetchManagedUserLifecycles(token: string) {
+  return request<ManagedUserLifecycleResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/user-lifecycle"), token, {
+    cache: "no-store",
+  });
+}
+
 export function createManagedUser(token: string, body: { username: string; email: string; nickname: string; password: string; remark: string }) {
   return requestOperation<{ username: string; email?: string; nickname?: string; role: string; password: string }>(token, "53ea879ad620318e", body);
 }
@@ -1292,7 +1301,17 @@ export function resetManagedUserTraffic(token: string, username: string) {
 }
 
 export function deleteManagedUser(token: string, username: string) {
-  return requestOperation<{ status?: string }>(token, "42b06e7a06f71ddb", { username });
+  return request<ManagedUserDeleteResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/users/${encodeURIComponent(username)}/delete`), token, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function setManagedUserLifecycleAccess(token: string, username: string, enabled: boolean) {
+  return request<ManagedUserAccessResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/users/${encodeURIComponent(username)}/access`), token, {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
 }
 
 export function updateManagedUserRemark(token: string, username: string, remark: string) {
