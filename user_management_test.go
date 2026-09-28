@@ -131,12 +131,18 @@ func TestUserManagementCascadeCoversPrivateRelationsOnly(t *testing.T) {
 	for _, relation := range []string{
 		"user_api_tokens:username",
 		"user_inbound_configs:username",
+		"package_assignment_inbound_configs:username",
+		"package_assignment_subaccounts:username",
+		"user_package_assignments:username",
 		"user_outbounds:username",
 		"user_subaccounts:username",
 		"package_user_node_traffic_baselines:username",
 		"package_node_traffic_suspensions:username",
 		"renewal_requests:username",
 		"mmwxc_connection_assignments:management_username",
+		"mmwxc_routing_rule_presets:username",
+		"mmwxc_ui_preferences:username",
+		"wg_leases:username",
 		"nodes:username",
 		"user_email_traffic_snapshots",
 		"invite_codes WHERE bind_username",
@@ -149,5 +155,27 @@ func TestUserManagementCascadeCoversPrivateRelationsOnly(t *testing.T) {
 		if strings.Contains(userManagementCascadeSchema, shared) {
 			t.Fatalf("cascade schema must preserve shared entity: %s", shared)
 		}
+	}
+}
+
+func TestUserDeletionPreviewCoversCurrentProductionRelations(t *testing.T) {
+	want := map[string]string{
+		"user_package_assignments":           "package_bindings",
+		"package_assignment_inbound_configs": "inbound_bindings",
+		"package_assignment_subaccounts":     "subaccounts",
+		"mmwxc_routing_rule_presets":         "routed_relations",
+		"mmwxc_ui_preferences":               "other_private",
+		"wg_leases":                          "other_private",
+	}
+	for _, relation := range managedUserPreviewRelations {
+		if category, ok := want[relation.name]; ok {
+			if relation.category != category || relation.column != "username" {
+				t.Fatalf("relation %s has column=%s category=%s; want username/%s", relation.name, relation.column, relation.category, category)
+			}
+			delete(want, relation.name)
+		}
+	}
+	for relation := range want {
+		t.Errorf("preview does not cover %s", relation)
 	}
 }

@@ -77,6 +77,9 @@ BEGIN
         'user_api_tokens:username',
         'user_subaccounts:username',
         'user_inbound_configs:username',
+        'package_assignment_inbound_configs:username',
+        'package_assignment_subaccounts:username',
+        'user_package_assignments:username',
         'user_outbounds:username',
         'user_routed_outbound_actions:username',
         'package_user_node_traffic_baselines:username',
@@ -99,6 +102,9 @@ BEGIN
         'user_email_traffic:attributed_username',
         'user_traffic:username',
         'mmwxc_connection_assignments:management_username',
+        'mmwxc_routing_rule_presets:username',
+        'mmwxc_ui_preferences:username',
+        'wg_leases:username',
         'nodes:username'
     ] LOOP
         relation_table := split_part(relation_spec, ':', 1);
@@ -156,16 +162,20 @@ type previewRelation struct {
 }
 
 var managedUserPreviewRelations = []previewRelation{
+	{"user_package_assignments", "user_package_assignments", "username", "package_bindings"},
 	{"user_subscriptions", "user_subscriptions", "username", "subscriptions"},
 	{"external_subscriptions", "external_subscriptions", "username", "subscriptions"},
 	{"user_tokens", "user_tokens", "username", "sessions_and_tokens"},
 	{"user_api_tokens", "user_api_tokens", "username", "sessions_and_tokens"},
 	{"sessions", "sessions", "username", "sessions_and_tokens"},
 	{"user_subaccounts", "user_subaccounts", "username", "subaccounts"},
+	{"package_assignment_subaccounts", "package_assignment_subaccounts", "username", "subaccounts"},
 	{"user_inbound_configs", "user_inbound_configs", "username", "inbound_bindings"},
+	{"package_assignment_inbound_configs", "package_assignment_inbound_configs", "username", "inbound_bindings"},
 	{"nodes", "nodes", "username", "private_nodes"},
 	{"user_outbounds", "user_outbounds", "username", "routed_relations"},
 	{"user_routed_outbound_actions", "user_routed_outbound_actions", "username", "routed_relations"},
+	{"mmwxc_routing_rule_presets", "mmwxc_routing_rule_presets", "username", "routed_relations"},
 	{"mmwxc_connection_assignments", "mmwxc_connection_assignments", "management_username", "custom_assignments"},
 	{"user_traffic_records", "user_traffic_records", "username", "traffic_records"},
 	{"user_traffic", "user_traffic", "username", "traffic_records"},
@@ -185,6 +195,8 @@ var managedUserPreviewRelations = []previewRelation{
 	{"package_user_node_traffic_baselines", "package_user_node_traffic_baselines", "username", "other_private"},
 	{"package_node_traffic_suspensions", "package_node_traffic_suspensions", "username", "other_private"},
 	{"proxy_provider_configs", "proxy_provider_configs", "username", "other_private"},
+	{"mmwxc_ui_preferences", "mmwxc_ui_preferences", "username", "other_private"},
+	{"wg_leases", "wg_leases", "username", "other_private"},
 }
 
 func (s *postgresAdminSessionStore) ManagedUserDeletionPreview(ctx context.Context, username string) (managedUserDeletionPreview, error) {
@@ -255,6 +267,8 @@ func (s *postgresAdminSessionStore) ManagedUserDeletionPreview(ctx context.Conte
 		}
 		preview.Details[relation.name] = count
 		switch relation.category {
+		case "package_bindings":
+			preview.PackageBindings += count
 		case "subscriptions":
 			preview.Subscriptions += count
 		case "sessions_and_tokens":
