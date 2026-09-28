@@ -44,6 +44,8 @@ import type {
   DNSProvidersResponse,
   MasterUrlResponse,
   ManagedUsersResponse,
+  ManagedUserStateResponse,
+  ManagedUserDeletionPreviewResponse,
   UserSubaccountsResponse,
   CarpoolPublishRequest,
   PackageForwardChainsResponse,
@@ -1240,6 +1242,18 @@ export function fetchXrayUsers(token: string) {
 
 export function fetchManagedUsers(token: string) {
   return requestOperation<ManagedUsersResponse>(token, "0a1198b61f66f49e");
+}
+
+export function fetchManagedUserState(token: string, username: string) {
+  return request<ManagedUserStateResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/users/${encodeURIComponent(username)}/state`), token, {
+    cache: "no-store",
+  });
+}
+
+export function fetchManagedUserDeletionPreview(token: string, username: string) {
+  return request<ManagedUserDeletionPreviewResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/users/${encodeURIComponent(username)}/deletion-preview`), token, {
+    cache: "no-store",
+  });
 }
 
 export function createManagedUser(token: string, body: { username: string; email: string; nickname: string; password: string; remark: string }) {

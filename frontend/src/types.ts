@@ -897,6 +897,41 @@ export type ManagedUser = {
 
 export type ManagedUsersResponse = { users?: ManagedUser[] };
 
+export type ManagedUserStateResponse = {
+  success: boolean;
+  user: {
+    username: string;
+    exists: boolean;
+    is_active: boolean;
+    role?: string;
+  };
+};
+
+export type ManagedUserDeletionPreview = {
+  username: string;
+  exists: boolean;
+  role?: string;
+  package_bindings: number;
+  subscriptions: number;
+  telegram_bindings: number;
+  subaccounts: number;
+  inbound_bindings: number;
+  private_nodes: number;
+  routed_relations: number;
+  user_limits: number;
+  traffic_records: number;
+  sessions_and_tokens: number;
+  custom_assignments: number;
+  other_private: number;
+  details: Record<string, number>;
+  shared_preserved: string[];
+};
+
+export type ManagedUserDeletionPreviewResponse = {
+  success: boolean;
+  preview: ManagedUserDeletionPreview;
+};
+
 export type UserSubaccount = {
   type: "routed" | "inbound" | string;
   email?: string;

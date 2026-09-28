@@ -25,6 +25,8 @@ import {
   extendManagedUserPackage,
   fetchManagedUserNodes,
   fetchManagedUsers,
+  fetchManagedUserDeletionPreview,
+  fetchManagedUserState,
   fetchManagedUserSubaccounts,
   fetchManagedUserTelegram,
   fetchPackages,
@@ -40,7 +42,7 @@ import {
   updateManagedUserRemark,
   updateManagedUserShortCode,
 } from "./api";
-import type { ManagedPackage, ManagedUser, UserSubaccount, XrayNode } from "./types";
+import type { ManagedPackage, ManagedUser, ManagedUserDeletionPreview, UserSubaccount, XrayNode } from "./types";
 
 type Notice = { tone: "success" | "error" | "info"; text: string } | null;
 type Dialog =
@@ -52,6 +54,7 @@ type Dialog =
   | { kind: "accounts"; user: ManagedUser; initial?: "all" | "inbound" | "routed" }
   | { kind: "subscription"; user: ManagedUser }
   | { kind: "telegram"; user: ManagedUser }
+  | { kind: "delete"; user: ManagedUser }
   | null;
 
 const clients = [
@@ -88,20 +91,17 @@ export function UserManagementPage({ token }: { token: string }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try {
-      const [userResult, packageResult, nodeResult] = await Promise.all([
-        fetchManagedUsers(token),
-        fetchPackages(token),
-        fetchManagedUserNodes(token),
-      ]);
-      setUsers(userResult.users ?? []);
-      setPackages(packageResult.packages ?? []);
-      setNodes(nodeResult.nodes ?? []);
-    } catch (error) {
-      setNotice({ tone: "error", text: messageOf(error, "读取用户失败") });
-    } finally {
-      setLoading(false);
-    }
+    const [userResult, packageResult, nodeResult] = await Promise.allSettled([
+      fetchManagedUsers(token),
+      fetchPackages(token),
+      fetchManagedUserNodes(token),
+    ]);
+    if (userResult.status === "fulfilled") setUsers(userResult.value.users ?? []);
+    if (packageResult.status === "fulfilled") setPackages(packageResult.value.packages ?? []);
+    if (nodeResult.status === "fulfilled") setNodes(nodeResult.value.nodes ?? []);
+    const failure = [userResult, packageResult, nodeResult].find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") setNotice({ tone: "error", text: messageOf(failure.reason, "读取用户管理数据失败") });
+    setLoading(false);
   }, [token]);
 
   useEffect(() => { void load(); }, [load]);
@@ -133,6 +133,32 @@ export function UserManagementPage({ token }: { token: string }) {
       await load();
     } catch (error) {
       setNotice({ tone: "error", text: messageOf(error, "操作失败") });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function changeStatus(user: ManagedUser) {
+    if (busy) return;
+    const expected = !user.is_active;
+    setBusy(`status-${user.username}`);
+    try {
+      await setManagedUserStatus(token, user.username, expected);
+      const state = await fetchManagedUserState(token, user.username);
+      if (!state.user.exists || state.user.is_active !== expected) {
+        throw new Error("数据库中的用户状态与操作结果不一致");
+      }
+      // This is authoritative database state, not an optimistic UI update.
+      setUsers((current) => current.map((item) => item.username === user.username ? { ...item, is_active: state.user.is_active } : item));
+      const refreshed = await fetchManagedUsers(token);
+      const official = (refreshed.users ?? []).find((item) => item.username === user.username);
+      if (!official || official.is_active !== expected) {
+        throw new Error("正式用户列表尚未返回数据库中的最新状态，请重试刷新");
+      }
+      setUsers(refreshed.users ?? []);
+      setNotice({ tone: "success", text: `用户 ${user.username} 已${expected ? "启用" : "禁用"}` });
+    } catch (error) {
+      setNotice({ tone: "error", text: messageOf(error, "更新用户状态失败") });
     } finally {
       setBusy("");
     }
@@ -177,7 +203,7 @@ export function UserManagementPage({ token }: { token: string }) {
               onDialog={setDialog}
               onStatus={() => {
                 if (!window.confirm(`确认${user.is_active ? "禁用" : "启用"}用户 ${user.username}？`)) return;
-                void run(`status-${user.username}`, () => setManagedUserStatus(token, user.username, !user.is_active), `用户 ${user.username} 已${user.is_active ? "禁用" : "启用"}`);
+                void changeStatus(user);
               }}
               onExtend={(days) => void run(`extend-${user.username}`, () => extendManagedUserPackage(token, user.username, days), `用户 ${user.username} 已续期 ${days} 天`)}
               onResetTraffic={() => {
@@ -185,8 +211,7 @@ export function UserManagementPage({ token }: { token: string }) {
                 void run(`traffic-${user.username}`, () => resetManagedUserTraffic(token, user.username), `用户 ${user.username} 流量已重置`);
               }}
               onDelete={() => {
-                if (!window.confirm(`确认永久删除用户 ${user.username}？账号、订阅绑定、节点与相关设置会一并删除，且不可撤销。`)) return;
-                void run(`delete-${user.username}`, () => deleteManagedUser(token, user.username), `用户 ${user.username} 已删除`);
+                setDialog({ kind: "delete", user });
               }} />;
           })}
         </section>
@@ -200,6 +225,7 @@ export function UserManagementPage({ token }: { token: string }) {
       {dialog?.kind === "accounts" && <AccountsDialog token={token} user={dialog.user} initial={dialog.initial} onClose={() => setDialog(null)} />}
       {dialog?.kind === "subscription" && <SubscriptionDialog user={dialog.user} pkg={dialog.user.package_id ? packageById.get(dialog.user.package_id) : undefined} onClose={() => setDialog(null)} onCopied={(client) => setNotice({ tone: "success", text: `${client} 订阅地址已复制` })} />}
       {dialog?.kind === "telegram" && <TelegramDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onChanged={async (text) => { setDialog(null); setNotice({ tone: "success", text }); await load(); }} />}
+      {dialog?.kind === "delete" && <DeleteUserDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onDeleted={async () => { setDialog(null); setNotice({ tone: "success", text: `用户 ${dialog.user.username} 已删除，用户级关系已重新核对` }); await load(); }} />}
     </div>
   );
 }
@@ -326,6 +352,60 @@ function TelegramDialog({ token, user, onClose, onChanged }: { token: string; us
   async function unbind() { if (!window.confirm(`确认解除 ${user.username} 的 Telegram 绑定？`)) return; setBusy(true); setError(""); try { await unbindManagedUserTelegram(token, user.username); await onChanged("Telegram 绑定已解除"); } catch (err) { setError(messageOf(err, "解除绑定失败")); } finally { setBusy(false); } }
   return <DialogShell title="绑定 Telegram" subtitle={`用户：${user.username}`} onClose={onClose} footer={<button type="button" onClick={onClose}>关闭</button>}>
     {!status && !error ? <div className="user-empty small">正在读取...</div> : status?.bound ? <div className="user-telegram-state"><ShieldCheck /><div><strong>已绑定</strong><span>@{status.telegram_username || status.telegram_id}</span></div><button className="danger" type="button" disabled={busy} onClick={() => void unbind()}>解除绑定</button></div> : <div className="user-telegram-flow"><p>Telegram Bot 无法主动联系未开始会话的用户。生成命令后，请让该用户向 Bot 发送一次命令完成绑定。</p>{invite ? <><code>{invite.command}</code><div><button type="button" onClick={() => void copyText(invite.command)}><Copy />复制命令</button>{invite.bot_url && <a href={invite.bot_url} target="_blank" rel="noreferrer">打开 Bot</a>}</div><small>有效期至 {new Date(invite.expires_at).toLocaleString()}</small></> : <button className="primary" type="button" disabled={busy} onClick={() => void generate()}>{busy ? "生成中..." : "生成绑定命令"}</button>}</div>}
+    {error && <p className="user-form-error">{error}</p>}
+  </DialogShell>;
+}
+
+function DeleteUserDialog({ token, user, onClose, onDeleted }: { token: string; user: ManagedUser; onClose: () => void; onDeleted: () => Promise<void> }) {
+  const [preview, setPreview] = useState<ManagedUserDeletionPreview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    fetchManagedUserDeletionPreview(token, user.username)
+      .then((result) => { if (active) setPreview(result.preview); })
+      .catch((err) => { if (active) setError(messageOf(err, "读取删除清单失败")); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [token, user.username]);
+
+  async function confirmDelete() {
+    if (!preview || deleting) return;
+    setDeleting(true);
+    setError("");
+    try {
+      await deleteManagedUser(token, user.username);
+      const state = await fetchManagedUserState(token, user.username);
+      if (state.user.exists) throw new Error("正式删除操作返回成功，但数据库中用户仍然存在");
+      await onDeleted();
+    } catch (err) {
+      setError(messageOf(err, "删除用户失败"));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  const rows: Array<[string, number]> = preview ? [
+    ["套餐绑定", preview.package_bindings],
+    ["订阅/短码/令牌", preview.subscriptions + preview.sessions_and_tokens],
+    ["Telegram 绑定", preview.telegram_bindings],
+    ["子账户", preview.subaccounts],
+    ["入站绑定", preview.inbound_bindings],
+    ["用户私有节点", preview.private_nodes],
+    ["中转/路由关系", preview.routed_relations],
+    ["用户限制", preview.user_limits],
+    ["Custom 连接归属", preview.custom_assignments],
+    ["流量记录", preview.traffic_records],
+    ["其他用户私有记录", preview.other_private],
+  ] : [];
+
+  return <DialogShell title={`删除用户 ${user.username}？`} subtitle="删除由正式服务端事务执行；任一步失败都会回滚。" onClose={deleting ? () => {} : onClose} footer={<><button type="button" onClick={onClose} disabled={deleting}>取消</button><button className="danger" type="button" onClick={() => void confirmDelete()} disabled={!preview || deleting}>{deleting ? "删除中..." : "确认删除"}</button></>}>
+    {loading ? <div className="user-empty small">正在从数据库核对关联关系...</div> : preview ? <div className="user-delete-preview">
+      <p>将同时清理或解绑：</p>
+      <dl>{rows.map(([label, count]) => <div key={label}><dt>{label}</dt><dd>{count}</dd></div>)}</dl>
+      <p className="safe">共享服务器、公共节点、公共入站和套餐模板不会删除。</p>
+    </div> : null}
     {error && <p className="user-form-error">{error}</p>}
   </DialogShell>;
 }

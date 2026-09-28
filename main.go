@@ -175,6 +175,10 @@ func main() {
 			_ = adminStore.Close()
 			log.Fatalf("[mmwx-custom] UI metadata migration failed: %v", err)
 		}
+		if err := adminStore.EnsureUserManagementSchema(context.Background()); err != nil {
+			_ = adminStore.Close()
+			log.Fatalf("[mmwx-custom] user management migration failed: %v", err)
+		}
 		defer adminStore.Close()
 	}
 	api.helperState, err = openHelperState(getenv("MMWXC_HELPER_STATE_FILE", defaultHelperStatePath), helperInstallTokenTTLFromEnv())
@@ -212,6 +216,7 @@ func main() {
 	mux.HandleFunc("/api/custom/settings/github-accelerator", api.withCORS(api.githubAcceleratorHandler))
 	mux.HandleFunc("/api/custom/ui/service-groups", api.withCORS(api.uiServiceGroupsHandler))
 	mux.HandleFunc("/api/custom/ui/routing-presets", api.withCORS(api.uiRoutingPresetsHandler))
+	mux.HandleFunc("/api/custom/users/", api.withCORS(api.userManagementHandler))
 	mux.Handle("/api/", api.withCORSHandler(mmwxAPIProxy(mmwxAPITarget)))
 	mux.Handle("/", spaHandler(getenv("MMWXC_FRONTEND_DIR", defaultFrontendDir)))
 

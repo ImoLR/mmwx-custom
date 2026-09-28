@@ -4931,6 +4931,7 @@ button {
 .user-manager button.primary,
 .user-dialog button.primary { border-color: var(--text); background: var(--text); color: var(--card); }
 .user-manager button.danger { color: var(--danger); }
+.user-dialog button.danger { border-color: var(--danger); background: var(--danger); color: #fff; }
 .user-manager button:disabled,
 .user-dialog button:disabled { opacity: .42; cursor: not-allowed; }
 .user-manager svg,
@@ -5000,6 +5001,13 @@ button {
 .user-dialog-body { min-width: 0; flex: 1; overflow-x: hidden; overflow-y: auto; display: grid; align-content: start; gap: 12px; padding: 14px; }
 .user-dialog > footer { flex: 0 0 auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--line); padding: 11px 14px max(11px, env(safe-area-inset-bottom)); }
 .user-dialog > footer button { flex: 1 1 130px; }
+.user-delete-preview { display: grid; gap: 10px; }
+.user-delete-preview > p { margin: 0; color: var(--muted); line-height: 1.5; }
+.user-delete-preview dl { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.user-delete-preview dl > div { min-width: 0; display: flex; justify-content: space-between; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; }
+.user-delete-preview dt { min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+.user-delete-preview dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; }
+.user-delete-preview .safe { border: 1px solid color-mix(in srgb, var(--success) 28%, var(--line)); border-radius: 8px; background: color-mix(in srgb, var(--success) 7%, var(--card)); color: var(--success); padding: 10px 12px; }
 .user-form { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 11px; }
 .user-form.one { grid-template-columns: minmax(0, 1fr); }
 .user-form label { min-width: 0; display: grid; gap: 6px; }
