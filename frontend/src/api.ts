@@ -1308,8 +1308,9 @@ export function deleteManagedUser(token: string, username: string) {
 }
 
 export function setManagedUserLifecycleAccess(token: string, username: string, enabled: boolean) {
-  return request<ManagedUserAccessResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/users/${encodeURIComponent(username)}/access`), token, {
+  return requestCustomOperator<ManagedUserAccessResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/users/${encodeURIComponent(username)}/access`), token, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
 }
