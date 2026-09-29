@@ -428,7 +428,7 @@ function DeleteUserDialog({ token, user, onClose, onResult }: { token: string; u
     ["用户限制", preview.user_limits],
     ["Custom 连接归属", preview.custom_assignments],
     ["流量记录", preview.traffic_records],
-    ["其他用户私有记录", preview.other_private],
+    ["其他私有记录", preview.other_private],
   ] : [];
 
   const plan = result?.items ?? preview?.inbound_plan ?? [];

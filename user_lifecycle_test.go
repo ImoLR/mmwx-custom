@@ -362,17 +362,13 @@ func lifecycleTestApp(t *testing.T, store *lifecycleTestStore, server *httptest.
 func TestAnalyzeLifecycleInboundChoosesSharedAndExclusiveActions(t *testing.T) {
 	alice := map[string]any{"email": "alice__tag", "psk": "alice-secret"}
 	bob := map[string]any{"email": "bob__tag", "psk": "bob-secret"}
-	shared := analyzeLifecycleInbound(lifecycleConfig(lifecycleInbound("tag", "snell", alice, bob)), []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)}, 1)
+	shared := analyzeLifecycleInbound(lifecycleConfig(lifecycleInbound("tag", "snell", alice, bob)), []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)})
 	if shared.Action != lifecycleActionRemoveUser || shared.RemainingUsers != 1 || len(shared.nonTargetHashes) != 1 {
 		t.Fatalf("unexpected shared plan: %#v", shared)
 	}
-	exclusive := analyzeLifecycleInbound(lifecycleConfig(lifecycleInbound("tag", "snell", alice)), []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)}, 0)
+	exclusive := analyzeLifecycleInbound(lifecycleConfig(lifecycleInbound("tag", "snell", alice)), []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)})
 	if exclusive.Action != lifecycleActionDeleteWhole || exclusive.Status != lifecycleItemPending {
 		t.Fatalf("exclusive Snell must delete whole inbound: %#v", exclusive)
-	}
-	conflict := analyzeLifecycleInbound(lifecycleConfig(lifecycleInbound("tag", "snell", alice)), []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)}, 1)
-	if conflict.Action != lifecycleActionConflict || conflict.Status != lifecycleItemFailed {
-		t.Fatalf("inactive related consumer must block empty shared inbound: %#v", conflict)
 	}
 }
 
@@ -632,7 +628,10 @@ func TestAccessLifecycleEnableRejectsCredentialDrift(t *testing.T) {
 
 func TestDeleteLifecycleRecognizesDisabledCredentialWithoutRestore(t *testing.T) {
 	alice := map[string]any{"email": "alice__tag", "psk": "alice-psk"}
-	store := &lifecycleTestStore{refs: []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)}}
+	store := &lifecycleTestStore{
+		refs:      []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)},
+		consumers: map[string]int{"5/tag": 1},
+	}
 	fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{5: lifecycleConfig(lifecycleInbound("tag", "snell", alice))})
 	defer server.Close()
 	application := lifecycleTestApp(t, store, server)
@@ -643,7 +642,7 @@ func TestDeleteLifecycleRecognizesDisabledCredentialWithoutRestore(t *testing.T)
 	}
 	deletePlan, err := application.buildDeletionPlan(context.Background(), "session", "alice")
 	if err != nil || len(deletePlan) != 1 || deletePlan[0].Action != lifecycleActionDeleteWhole {
-		t.Fatalf("disabled credential was not planned for whole-inbound deletion: %#v err=%v", deletePlan, err)
+		t.Fatalf("stale owner blocked disabled credential whole-inbound deletion: %#v err=%v", deletePlan, err)
 	}
 	_ = store.SaveDeletePlan(context.Background(), "alice", "delete-disabled", deletePlan)
 	result := application.executeDeletePlan(context.Background(), "session", "alice", "delete-disabled", deletePlan)

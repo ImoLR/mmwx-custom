@@ -498,7 +498,8 @@ func (s *postgresAdminSessionStore) SaveDeletePlan(ctx context.Context, username
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 			ON CONFLICT(operation_id,server_id,inbound_tag) DO UPDATE SET
 			server_name=EXCLUDED.server_name,protocol=EXCLUDED.protocol,action=EXCLUDED.action,status=EXCLUDED.status,
-			remaining_users=EXCLUDED.remaining_users,last_error=EXCLUDED.last_error,last_checked_at=EXCLUDED.last_checked_at,updated_at=CURRENT_TIMESTAMP`,
+			remaining_users=EXCLUDED.remaining_users,last_error=EXCLUDED.last_error,
+			last_checked_at=COALESCE(EXCLUDED.last_checked_at,mmwxc_user_lifecycle_items.last_checked_at),updated_at=CURRENT_TIMESTAMP`,
 			operationID, item.ServerID, item.ServerName, item.InboundTag, item.Protocol, item.Action, item.Status, item.RemainingUsers, item.LastError, item.LastCheckedAt)
 		if err != nil {
 			return err
@@ -640,12 +641,8 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 			}
 			configs[first.ServerID] = config
 		}
-		consumerCount, countErr := store.LifecycleInboundConsumerCount(ctx, first.ServerID, first.ServerName, first.InboundTag, username)
-		if countErr != nil {
-			items = append(items, failedPlanItem(first, "读取 Inbound 使用关系失败"))
-			continue
-		}
-		items = append(items, analyzeLifecycleInbound(config, refs, consumerCount))
+		// Runtime credentials are authoritative; database ownership alone is not an active consumer.
+		items = append(items, analyzeLifecycleInbound(config, refs))
 	}
 	return items, nil
 }
@@ -654,7 +651,7 @@ func failedPlanItem(ref lifecycleCredentialRef, message string) lifecyclePlanIte
 	return lifecyclePlanItem{ServerID: ref.ServerID, ServerName: ref.ServerName, InboundTag: ref.InboundTag, Protocol: ref.Protocol, Action: lifecycleActionConflict, Status: lifecycleItemFailed, LastError: message}
 }
 
-func analyzeLifecycleInbound(config map[string]any, refs []lifecycleCredentialRef, relatedConsumers int) lifecyclePlanItem {
+func analyzeLifecycleInbound(config map[string]any, refs []lifecycleCredentialRef) lifecyclePlanItem {
 	first := refs[0]
 	item := lifecyclePlanItem{ServerID: first.ServerID, ServerName: first.ServerName, InboundTag: first.InboundTag, Protocol: first.Protocol, Status: lifecycleItemPending}
 	inbound := findConfigInbound(config, first.InboundTag)
@@ -683,27 +680,16 @@ func analyzeLifecycleInbound(config map[string]any, refs []lifecycleCredentialRe
 	}
 	item.targetCredentials = targets
 	item.RemainingUsers = len(remaining)
-	if relatedConsumers > item.RemainingUsers {
-		item.RemainingUsers = relatedConsumers
-	}
 	if len(targets) == 0 {
-		if len(entries) == 0 && relatedConsumers == 0 {
+		if len(entries) == 0 {
 			item.Action = lifecycleActionDeleteWhole
-		} else if len(entries) == 0 {
-			item.Action = lifecycleActionConflict
-			item.Status = lifecycleItemFailed
-			item.LastError = "其他用户仍关联该空 Inbound，未执行删除"
 		} else {
 			item.Action = lifecycleActionRemoveUser
 			item.Status = lifecycleItemCompleted
 		}
 		return item
 	}
-	if len(remaining) == 0 && relatedConsumers > 0 {
-		item.Action = lifecycleActionConflict
-		item.Status = lifecycleItemFailed
-		item.LastError = "其他用户仍关联该 Inbound，但当前没有可保留的活动 credential"
-	} else if len(remaining) == 0 {
+	if len(remaining) == 0 {
 		item.Action = lifecycleActionDeleteWhole
 	} else {
 		item.Action = lifecycleActionRemoveUser
