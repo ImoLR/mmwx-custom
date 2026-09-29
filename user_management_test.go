@@ -25,8 +25,20 @@ func (s *fakeUserManagementStore) LifecycleCredentialRefs(context.Context, strin
 	return nil, s.err
 }
 
-func (s *fakeUserManagementStore) LifecycleInboundConsumerCount(context.Context, int64, string, string, string) (int, error) {
-	return 0, s.err
+func (s *fakeUserManagementStore) LifecycleInboundBusinessRefs(context.Context, int64, string, string, string) ([]lifecycleCredentialRef, error) {
+	return nil, s.err
+}
+
+func (s *fakeUserManagementStore) LifecycleDefaultAdminCredentials(context.Context, int64, string) ([]map[string]any, error) {
+	return nil, s.err
+}
+
+func (s *fakeUserManagementStore) LifecyclePackageBindings(context.Context, string) ([]lifecyclePackageBinding, error) {
+	return nil, s.err
+}
+
+func (s *fakeUserManagementStore) DeleteExclusivePackage(context.Context, int64, string) error {
+	return s.err
 }
 
 func (s *fakeUserManagementStore) LifecycleDisabledCredentials(context.Context, string) ([]lifecycleCredentialBackup, error) {

@@ -257,6 +257,16 @@ func TestManualAssignmentEndpointAllowsAddingRelationshipToOwnedPort(t *testing.
 	}
 }
 
+func TestXrayConfigHasAssignment(t *testing.T) {
+	config := lifecycleConfig(lifecycleInbound("new-snell", "snell", map[string]any{"email": "alice@example.com", "psk": "secret"}))
+	if !xrayConfigHasAssignment(config, connectionOwnershipRelation{InboundTag: "new-snell", ProtocolIdentity: "alice@example.com"}) {
+		t.Fatal("current Xray config should confirm the new identity while the Helper snapshot is stale")
+	}
+	if xrayConfigHasAssignment(config, connectionOwnershipRelation{InboundTag: "new-snell", ProtocolIdentity: "bob@example.com"}) {
+		t.Fatal("unrelated identity must not be accepted")
+	}
+}
+
 func mustOwnership(t *testing.T, app *app, serverID string) connectionOwnershipData {
 	t.Helper()
 	value, err := app.connectionOwnership(context.Background(), serverID)

@@ -690,11 +690,21 @@ func (a *app) connectionAssignmentsHandler(w http.ResponseWriter, r *http.Reques
 		record := a.detailedConnections[serverID]
 		a.connectionMu.Unlock()
 		identities, exists := snapshotIdentitiesForTag(record.Snapshot, relation.InboundTag)
-		if !exists {
+		validAssignment := exists && (relation.ProtocolIdentity == "" || containsString(identities, relation.ProtocolIdentity))
+		if !validAssignment {
+			parsedServerID, parseErr := strconv.ParseInt(serverID, 10, 64)
+			token := strings.TrimSpace(r.Header.Get("MM-Authorization"))
+			if parseErr == nil && token != "" {
+				if config, configErr := a.fetchOfficialXrayConfig(r.Context(), token, parsedServerID); configErr == nil {
+					validAssignment = xrayConfigHasAssignment(config, relation)
+				}
+			}
+		}
+		if !validAssignment && !exists {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "inbound is not present in the current Core snapshot"})
 			return
 		}
-		if relation.ProtocolIdentity != "" && !containsString(identities, relation.ProtocolIdentity) {
+		if !validAssignment {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "protocol identity is not present on this inbound"})
 			return
 		}
@@ -712,6 +722,26 @@ func (a *app) connectionAssignmentsHandler(w http.ResponseWriter, r *http.Reques
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"success": false, "message": "method not allowed"})
 	}
+}
+
+func xrayConfigHasAssignment(config map[string]any, relation connectionOwnershipRelation) bool {
+	inbound := findConfigInbound(config, relation.InboundTag)
+	if inbound == nil {
+		return false
+	}
+	if relation.ProtocolIdentity == "" {
+		return true
+	}
+	entries, _, err := inboundCredentialEntries(inbound)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if credentialContainsIdentity(entry, relation.ProtocolIdentity) {
+			return true
+		}
+	}
+	return false
 }
 
 func snapshotIdentitiesForTag(snapshot serverDetailedConnectionSnapshot, tag string) ([]string, bool) {

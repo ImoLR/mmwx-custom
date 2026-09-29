@@ -206,7 +206,7 @@ func (s *postgresAdminSessionStore) ManagedUserDeletionPreview(ctx context.Conte
 	preview := managedUserDeletionPreview{
 		Username:        username,
 		Details:         make(map[string]int64),
-		SharedPreserved: []string{"packages", "remote_servers", "shared nodes", "shared inbounds"},
+		SharedPreserved: []string{"remote_servers", "packages with other assignments", "shared nodes", "shared inbounds"},
 	}
 	if username == "" {
 		return preview, errors.New("username is required")

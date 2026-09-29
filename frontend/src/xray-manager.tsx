@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  assignConnectionPort,
   controlRemoteService,
   deleteRoutingRulePreset,
   fetchRoutingRulePresets,
@@ -314,6 +315,7 @@ function sanitizeInbound(item: XrayObject) {
   delete inbound._wizard_protocol;
   delete inbound._wizard_node_name;
   delete inbound._wizard_mode;
+  delete inbound._wizard_management_assignments;
   if (["socks", "http"].includes(asString(inbound.protocol))) {
     const settings = { ...asObject(inbound.settings) };
     if (Array.isArray(settings.accounts)) settings.accounts = (settings.accounts as XrayObject[]).map((account) => ({ user: account.user, pass: account.pass }));
@@ -351,6 +353,15 @@ function sanitizeInbound(item: XrayObject) {
   delete inbound._wizard_snell_obfs_host;
   delete inbound._wizard_snell_mode;
   return inbound;
+}
+
+function managementAssignments(item: XrayObject) {
+  const raw = item._wizard_management_assignments;
+  if (!Array.isArray(raw)) return [];
+  return raw.map(asObject).map((entry) => ({
+    username: asString(entry.username).trim(),
+    identity: asString(entry.identity).trim(),
+  })).filter((entry) => entry.username && entry.identity);
 }
 
 function validateInbound(item: XrayObject) {
@@ -650,6 +661,7 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
       if (editor.kind === "inbound") {
         const inbound = sanitizeInbound(item);
         const tag = asString(item.tag).trim();
+        const assignments = managementAssignments(item);
         const nodeName = asString(item._wizard_node_name).trim();
         if (!tag || !asString(item.protocol)) throw new Error("入站标识和协议不能为空");
         if (editor.originalTag) {
@@ -657,6 +669,11 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
         } else {
           await mutateXrayInbound(token, server.id, { action: "add", inbound, ...(nodeName ? { node_name: nodeName } : {}) });
         }
+        await Promise.all(assignments.map((assignment) => assignConnectionPort(token, server.id, {
+          inbound_tag: tag,
+          management_username: assignment.username,
+          protocol_identity: assignment.identity,
+        })));
         await refreshInbounds();
       } else if (editor.kind === "outbound") {
         const tag = asString(item.tag).trim();
@@ -914,7 +931,15 @@ export function ManagedNodeCreateDialog({ servers, token, username, onClose, onC
       if (!tag || !asString(next.protocol)) throw new Error("入站标识和协议不能为空");
       const targets = servers.filter((value) => serverIds.has(value.id));
       if (!targets.length) throw new Error("请至少选择一台远程服务器");
-      const results = await Promise.allSettled(targets.map((target) => mutateXrayInbound(token, target.id, { action: "add", inbound, ...(nodeName ? { node_name: nodeName } : {}) })));
+      const assignments = managementAssignments(next);
+      const results = await Promise.allSettled(targets.map(async (target) => {
+        await mutateXrayInbound(token, target.id, { action: "add", inbound, ...(nodeName ? { node_name: nodeName } : {}) });
+        await Promise.all(assignments.map((assignment) => assignConnectionPort(token, target.id, {
+          inbound_tag: tag,
+          management_username: assignment.username,
+          protocol_identity: assignment.identity,
+        })));
+      }));
       const failures = results.map((result, index) => result.status === "rejected" ? targets[index].name : "").filter(Boolean);
       if (failures.length) {
         await onCreated();
@@ -1710,14 +1735,16 @@ function InboundAssistant({ server, token, item, protocolMode, expert, onChange,
       }
       updateItem((current) => {
         const currentSettings = asObject(current.settings);
-        if (protocol === "socks" || protocol === "http") return { ...current, settings: { ...currentSettings, auth: "password", accounts: normalized.map((user) => ({ user: user.username, pass: randomPassword() })) } };
-        if (protocol === "trojan") return { ...current, settings: { ...currentSettings, clients: normalized.map((user) => ({ password: randomPassword(), email: user.email })) } };
-        if (protocol === "shadowsocks") return { ...current, settings: { ...currentSettings, clients: normalized.map((user) => protocolMode === "shadowsocks2022" ? { password: randomBase64(asString(currentSettings.method).includes("128") ? 16 : 32), email: user.email, level: 0 } : { method: asString(currentSettings.method) || "aes-256-gcm", password: randomPassword(), email: user.email, level: 0 }) } };
-        if (protocol === "hysteria") return { ...current, settings: { ...currentSettings, clients: normalized.map((user) => ({ auth: randomPassword(), email: user.email })) } };
-        if (protocol === "anytls") return { ...current, settings: { ...currentSettings, users: normalized.map((user) => ({ password: randomPassword(), email: user.email, level: 0 })) } };
-        if (protocol === "snell") return { ...current, settings: { ...currentSettings, users: normalized.map((user) => ({ psk: randomPassword(), email: user.email, level: 0, ...(asNumber(current._wizard_snell_version) === 6 ? { clientId: crypto.randomUUID().replace(/-/g, "").slice(0, 12) } : {}) })) } };
-        if (protocol === "mieru") return { ...current, settings: { ...currentSettings, users: normalized.map((user) => ({ username: user.username, password: randomPassword(), email: user.email, level: 0 })) } };
-        return { ...current, settings: { ...currentSettings, clients: normalized.map((user) => ({ id: crypto.randomUUID(), email: user.email, level: 0, ...(protocol === "vless" && securityMode.includes("Vision") ? { flow: "xtls-rprx-vision" } : {}) })) } };
+        const assignments = normalized.map((user) => ({ username: user.username, identity: protocol === "socks" || protocol === "http" ? user.username : user.email }));
+        const base = { ...current, _wizard_management_assignments: assignments };
+        if (protocol === "socks" || protocol === "http") return { ...base, settings: { ...currentSettings, auth: "password", accounts: normalized.map((user) => ({ user: user.username, pass: randomPassword() })) } };
+        if (protocol === "trojan") return { ...base, settings: { ...currentSettings, clients: normalized.map((user) => ({ password: randomPassword(), email: user.email })) } };
+        if (protocol === "shadowsocks") return { ...base, settings: { ...currentSettings, clients: normalized.map((user) => protocolMode === "shadowsocks2022" ? { password: randomBase64(asString(currentSettings.method).includes("128") ? 16 : 32), email: user.email, level: 0 } : { method: asString(currentSettings.method) || "aes-256-gcm", password: randomPassword(), email: user.email, level: 0 }) } };
+        if (protocol === "hysteria") return { ...base, settings: { ...currentSettings, clients: normalized.map((user) => ({ auth: randomPassword(), email: user.email })) } };
+        if (protocol === "anytls") return { ...base, settings: { ...currentSettings, users: normalized.map((user) => ({ password: randomPassword(), email: user.email, level: 0 })) } };
+        if (protocol === "snell") return { ...base, settings: { ...currentSettings, users: normalized.map((user) => ({ psk: randomPassword(), email: user.email, level: 0, ...(asNumber(current._wizard_snell_version) === 6 ? { clientId: crypto.randomUUID().replace(/-/g, "").slice(0, 12) } : {}) })) } };
+        if (protocol === "mieru") return { ...base, settings: { ...currentSettings, users: normalized.map((user) => ({ username: user.username, password: randomPassword(), email: user.email, level: 0 })) } };
+        return { ...base, settings: { ...currentSettings, clients: normalized.map((user) => ({ id: crypto.randomUUID(), email: user.email, level: 0, ...(protocol === "vless" && securityMode.includes("Vision") ? { flow: "xtls-rprx-vision" } : {}) })) } };
       });
       setSelectedUsers(new Set());
     } catch (error) {

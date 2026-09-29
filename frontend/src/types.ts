@@ -952,13 +952,20 @@ export type ManagedUserDeletionPreviewResponse = {
 };
 
 export type ManagedUserLifecycleItem = {
+  item_kind: "inbound" | "package";
   server_id: number;
   server_name: string;
   inbound_tag: string;
   protocol: string;
-  action: "REMOVE_USER_ONLY" | "DELETE_WHOLE_INBOUND" | "REPLACE_CREDENTIAL" | "CONFLICT";
+  action: "REMOVE_USER_ONLY" | "DELETE_WHOLE_INBOUND" | "REPLACE_CREDENTIAL" | "CONFLICT" | "DELETE_PACKAGE" | "KEEP_PACKAGE";
   status: "pending" | "completed" | "failed";
   remaining_users: number;
+  default_credentials: number;
+  unknown_credentials: number;
+  decision_note?: string;
+  package_id?: number;
+  package_name?: string;
+  node_ids?: number[];
   attempts: number;
   last_error?: string;
   last_checked_at?: string;

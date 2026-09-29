@@ -26,9 +26,14 @@ const (
 	lifecycleStateDeletePartial = "delete_partial"
 	lifecycleStateDeleted       = "deleted"
 
-	lifecycleActionRemoveUser  = "REMOVE_USER_ONLY"
-	lifecycleActionDeleteWhole = "DELETE_WHOLE_INBOUND"
-	lifecycleActionConflict    = "CONFLICT"
+	lifecycleActionRemoveUser    = "REMOVE_USER_ONLY"
+	lifecycleActionDeleteWhole   = "DELETE_WHOLE_INBOUND"
+	lifecycleActionConflict      = "CONFLICT"
+	lifecycleActionDeletePackage = "DELETE_PACKAGE"
+	lifecycleActionKeepPackage   = "KEEP_PACKAGE"
+
+	lifecycleItemKindInbound = "inbound"
+	lifecycleItemKindPackage = "package"
 
 	lifecycleItemPending   = "pending"
 	lifecycleItemCompleted = "completed"
@@ -83,6 +88,13 @@ CREATE TABLE IF NOT EXISTS mmwxc_user_lifecycle_items (
     PRIMARY KEY (operation_id, server_id, inbound_tag),
     FOREIGN KEY (operation_id) REFERENCES mmwxc_user_lifecycle_operations(operation_id) ON DELETE CASCADE
 );
+ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS item_kind TEXT NOT NULL DEFAULT 'inbound';
+ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS package_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS package_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS node_ids JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS default_credentials INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS unknown_credentials INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS decision_note TEXT NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS mmwxc_user_disabled_credentials (
     username TEXT NOT NULL,
     server_id BIGINT NOT NULL,
@@ -112,6 +124,7 @@ type managedUserLifecycle struct {
 }
 
 type lifecycleCredentialRef struct {
+	Username      string
 	ServerID      int64
 	ServerName    string
 	InboundTag    string
@@ -122,22 +135,37 @@ type lifecycleCredentialRef struct {
 }
 
 type lifecyclePlanItem struct {
-	ServerID       int64      `json:"server_id"`
-	ServerName     string     `json:"server_name"`
-	InboundTag     string     `json:"inbound_tag"`
-	Protocol       string     `json:"protocol"`
-	Action         string     `json:"action"`
-	Status         string     `json:"status"`
-	RemainingUsers int        `json:"remaining_users"`
-	Attempts       int        `json:"attempts"`
-	LastError      string     `json:"last_error,omitempty"`
-	LastCheckedAt  *time.Time `json:"last_checked_at,omitempty"`
+	ItemKind           string     `json:"item_kind"`
+	ServerID           int64      `json:"server_id"`
+	ServerName         string     `json:"server_name"`
+	InboundTag         string     `json:"inbound_tag"`
+	Protocol           string     `json:"protocol"`
+	Action             string     `json:"action"`
+	Status             string     `json:"status"`
+	RemainingUsers     int        `json:"remaining_users"`
+	DefaultCredentials int        `json:"default_credentials"`
+	UnknownCredentials int        `json:"unknown_credentials"`
+	DecisionNote       string     `json:"decision_note,omitempty"`
+	PackageID          int64      `json:"package_id,omitempty"`
+	PackageName        string     `json:"package_name,omitempty"`
+	NodeIDs            []int64    `json:"node_ids,omitempty"`
+	Attempts           int        `json:"attempts"`
+	LastError          string     `json:"last_error,omitempty"`
+	LastCheckedAt      *time.Time `json:"last_checked_at,omitempty"`
 
-	targetCredentials  []map[string]any
-	nonTargetHashes    []string
-	sourceInboundHash  string
-	replacementInbound map[string]any
-	accessCredentials  []lifecycleCredentialBackup
+	targetCredentials       []map[string]any
+	nonTargetHashes         []string
+	defaultCredentialHashes []string
+	sourceInboundHash       string
+	replacementInbound      map[string]any
+	accessCredentials       []lifecycleCredentialBackup
+}
+
+type lifecyclePackageBinding struct {
+	ID             int64
+	Name           string
+	NodeIDs        []int64
+	RemainingUsers int
 }
 
 type lifecycleCredentialBackup struct {
@@ -166,7 +194,10 @@ type lifecycleDeleteResult struct {
 type lifecycleStore interface {
 	LifecycleStates(context.Context) (map[string]managedUserLifecycle, error)
 	LifecycleCredentialRefs(context.Context, string) ([]lifecycleCredentialRef, error)
-	LifecycleInboundConsumerCount(context.Context, int64, string, string, string) (int, error)
+	LifecycleInboundBusinessRefs(context.Context, int64, string, string, string) ([]lifecycleCredentialRef, error)
+	LifecycleDefaultAdminCredentials(context.Context, int64, string) ([]map[string]any, error)
+	LifecyclePackageBindings(context.Context, string) ([]lifecyclePackageBinding, error)
+	DeleteExclusivePackage(context.Context, int64, string) error
 	LifecycleDisabledCredentials(context.Context, string) ([]lifecycleCredentialBackup, error)
 	LatestAccessOperation(context.Context, string, string) (string, error)
 	SaveAccessPlan(context.Context, string, string, string, []lifecyclePlanItem) error
@@ -234,7 +265,7 @@ var lifecycleRelationTables = []string{
 	"package_assignment_inbound_configs",
 	"user_subaccounts",
 	"package_assignment_subaccounts",
-	"nodes",
+	"user_package_assignments",
 	"user_outbounds",
 	"mmwxc_connection_assignments",
 }
@@ -263,6 +294,7 @@ func (s *postgresAdminSessionStore) LifecycleCredentialRefs(ctx context.Context,
 				rows.Close()
 				return nil, err
 			}
+			ref.Username = username
 			ref.InboundTag = strings.TrimSpace(ref.InboundTag)
 			ref.Identity = strings.TrimSpace(ref.Identity)
 			if ref.ServerID > 0 && ref.InboundTag != "" {
@@ -273,6 +305,11 @@ func (s *postgresAdminSessionStore) LifecycleCredentialRefs(ctx context.Context,
 			return nil, err
 		}
 	}
+	packageRefs, err := s.lifecyclePackageNodeRefs(ctx, columns, username)
+	if err != nil {
+		return nil, err
+	}
+	result = append(result, packageRefs...)
 	return dedupeLifecycleRefs(result), nil
 }
 
@@ -315,29 +352,6 @@ func lifecycleCredentialQueries(columns map[string]map[string]bool) []lifecycleR
 			`SELECT s.id, COALESCE(s.name,''), n.inbound_tag, %s, %s, %s, '%s' FROM %s a JOIN nodes n ON n.id=a.routed_node_id JOIN remote_servers s ON s.name=n.original_server WHERE a.username=$1 AND COALESCE(n.inbound_tag,'')<>''`,
 			protocol, credential, identity, table, table)})
 	}
-	if hasLifecycleColumns(columns, "nodes", "username", "original_server", "inbound_tag") {
-		protocol := "''"
-		if columns["nodes"]["protocol"] {
-			protocol = "COALESCE(n.protocol,'')"
-		}
-		rawValues := "'[]'"
-		var rawParts []string
-		for _, column := range []string{"raw_url", "parsed_config", "clash_config"} {
-			if columns["nodes"][column] {
-				rawParts = append(rawParts, fmt.Sprintf("COALESCE(n.%s,'')", column))
-			}
-		}
-		if len(rawParts) > 0 {
-			rawValues = "json_build_array(" + strings.Join(rawParts, ",") + ")::text"
-		}
-		nodeTypeFilter := ""
-		if columns["nodes"]["node_type"] {
-			nodeTypeFilter = " AND COALESCE(n.node_type,'physical')<>'routed'"
-		}
-		result = append(result, lifecycleRelationSpec{table: "nodes", query: fmt.Sprintf(
-			`SELECT s.id, COALESCE(s.name,''), n.inbound_tag, %s, %s, '', 'nodes' FROM nodes n JOIN remote_servers s ON s.name=n.original_server WHERE n.username=$1 AND COALESCE(n.inbound_tag,'')<>''%s`,
-			protocol, rawValues, nodeTypeFilter)})
-	}
 	if hasLifecycleColumns(columns, "user_outbounds", "username", "server_id", "inbound_tag") {
 		result = append(result, lifecycleRelationSpec{table: "user_outbounds", query: `SELECT o.server_id, COALESCE(s.name,''), o.inbound_tag, '', '', '', 'user_outbounds' FROM user_outbounds o LEFT JOIN remote_servers s ON s.id=o.server_id WHERE o.username=$1`})
 	}
@@ -345,6 +359,43 @@ func lifecycleCredentialQueries(columns map[string]map[string]bool) []lifecycleR
 		result = append(result, lifecycleRelationSpec{table: "mmwxc_connection_assignments", query: `SELECT a.server_id, COALESCE(s.name,''), a.inbound_tag, '', '', a.protocol_identity, 'mmwxc_connection_assignments' FROM mmwxc_connection_assignments a LEFT JOIN remote_servers s ON s.id=a.server_id WHERE a.management_username=$1`})
 	}
 	return result
+}
+
+func (s *postgresAdminSessionStore) lifecyclePackageNodeRefs(ctx context.Context, columns map[string]map[string]bool, username string) ([]lifecycleCredentialRef, error) {
+	if !hasLifecycleColumns(columns, "packages", "id", "nodes") ||
+		!hasLifecycleColumns(columns, "nodes", "id", "original_server", "inbound_tag") ||
+		!hasLifecycleColumns(columns, "remote_servers", "id", "name") {
+		return nil, nil
+	}
+	packages, err := s.LifecyclePackageBindings(ctx, username)
+	if err != nil {
+		return nil, err
+	}
+	var identity string
+	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(email,'') FROM users WHERE username=$1`, username).Scan(&identity)
+	var result []lifecycleCredentialRef
+	for _, pkg := range packages {
+		for _, nodeID := range pkg.NodeIDs {
+			protocol := "''"
+			if columns["nodes"]["protocol"] {
+				protocol = "COALESCE(n.protocol,'')"
+			}
+			var ref lifecycleCredentialRef
+			err := s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT s.id,COALESCE(s.name,''),n.inbound_tag,%s FROM nodes n JOIN remote_servers s ON s.name=n.original_server WHERE n.id=$1 AND COALESCE(n.inbound_tag,'')<>''`, protocol), nodeID).
+				Scan(&ref.ServerID, &ref.ServerName, &ref.InboundTag, &ref.Protocol)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			ref.Username = username
+			ref.Identity = strings.TrimSpace(identity)
+			ref.Source = "user_package_assignments"
+			result = append(result, ref)
+		}
+	}
+	return result, nil
 }
 
 func hasLifecycleColumns(columns map[string]map[string]bool, table string, required ...string) bool {
@@ -360,67 +411,123 @@ func hasLifecycleColumns(columns map[string]map[string]bool, table string, requi
 	return true
 }
 
-func (s *postgresAdminSessionStore) LifecycleInboundConsumerCount(ctx context.Context, serverID int64, serverName, inboundTag, excludeUsername string) (int, error) {
+func (s *postgresAdminSessionStore) LifecycleInboundBusinessRefs(ctx context.Context, serverID int64, serverName, inboundTag, excludeUsername string) ([]lifecycleCredentialRef, error) {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	columns, err := s.schemaColumns(ctx)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if strings.TrimSpace(serverName) == "" {
 		_ = s.db.QueryRowContext(ctx, `SELECT name FROM remote_servers WHERE id=$1`, serverID).Scan(&serverName)
 	}
-	consumers := make(map[string]bool)
-	queries := lifecycleConsumerQueries(columns)
-	for _, spec := range queries {
-		args := []any{serverID, inboundTag, excludeUsername}
-		if spec.serverName {
-			args = []any{serverName, inboundTag, excludeUsername}
+	var result []lifecycleCredentialRef
+	for _, table := range []string{"user_inbound_configs", "package_assignment_inbound_configs"} {
+		if !hasLifecycleColumns(columns, table, "username", "server_id", "inbound_tag") {
+			continue
 		}
-		rows, err := s.db.QueryContext(ctx, spec.query, args...)
+		protocol, credential, identity := "''", "''", "''"
+		if columns[table]["protocol"] {
+			protocol = "COALESCE(protocol,'')"
+		}
+		if columns[table]["credential_json"] {
+			credential = "COALESCE(credential_json,'')"
+		}
+		if columns[table]["email"] {
+			identity = "COALESCE(email,'')"
+		}
+		rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT username,%s,%s,%s FROM %s WHERE server_id=$1 AND inbound_tag=$2 AND username<>$3`, protocol, credential, identity, table), serverID, inboundTag, excludeUsername)
 		if err != nil {
-			return 0, fmt.Errorf("read %s lifecycle consumers: %w", spec.table, err)
+			return nil, fmt.Errorf("read %s lifecycle consumers: %w", table, err)
 		}
 		for rows.Next() {
-			var username string
-			if err := rows.Scan(&username); err != nil {
+			var ref lifecycleCredentialRef
+			if err := rows.Scan(&ref.Username, &ref.Protocol, &ref.CredentialRaw, &ref.Identity); err != nil {
 				rows.Close()
-				return 0, err
+				return nil, err
 			}
-			if username = strings.TrimSpace(username); username != "" && username != excludeUsername {
-				consumers[username] = true
-			}
+			ref.ServerID, ref.ServerName, ref.InboundTag, ref.Source = serverID, serverName, inboundTag, table
+			result = append(result, ref)
 		}
 		if err := rows.Close(); err != nil {
-			return 0, err
-		}
-	}
-	return len(consumers), nil
-}
-
-func lifecycleConsumerQueries(columns map[string]map[string]bool) []lifecycleRelationSpec {
-	var result []lifecycleRelationSpec
-	for _, table := range []string{"user_inbound_configs", "package_assignment_inbound_configs", "user_outbounds"} {
-		if hasLifecycleColumns(columns, table, "username", "server_id", "inbound_tag") {
-			result = append(result, lifecycleRelationSpec{table: table, query: fmt.Sprintf(`SELECT DISTINCT username FROM %s WHERE server_id=$1 AND inbound_tag=$2 AND username<>$3`, table)})
+			return nil, err
 		}
 	}
 	for _, table := range []string{"user_subaccounts", "package_assignment_subaccounts"} {
 		if hasLifecycleColumns(columns, table, "username", "routed_node_id") && hasLifecycleColumns(columns, "nodes", "id", "original_server", "inbound_tag") {
-			result = append(result, lifecycleRelationSpec{table: table, serverName: true, query: fmt.Sprintf(`SELECT DISTINCT a.username FROM %s a JOIN nodes n ON n.id=a.routed_node_id WHERE n.original_server=$1 AND n.inbound_tag=$2 AND a.username<>$3`, table)})
+			credential, identity := "''", "''"
+			if columns[table]["credential_json"] {
+				credential = "COALESCE(a.credential_json,'')"
+			}
+			if columns[table]["email"] {
+				identity = "COALESCE(a.email,'')"
+			}
+			rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT a.username,%s,%s FROM %s a JOIN nodes n ON n.id=a.routed_node_id WHERE n.original_server=$1 AND n.inbound_tag=$2 AND a.username<>$3`, credential, identity, table), serverName, inboundTag, excludeUsername)
+			if err != nil {
+				return nil, fmt.Errorf("read %s lifecycle consumers: %w", table, err)
+			}
+			for rows.Next() {
+				var ref lifecycleCredentialRef
+				if err := rows.Scan(&ref.Username, &ref.CredentialRaw, &ref.Identity); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				ref.ServerID, ref.ServerName, ref.InboundTag, ref.Source = serverID, serverName, inboundTag, table
+				result = append(result, ref)
+			}
+			if err := rows.Close(); err != nil {
+				return nil, err
+			}
 		}
 	}
-	if hasLifecycleColumns(columns, "nodes", "username", "original_server", "inbound_tag") {
-		filter := ""
-		if columns["nodes"]["node_type"] {
-			filter = " AND COALESCE(node_type,'physical')<>'routed'"
+	for _, table := range []string{"user_outbounds"} {
+		if hasLifecycleColumns(columns, table, "username", "server_id", "inbound_tag") {
+			rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT DISTINCT username FROM %s WHERE server_id=$1 AND inbound_tag=$2 AND username<>$3`, table), serverID, inboundTag, excludeUsername)
+			if err != nil {
+				return nil, err
+			}
+			for rows.Next() {
+				var ref lifecycleCredentialRef
+				if err := rows.Scan(&ref.Username); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				ref.ServerID, ref.ServerName, ref.InboundTag, ref.Source = serverID, serverName, inboundTag, table
+				result = append(result, ref)
+			}
+			if err := rows.Close(); err != nil {
+				return nil, err
+			}
 		}
-		result = append(result, lifecycleRelationSpec{table: "nodes", serverName: true, query: `SELECT DISTINCT username FROM nodes WHERE original_server=$1 AND inbound_tag=$2 AND username<>$3` + filter})
 	}
 	if hasLifecycleColumns(columns, "mmwxc_connection_assignments", "management_username", "server_id", "inbound_tag") {
-		result = append(result, lifecycleRelationSpec{table: "mmwxc_connection_assignments", query: `SELECT DISTINCT management_username FROM mmwxc_connection_assignments WHERE server_id=$1 AND inbound_tag=$2 AND management_username<>$3`})
+		identity := "''"
+		if columns["mmwxc_connection_assignments"]["protocol_identity"] {
+			identity = "COALESCE(protocol_identity,'')"
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT management_username,`+identity+` FROM mmwxc_connection_assignments WHERE server_id=$1 AND inbound_tag=$2 AND management_username<>$3`, serverID, inboundTag, excludeUsername)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var ref lifecycleCredentialRef
+			if err := rows.Scan(&ref.Username, &ref.Identity); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			ref.ServerID, ref.ServerName, ref.InboundTag, ref.Source = serverID, serverName, inboundTag, "mmwxc_connection_assignments"
+			result = append(result, ref)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	packageRefs, err := s.lifecyclePackageBusinessRefs(ctx, columns, serverID, serverName, inboundTag, excludeUsername)
+	if err != nil {
+		return nil, err
+	}
+	result = append(result, packageRefs...)
+	return dedupeLifecycleRefs(result), nil
 }
 
 func (s *postgresAdminSessionStore) schemaColumns(ctx context.Context) (map[string]map[string]bool, error) {
@@ -443,11 +550,213 @@ func (s *postgresAdminSessionStore) schemaColumns(ctx context.Context) (map[stri
 	return result, rows.Err()
 }
 
+func (s *postgresAdminSessionStore) LifecyclePackageBindings(ctx context.Context, username string) ([]lifecyclePackageBinding, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil, errors.New("username is required")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT p.id,COALESCE(p.name,''),COALESCE(p.nodes,'[]')
+		FROM packages p
+		WHERE EXISTS (SELECT 1 FROM user_package_assignments a WHERE a.package_id=p.id AND a.username=$1)
+		   OR EXISTS (SELECT 1 FROM users u WHERE u.package_id=p.id AND u.username=$1)
+		ORDER BY p.id`, username)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []lifecyclePackageBinding
+	for rows.Next() {
+		var item lifecyclePackageBinding
+		var rawNodes string
+		if err := rows.Scan(&item.ID, &item.Name, &rawNodes); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(rawNodes), &item.NodeIDs); err != nil {
+			return nil, fmt.Errorf("package %d has invalid node list", item.ID)
+		}
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT COUNT(DISTINCT username) FROM (
+				SELECT a.username FROM user_package_assignments a
+				WHERE a.package_id=$1 AND a.username<>$2 AND COALESCE(a.status,'active')='active'
+				UNION
+				SELECT u.username FROM users u WHERE u.package_id=$1 AND u.username<>$2
+			) package_users`, item.ID, username).Scan(&item.RemainingUsers); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (s *postgresAdminSessionStore) lifecyclePackageBusinessRefs(ctx context.Context, columns map[string]map[string]bool, serverID int64, serverName, inboundTag, excludeUsername string) ([]lifecycleCredentialRef, error) {
+	if !hasLifecycleColumns(columns, "packages", "id", "nodes") ||
+		!hasLifecycleColumns(columns, "nodes", "id", "original_server", "inbound_tag") ||
+		!hasLifecycleColumns(columns, "user_package_assignments", "username", "package_id") {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT package_users.username,COALESCE(u.email,'')
+		FROM (
+			SELECT a.username,a.package_id FROM user_package_assignments a
+			WHERE a.username<>$3 AND COALESCE(a.status,'active')='active'
+			UNION
+			SELECT direct_user.username,direct_user.package_id FROM users direct_user
+			WHERE direct_user.username<>$3 AND direct_user.package_id IS NOT NULL
+		) package_users
+		JOIN packages p ON p.id=package_users.package_id
+		JOIN LATERAL jsonb_array_elements_text(
+			CASE WHEN COALESCE(p.nodes,'') ~ '^\s*\[' THEN p.nodes::jsonb ELSE '[]'::jsonb END
+		) package_node(node_id) ON true
+		JOIN nodes n ON n.id=package_node.node_id::bigint
+		LEFT JOIN users u ON u.username=package_users.username
+		WHERE n.original_server=$1 AND n.inbound_tag=$2`, serverName, inboundTag, excludeUsername)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []lifecycleCredentialRef
+	for rows.Next() {
+		var ref lifecycleCredentialRef
+		if err := rows.Scan(&ref.Username, &ref.Identity); err != nil {
+			return nil, err
+		}
+		ref.ServerID, ref.ServerName, ref.InboundTag, ref.Source = serverID, serverName, inboundTag, "user_package_assignments"
+		result = append(result, ref)
+	}
+	return result, rows.Err()
+}
+
+func (s *postgresAdminSessionStore) LifecycleDefaultAdminCredentials(ctx context.Context, serverID int64, inboundTag string) ([]map[string]any, error) {
+	columns, err := s.schemaColumns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !hasLifecycleColumns(columns, "server_xray_config_snapshots", "id", "server_id", "config_json", "source", "created_at") {
+		return nil, nil
+	}
+	admins := make(map[string]bool)
+	rows, err := s.db.QueryContext(ctx, `SELECT username,COALESCE(email,'') FROM users WHERE role='admin'`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var username, email string
+		if err := rows.Scan(&username, &email); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		admins[strings.ToLower(strings.TrimSpace(username))] = true
+		if email = strings.ToLower(strings.TrimSpace(email)); email != "" {
+			admins[email] = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if len(admins) == 0 {
+		return nil, nil
+	}
+	rows, err = s.db.QueryContext(ctx, `
+		SELECT config_json::text,COALESCE(source,'')
+		FROM server_xray_config_snapshots
+		WHERE server_id=$1 AND config_json::text LIKE $2
+		ORDER BY created_at,id
+		LIMIT 200`, serverID, "%"+inboundTag+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw, source string
+		if err := rows.Scan(&raw, &source); err != nil {
+			return nil, err
+		}
+		var config map[string]any
+		if json.Unmarshal([]byte(raw), &config) != nil {
+			continue
+		}
+		inbound := findConfigInbound(config, inboundTag)
+		if inbound == nil {
+			continue
+		}
+		if source != "master_write" {
+			return nil, nil
+		}
+		entries, _, err := inboundCredentialEntries(inbound)
+		if err != nil {
+			return nil, nil
+		}
+		var result []map[string]any
+		for _, entry := range entries {
+			if credentialMatchesAdmin(entry, admins) {
+				result = append(result, entry)
+			}
+		}
+		return result, nil
+	}
+	return nil, rows.Err()
+}
+
+func credentialMatchesAdmin(credential map[string]any, admins map[string]bool) bool {
+	for _, key := range []string{"email", "username", "user", "name"} {
+		identity := strings.ToLower(strings.TrimSpace(fmt.Sprint(credential[key])))
+		if identity == "" {
+			continue
+		}
+		if admins[identity] {
+			return true
+		}
+		for admin := range admins {
+			if !strings.Contains(admin, "@") && (strings.HasPrefix(identity, admin+"__") || identity == "mmw@"+admin+".me") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *postgresAdminSessionStore) DeleteExclusivePackage(ctx context.Context, packageID int64, username string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM packages WHERE id=$1)`, packageID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	var remaining int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT other_user) FROM (
+			SELECT a.username AS other_user FROM user_package_assignments a
+			WHERE a.package_id=$1 AND a.username<>$2 AND COALESCE(a.status,'active')='active'
+			UNION
+			SELECT u.username AS other_user FROM users u WHERE u.package_id=$1 AND u.username<>$2
+		) package_users`, packageID, username).Scan(&remaining); err != nil {
+		return err
+	}
+	if remaining > 0 {
+		return fmt.Errorf("套餐仍有 %d 个业务用户，未执行删除", remaining)
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM packages WHERE id=$1`, packageID)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return errors.New("套餐删除未提交")
+	}
+	return tx.Commit()
+}
+
 func dedupeLifecycleRefs(refs []lifecycleCredentialRef) []lifecycleCredentialRef {
 	seen := make(map[string]bool)
 	result := make([]lifecycleCredentialRef, 0, len(refs))
 	for _, ref := range refs {
-		key := fmt.Sprintf("%d\x00%s\x00%s\x00%s", ref.ServerID, ref.InboundTag, ref.CredentialRaw, ref.Identity)
+		key := fmt.Sprintf("%d\x00%s\x00%s\x00%s\x00%s", ref.ServerID, ref.InboundTag, ref.Username, ref.CredentialRaw, ref.Identity)
 		if seen[key] {
 			continue
 		}
@@ -493,14 +802,22 @@ func (s *postgresAdminSessionStore) SaveDeletePlan(ctx context.Context, username
 		if item.Status != lifecycleItemCompleted {
 			pending++
 		}
+		nodeIDs, marshalErr := json.Marshal(item.NodeIDs)
+		if marshalErr != nil {
+			return marshalErr
+		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO mmwxc_user_lifecycle_items(operation_id,server_id,server_name,inbound_tag,protocol,action,status,remaining_users,last_error,last_checked_at)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			INSERT INTO mmwxc_user_lifecycle_items(operation_id,server_id,server_name,inbound_tag,protocol,action,status,remaining_users,last_error,last_checked_at,item_kind,package_id,package_name,node_ids,default_credentials,unknown_credentials,decision_note)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 			ON CONFLICT(operation_id,server_id,inbound_tag) DO UPDATE SET
 			server_name=EXCLUDED.server_name,protocol=EXCLUDED.protocol,action=EXCLUDED.action,status=EXCLUDED.status,
 			remaining_users=EXCLUDED.remaining_users,last_error=EXCLUDED.last_error,
-			last_checked_at=COALESCE(EXCLUDED.last_checked_at,mmwxc_user_lifecycle_items.last_checked_at),updated_at=CURRENT_TIMESTAMP`,
-			operationID, item.ServerID, item.ServerName, item.InboundTag, item.Protocol, item.Action, item.Status, item.RemainingUsers, item.LastError, item.LastCheckedAt)
+			last_checked_at=COALESCE(EXCLUDED.last_checked_at,mmwxc_user_lifecycle_items.last_checked_at),item_kind=EXCLUDED.item_kind,
+			package_id=EXCLUDED.package_id,package_name=EXCLUDED.package_name,node_ids=EXCLUDED.node_ids,
+			default_credentials=EXCLUDED.default_credentials,unknown_credentials=EXCLUDED.unknown_credentials,
+			decision_note=EXCLUDED.decision_note,updated_at=CURRENT_TIMESTAMP`,
+			operationID, item.ServerID, item.ServerName, item.InboundTag, item.Protocol, item.Action, item.Status, item.RemainingUsers, item.LastError, item.LastCheckedAt,
+			item.ItemKind, item.PackageID, item.PackageName, string(nodeIDs), item.DefaultCredentials, item.UnknownCredentials, item.DecisionNote)
 		if err != nil {
 			return err
 		}
@@ -516,8 +833,8 @@ func (s *postgresAdminSessionStore) SaveDeletePlan(ctx context.Context, username
 }
 
 func (s *postgresAdminSessionStore) MarkLifecycleItem(ctx context.Context, operationID string, item lifecyclePlanItem) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE mmwxc_user_lifecycle_items SET action=$4,status=$5,protocol=$6,remaining_users=$7,attempts=attempts+1,last_error=$8,last_checked_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE operation_id=$1 AND server_id=$2 AND inbound_tag=$3`,
-		operationID, item.ServerID, item.InboundTag, item.Action, item.Status, item.Protocol, item.RemainingUsers, item.LastError)
+	_, err := s.db.ExecContext(ctx, `UPDATE mmwxc_user_lifecycle_items SET action=$4,status=$5,protocol=$6,remaining_users=$7,attempts=attempts+1,last_error=$8,last_checked_at=CURRENT_TIMESTAMP,default_credentials=$9,unknown_credentials=$10,decision_note=$11,updated_at=CURRENT_TIMESTAMP WHERE operation_id=$1 AND server_id=$2 AND inbound_tag=$3`,
+		operationID, item.ServerID, item.InboundTag, item.Action, item.Status, item.Protocol, item.RemainingUsers, item.LastError, item.DefaultCredentials, item.UnknownCredentials, item.DecisionNote)
 	return err
 }
 
@@ -616,6 +933,10 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 			})
 		}
 	}
+	packages, err := store.LifecyclePackageBindings(ctx, username)
+	if err != nil {
+		return nil, err
+	}
 	grouped := make(map[string][]lifecycleCredentialRef)
 	for _, ref := range refs {
 		key := strconv.FormatInt(ref.ServerID, 10) + "\x00" + ref.InboundTag
@@ -641,23 +962,54 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 			}
 			configs[first.ServerID] = config
 		}
-		// Runtime credentials are authoritative; database ownership alone is not an active consumer.
-		items = append(items, analyzeLifecycleInbound(config, refs))
+		businessRefs, businessErr := store.LifecycleInboundBusinessRefs(ctx, first.ServerID, first.ServerName, first.InboundTag, username)
+		if businessErr != nil {
+			items = append(items, failedPlanItem(first, "读取业务用户关系失败"))
+			continue
+		}
+		defaultCredentials, defaultErr := store.LifecycleDefaultAdminCredentials(ctx, first.ServerID, first.InboundTag)
+		if defaultErr != nil {
+			items = append(items, failedPlanItem(first, "核对创建时管理员 credential 失败"))
+			continue
+		}
+		items = append(items, analyzeLifecycleInbound(config, refs, businessRefs, defaultCredentials))
+	}
+	for _, pkg := range packages {
+		action, status := lifecycleActionDeletePackage, lifecycleItemPending
+		note := "该套餐没有其他绑定用户，将一起删除"
+		if pkg.RemainingUsers > 0 {
+			action, status = lifecycleActionKeepPackage, lifecycleItemCompleted
+			note = fmt.Sprintf("还有 %d 个业务用户绑定，保留套餐", pkg.RemainingUsers)
+		}
+		items = append(items, lifecyclePlanItem{
+			ItemKind: lifecycleItemKindPackage, ServerID: 0, ServerName: pkg.Name,
+			InboundTag: "package:" + strconv.FormatInt(pkg.ID, 10), Protocol: "package",
+			Action: action, Status: status, RemainingUsers: pkg.RemainingUsers,
+			PackageID: pkg.ID, PackageName: pkg.Name, NodeIDs: append([]int64(nil), pkg.NodeIDs...), DecisionNote: note,
+		})
 	}
 	return items, nil
 }
 
 func failedPlanItem(ref lifecycleCredentialRef, message string) lifecyclePlanItem {
-	return lifecyclePlanItem{ServerID: ref.ServerID, ServerName: ref.ServerName, InboundTag: ref.InboundTag, Protocol: ref.Protocol, Action: lifecycleActionConflict, Status: lifecycleItemFailed, LastError: message}
+	return lifecyclePlanItem{ItemKind: lifecycleItemKindInbound, ServerID: ref.ServerID, ServerName: ref.ServerName, InboundTag: ref.InboundTag, Protocol: ref.Protocol, Action: lifecycleActionConflict, Status: lifecycleItemFailed, LastError: message, DecisionNote: message}
 }
 
-func analyzeLifecycleInbound(config map[string]any, refs []lifecycleCredentialRef) lifecyclePlanItem {
+func analyzeLifecycleInbound(config map[string]any, refs, businessRefs []lifecycleCredentialRef, defaultCredentials []map[string]any) lifecyclePlanItem {
 	first := refs[0]
-	item := lifecyclePlanItem{ServerID: first.ServerID, ServerName: first.ServerName, InboundTag: first.InboundTag, Protocol: first.Protocol, Status: lifecycleItemPending}
+	item := lifecyclePlanItem{ItemKind: lifecycleItemKindInbound, ServerID: first.ServerID, ServerName: first.ServerName, InboundTag: first.InboundTag, Protocol: first.Protocol, Status: lifecycleItemPending}
+	businessUsers := make(map[string]bool)
+	for _, ref := range businessRefs {
+		if username := strings.TrimSpace(ref.Username); username != "" {
+			businessUsers[username] = true
+		}
+	}
+	item.RemainingUsers = len(businessUsers)
 	inbound := findConfigInbound(config, first.InboundTag)
 	if inbound == nil {
 		item.Action = lifecycleActionDeleteWhole
 		item.Status = lifecycleItemCompleted
+		item.DecisionNote = "Inbound 已不存在"
 		return item
 	}
 	item.Protocol = strings.ToLower(strings.TrimSpace(fmt.Sprint(inbound["protocol"])))
@@ -669,30 +1021,80 @@ func analyzeLifecycleInbound(config map[string]any, refs []lifecycleCredentialRe
 		return item
 	}
 	var targets []map[string]any
-	var remaining []map[string]any
+	var nonTargets []map[string]any
 	for _, entry := range entries {
 		if lifecycleEntryMatchesRefs(entry, item.Protocol, refs) {
 			targets = append(targets, entry)
 		} else {
-			remaining = append(remaining, entry)
+			nonTargets = append(nonTargets, entry)
 			item.nonTargetHashes = append(item.nonTargetHashes, hashJSON(entry))
 		}
 	}
 	item.targetCredentials = targets
-	item.RemainingUsers = len(remaining)
-	if len(targets) == 0 {
-		if len(entries) == 0 {
-			item.Action = lifecycleActionDeleteWhole
+	wholePortBusiness := false
+	wholePortBusinessUsers := make(map[string]bool)
+	for _, ref := range businessRefs {
+		if strings.TrimSpace(ref.CredentialRaw) == "" && strings.TrimSpace(ref.Identity) == "" {
+			wholePortBusiness = true
+			wholePortBusinessUsers[ref.Username] = true
+		}
+	}
+	matchedBusinessUsers := make(map[string]bool)
+	for _, entry := range nonTargets {
+		matchedBusiness := false
+		for _, ref := range businessRefs {
+			if lifecycleEntryMatchesRefs(entry, item.Protocol, []lifecycleCredentialRef{ref}) {
+				matchedBusiness = true
+				matchedBusinessUsers[ref.Username] = true
+			}
+		}
+		if matchedBusiness || wholePortBusiness {
+			for username := range wholePortBusinessUsers {
+				matchedBusinessUsers[username] = true
+			}
+			continue
+		}
+		isDefault := false
+		for _, credential := range defaultCredentials {
+			if credentialsMatch(entry, credential, item.Protocol) {
+				isDefault = true
+				break
+			}
+		}
+		if isDefault {
+			item.DefaultCredentials++
+			item.defaultCredentialHashes = append(item.defaultCredentialHashes, hashJSON(entry))
 		} else {
-			item.Action = lifecycleActionRemoveUser
+			item.UnknownCredentials++
+		}
+	}
+	if item.UnknownCredentials > 0 {
+		item.Action = lifecycleActionConflict
+		item.Status = lifecycleItemFailed
+		item.LastError = fmt.Sprintf("发现 %d 个无法确认来源的 credential，需要人工检查", item.UnknownCredentials)
+		item.DecisionNote = item.LastError
+		return item
+	}
+	if len(matchedBusinessUsers) < item.RemainingUsers {
+		item.Action = lifecycleActionConflict
+		item.Status = lifecycleItemFailed
+		item.LastError = "业务关系存在但 runtime credential 缺失，需要人工检查"
+		item.DecisionNote = item.LastError
+		return item
+	}
+	if item.RemainingUsers > 0 {
+		item.Action = lifecycleActionRemoveUser
+		item.DecisionNote = fmt.Sprintf("还有 %d 个业务用户使用，保留 Inbound", item.RemainingUsers)
+		if len(targets) == 0 {
 			item.Status = lifecycleItemCompleted
 		}
 		return item
 	}
-	if len(remaining) == 0 {
-		item.Action = lifecycleActionDeleteWhole
+	item.Action = lifecycleActionDeleteWhole
+	if item.DefaultCredentials > 0 {
+		item.DecisionNote = "仅存在创建时管理员 credential，不视为业务共享"
 	} else {
-		item.Action = lifecycleActionRemoveUser
+		item.DecisionNote = "没有其他业务用户，删除整个 Inbound"
 	}
 	return item
 }
@@ -908,7 +1310,7 @@ func (a *app) executeDeletePlan(ctx context.Context, token, username, operationI
 			continue
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := a.executeLifecycleDeleteItem(attemptCtx, token, item)
+		err := a.executeLifecycleDeleteItem(attemptCtx, token, username, item)
 		cancel()
 		if err != nil {
 			item.Status = lifecycleItemFailed
@@ -963,12 +1365,22 @@ func (a *app) executeDeletePlan(ctx context.Context, token, username, operationI
 	return result
 }
 
-func (a *app) executeLifecycleDeleteItem(ctx context.Context, token string, item *lifecyclePlanItem) error {
+func (a *app) executeLifecycleDeleteItem(ctx context.Context, token, username string, item *lifecyclePlanItem) error {
 	if item.Action == lifecycleActionConflict {
 		if item.LastError != "" {
 			return errors.New(item.LastError)
 		}
 		return errors.New("删除计划存在冲突，未执行远程修改")
+	}
+	if item.ItemKind == lifecycleItemKindPackage || item.Action == lifecycleActionDeletePackage || item.Action == lifecycleActionKeepPackage {
+		if item.Action == lifecycleActionKeepPackage {
+			return nil
+		}
+		store, ok := a.adminStore.(lifecycleStore)
+		if !ok {
+			return errors.New("lifecycle store unavailable")
+		}
+		return store.DeleteExclusivePackage(ctx, item.PackageID, username)
 	}
 	config, err := a.fetchOfficialXrayConfig(ctx, token, item.ServerID)
 	if err != nil {
@@ -981,7 +1393,9 @@ func (a *app) executeLifecycleDeleteItem(ctx context.Context, token string, item
 		if item.Status == lifecycleItemCompleted {
 			return nil
 		}
-		return errors.New("无法重新定位目标用户 credential")
+		if item.Action != lifecycleActionDeleteWhole {
+			return errors.New("无法重新定位目标用户 credential")
+		}
 	}
 	inbound := findConfigInbound(config, item.InboundTag)
 	currentProtocol := strings.ToLower(strings.TrimSpace(fmt.Sprint(inbound["protocol"])))
@@ -1025,8 +1439,23 @@ func (a *app) executeLifecycleDeleteItem(ctx context.Context, token string, item
 		}
 	}
 	if item.Action == lifecycleActionDeleteWhole {
-		if currentNonTargets > 0 {
-			return errors.New("Inbound 已出现其他使用者，未执行整项删除")
+		allowedDefaults := lifecycleHashCounts(item.defaultCredentialHashes)
+		for _, entry := range entries {
+			matchedTarget := false
+			for _, target := range item.targetCredentials {
+				if credentialsMatch(entry, target, currentProtocol) {
+					matchedTarget = true
+					break
+				}
+			}
+			if matchedTarget {
+				continue
+			}
+			hash := hashJSON(entry)
+			if allowedDefaults[hash] == 0 {
+				return errors.New("Inbound 出现无法确认来源的 credential，未执行整项删除")
+			}
+			allowedDefaults[hash]--
 		}
 		if err := a.officialLifecycleJSON(ctx, token, http.MethodPost,
 			"/api/admin/remote/inbounds?server_id="+url.QueryEscape(strconv.FormatInt(item.ServerID, 10)),

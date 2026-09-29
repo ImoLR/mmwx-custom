@@ -42,7 +42,7 @@ import {
   updateManagedUserRemark,
   updateManagedUserShortCode,
 } from "./api";
-import type { ManagedPackage, ManagedUser, ManagedUserDeleteResult, ManagedUserDeletionPreview, ManagedUserLifecycle, UserSubaccount, XrayNode } from "./types";
+import type { ManagedPackage, ManagedUser, ManagedUserDeleteResult, ManagedUserDeletionPreview, ManagedUserLifecycle, ManagedUserLifecycleItem, UserSubaccount, XrayNode } from "./types";
 import { fetchUserManagementData } from "./user-management-state";
 
 type Notice = { tone: "success" | "error" | "info"; text: string } | null;
@@ -239,7 +239,7 @@ export function UserManagementPage({ token }: { token: string }) {
           await load();
           return;
         }
-        setNotice({ tone: "error", text: `删除未完成，还有 ${result.pending_count} 个节点待清理，可再次点击删除重试。` });
+        setNotice({ tone: "error", text: `删除未完成，还有 ${result.pending_count} 个项目待清理，可再次点击删除重试。` });
         await load({ background: true });
       }} />}
     </div>
@@ -293,7 +293,7 @@ function UserCard({ user, lifecycle, pkg, busy, view, onDialog, onStatus, onExte
         {!admin && !deleting && <button type="button" onClick={() => onStatus(enableAction)} disabled={Boolean(busy)}>{enableAction ? <Power /> : <PowerOff />}{enableAction ? "启用" : "禁用"}{accessPending ? ` (${lifecycle?.pending_count ?? 0})` : ""}</button>}
         {!admin && <button className={`danger user-delete-button${pending > 0 ? " pending" : ""}`} type="button" onClick={onDelete} disabled={Boolean(busy)}>{pending > 0 && <span aria-hidden="true">{pending}</span>}<Trash2 /><b>删除</b></button>}
       </footer>
-      {pending > 0 && <p className="user-delete-pending">删除未完成，还有 {pending} 个节点待清理，可再次点击删除重试。</p>}
+      {pending > 0 && <p className="user-delete-pending">删除未完成，还有 {pending} 个项目待清理，可再次点击删除重试。</p>}
     </article>
   );
 }
@@ -383,6 +383,15 @@ function TelegramDialog({ token, user, onClose, onChanged }: { token: string; us
   </DialogShell>;
 }
 
+function deletionDecision(item: ManagedUserLifecycleItem) {
+  if (item.action === "DELETE_PACKAGE") return "该套餐没有其他绑定用户，将一起删除";
+  if (item.action === "KEEP_PACKAGE") return `还有 ${item.remaining_users} 个业务用户绑定，保留套餐`;
+  if (item.action === "CONFLICT") return item.decision_note || `发现 ${item.unknown_credentials || 1} 个无法确认来源的 credential，需要人工检查`;
+  if (item.action === "REMOVE_USER_ONLY") return `还有 ${item.remaining_users} 个业务用户使用，保留 Inbound`;
+  if (item.default_credentials > 0) return "仅存在创建时管理员 credential，不视为业务共享";
+  return "没有其他业务用户，删除整个 Inbound";
+}
+
 function DeleteUserDialog({ token, user, onClose, onResult }: { token: string; user: ManagedUser; onClose: () => void; onResult: (result: ManagedUserDeleteResult) => Promise<void> }) {
   const [preview, setPreview] = useState<ManagedUserDeletionPreview | null>(null);
   const [result, setResult] = useState<ManagedUserDeleteResult | null>(null);
@@ -437,13 +446,13 @@ function DeleteUserDialog({ token, user, onClose, onResult }: { token: string; u
     {loading ? <div className="user-empty small">正在从数据库核对关联关系...</div> : preview ? <div className="user-delete-preview">
       <p>将逐项清理真实 Inbound，再删除用户私有数据库关系：</p>
       {plan.length > 0 ? <div className="user-delete-plan">{plan.map((item) => <article key={`${item.server_id}-${item.inbound_tag}`} className={item.status}>
-        <div><strong>{item.server_name || `Server ${item.server_id}`}</strong><span>{item.inbound_tag} · {item.protocol || "未知协议"}</span></div>
-        <b>{item.action === "DELETE_WHOLE_INBOUND" ? "删除整个专属 Inbound" : item.action === "REMOVE_USER_ONLY" ? "仅移除当前用户" : "需要检查"}</b>
+        <div><strong>{item.item_kind === "package" ? item.package_name || `套餐 ${item.package_id}` : item.server_name || `Server ${item.server_id}`}</strong><span>{item.item_kind === "package" ? `关联节点 ${(item.node_ids || []).join("、") || "无"}` : `${item.inbound_tag} · ${item.protocol || "未知协议"}`}</span></div>
+        <b>{deletionDecision(item)}</b>
         {item.last_error && <p>{item.last_error}</p>}
       </article>)}</div> : <p className="user-delete-empty-plan">没有需要清理的远程 Inbound。</p>}
       <dl>{rows.map(([label, count]) => <div key={label}><dt>{label}</dt><dd>{count}</dd></div>)}</dl>
-      <p className="safe">共享服务器、套餐模板、其他用户，以及仍有其他使用者的共享 Inbound 会保留。</p>
-      {result && !result.user_deleted && <p className="user-form-error">删除未完成，还有 {result.pending_count} 个节点待清理，可再次点击删除重试。</p>}
+      <p className="safe">远程服务器、其他用户、仍有业务绑定的套餐和共享 Inbound 会保留。</p>
+      {result && !result.user_deleted && <p className="user-form-error">删除未完成，还有 {result.pending_count} 个项目待清理，可再次点击删除重试。</p>}
     </div> : null}
     {error && <p className="user-form-error">{error}</p>}
   </DialogShell>;

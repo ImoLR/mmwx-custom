@@ -27,7 +27,10 @@ type lifecycleTestStore struct {
 	mu              sync.Mutex
 	preview         managedUserDeletionPreview
 	refs            []lifecycleCredentialRef
-	consumers       map[string]int
+	businessRefs    map[string][]lifecycleCredentialRef
+	defaults        map[string][]map[string]any
+	packages        []lifecyclePackageBinding
+	deletedPackages []int64
 	operationID     string
 	savedPlans      [][]lifecyclePlanItem
 	marked          []lifecyclePlanItem
@@ -92,8 +95,18 @@ func (s *lifecycleTestStore) FinishAccessAttempt(_ context.Context, _, _, _ stri
 	s.finishedPending = pending
 	return nil
 }
-func (s *lifecycleTestStore) LifecycleInboundConsumerCount(_ context.Context, serverID int64, _ string, tag, _ string) (int, error) {
-	return s.consumers[fmt.Sprintf("%d/%s", serverID, tag)], nil
+func (s *lifecycleTestStore) LifecycleInboundBusinessRefs(_ context.Context, serverID int64, _ string, tag, _ string) ([]lifecycleCredentialRef, error) {
+	return append([]lifecycleCredentialRef(nil), s.businessRefs[fmt.Sprintf("%d/%s", serverID, tag)]...), nil
+}
+func (s *lifecycleTestStore) LifecycleDefaultAdminCredentials(_ context.Context, serverID int64, tag string) ([]map[string]any, error) {
+	return append([]map[string]any(nil), s.defaults[fmt.Sprintf("%d/%s", serverID, tag)]...), nil
+}
+func (s *lifecycleTestStore) LifecyclePackageBindings(context.Context, string) ([]lifecyclePackageBinding, error) {
+	return append([]lifecyclePackageBinding(nil), s.packages...), nil
+}
+func (s *lifecycleTestStore) DeleteExclusivePackage(_ context.Context, packageID int64, _ string) error {
+	s.deletedPackages = append(s.deletedPackages, packageID)
+	return nil
 }
 func (s *lifecycleTestStore) LatestDeleteOperation(context.Context, string) (string, error) {
 	return s.operationID, nil
@@ -362,13 +375,31 @@ func lifecycleTestApp(t *testing.T, store *lifecycleTestStore, server *httptest.
 func TestAnalyzeLifecycleInboundChoosesSharedAndExclusiveActions(t *testing.T) {
 	alice := map[string]any{"email": "alice__tag", "psk": "alice-secret"}
 	bob := map[string]any{"email": "bob__tag", "psk": "bob-secret"}
-	shared := analyzeLifecycleInbound(lifecycleConfig(lifecycleInbound("tag", "snell", alice, bob)), []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)})
+	bobRef := lifecycleRef(5, "tag", "snell", bob)
+	bobRef.Username = "bob"
+	shared := analyzeLifecycleInbound(lifecycleConfig(lifecycleInbound("tag", "snell", alice, bob)), []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)}, []lifecycleCredentialRef{bobRef}, nil)
 	if shared.Action != lifecycleActionRemoveUser || shared.RemainingUsers != 1 || len(shared.nonTargetHashes) != 1 {
 		t.Fatalf("unexpected shared plan: %#v", shared)
 	}
-	exclusive := analyzeLifecycleInbound(lifecycleConfig(lifecycleInbound("tag", "snell", alice)), []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)})
+	exclusive := analyzeLifecycleInbound(lifecycleConfig(lifecycleInbound("tag", "snell", alice)), []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)}, nil, nil)
 	if exclusive.Action != lifecycleActionDeleteWhole || exclusive.Status != lifecycleItemPending {
 		t.Fatalf("exclusive Snell must delete whole inbound: %#v", exclusive)
+	}
+	admin := map[string]any{"email": "admin@example.com", "psk": "admin-default"}
+	defaultOnly := analyzeLifecycleInbound(lifecycleConfig(lifecycleInbound("tag", "snell", admin, alice)), []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)}, nil, []map[string]any{admin})
+	if defaultOnly.Action != lifecycleActionDeleteWhole || defaultOnly.DefaultCredentials != 1 || defaultOnly.UnknownCredentials != 0 {
+		t.Fatalf("default administrator must not make inbound shared: %#v", defaultOnly)
+	}
+	unknown := map[string]any{"email": "unknown@example.com", "psk": "unknown"}
+	conflict := analyzeLifecycleInbound(lifecycleConfig(lifecycleInbound("tag", "snell", alice, unknown)), []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)}, nil, nil)
+	if conflict.Action != lifecycleActionConflict || conflict.UnknownCredentials != 1 || conflict.Status != lifecycleItemFailed {
+		t.Fatalf("unknown runtime credential must conflict: %#v", conflict)
+	}
+	missingRef := lifecycleRef(5, "tag", "snell", bob)
+	missingRef.Username = "bob"
+	missingRuntime := analyzeLifecycleInbound(lifecycleConfig(lifecycleInbound("tag", "snell", alice)), []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)}, []lifecycleCredentialRef{missingRef}, nil)
+	if missingRuntime.Action != lifecycleActionConflict || missingRuntime.Status != lifecycleItemFailed || !strings.Contains(missingRuntime.LastError, "runtime credential") {
+		t.Fatalf("missing explicit business credential must conflict: %#v", missingRuntime)
 	}
 }
 
@@ -383,14 +414,37 @@ func TestDeleteLifecycleNoInboundFinalizesUser(t *testing.T) {
 	}
 }
 
+func TestDeleteLifecycleDeletesOnlyExclusivePackages(t *testing.T) {
+	store := &lifecycleTestStore{packages: []lifecyclePackageBinding{
+		{ID: 11, Name: "exclusive", NodeIDs: []int64{65, 73, 74}, RemainingUsers: 0},
+		{ID: 12, Name: "shared", NodeIDs: []int64{80}, RemainingUsers: 1},
+	}}
+	_, server := newLifecycleAgentFixture(map[int64]map[string]any{})
+	defer server.Close()
+	application := lifecycleTestApp(t, store, server)
+	plan, err := application.buildDeletionPlan(context.Background(), "session", "alice")
+	if err != nil || len(plan) != 2 {
+		t.Fatalf("package plan=%#v err=%v", plan, err)
+	}
+	if plan[0].Action != lifecycleActionDeletePackage || plan[1].Action != lifecycleActionKeepPackage {
+		t.Fatalf("unexpected package decisions: %#v", plan)
+	}
+	result := application.executeDeletePlan(context.Background(), "session", "alice", "op-packages", plan)
+	if !result.UserDeleted || len(store.deletedPackages) != 1 || store.deletedPackages[0] != 11 {
+		t.Fatalf("exclusive package handling failed: result=%#v deleted=%v", result, store.deletedPackages)
+	}
+}
+
 func TestDeleteLifecycleSharedPreservesOtherCredentialAndExclusiveSnellUsesWholeRemove(t *testing.T) {
 	aliceShared := map[string]any{"email": "alice__shared", "password": "alice-pass"}
 	bobShared := map[string]any{"email": "bob__shared", "password": "bob-pass"}
 	aliceSnell := map[string]any{"email": "alice__solo", "psk": "alice-psk"}
+	bobRef := lifecycleRef(5, "shared", "shadowsocks", bobShared)
+	bobRef.Username = "bob"
 	store := &lifecycleTestStore{refs: []lifecycleCredentialRef{
 		lifecycleRef(5, "shared", "shadowsocks", aliceShared),
 		lifecycleRef(5, "solo", "snell", aliceSnell),
-	}}
+	}, businessRefs: map[string][]lifecycleCredentialRef{"5/shared": {bobRef}}}
 	fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{5: lifecycleConfig(
 		lifecycleInbound("shared", "shadowsocks", aliceShared, bobShared),
 		lifecycleInbound("solo", "snell", aliceSnell),
@@ -628,10 +682,7 @@ func TestAccessLifecycleEnableRejectsCredentialDrift(t *testing.T) {
 
 func TestDeleteLifecycleRecognizesDisabledCredentialWithoutRestore(t *testing.T) {
 	alice := map[string]any{"email": "alice__tag", "psk": "alice-psk"}
-	store := &lifecycleTestStore{
-		refs:      []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)},
-		consumers: map[string]int{"5/tag": 1},
-	}
+	store := &lifecycleTestStore{refs: []lifecycleCredentialRef{lifecycleRef(5, "tag", "snell", alice)}}
 	fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{5: lifecycleConfig(lifecycleInbound("tag", "snell", alice))})
 	defer server.Close()
 	application := lifecycleTestApp(t, store, server)
@@ -661,7 +712,7 @@ func findCredential(t *testing.T, config map[string]any, tag string, index int) 
 }
 
 func TestLifecycleRelationSourcesCoverManagementPackageSubaccountRoutedAndOwnership(t *testing.T) {
-	want := []string{"user_inbound_configs", "package_assignment_inbound_configs", "user_subaccounts", "package_assignment_subaccounts", "nodes", "user_outbounds", "mmwxc_connection_assignments"}
+	want := []string{"user_inbound_configs", "package_assignment_inbound_configs", "user_subaccounts", "package_assignment_subaccounts", "user_package_assignments", "user_outbounds", "mmwxc_connection_assignments"}
 	joined := strings.Join(lifecycleRelationTables, ",")
 	for _, source := range want {
 		if !strings.Contains(joined, source) {
@@ -762,9 +813,9 @@ func TestUserLifecycleIsolatedPostgresRelationsAndFinalCleanup(t *testing.T) {
 			t.Errorf("missing relation-derived inbound %s in %#v", tag, refs)
 		}
 	}
-	consumers, err := store.LifecycleInboundConsumerCount(context.Background(), 5, "server-five", "shared", "alice")
-	if err != nil || consumers != 1 {
-		t.Fatalf("shared consumer count=%d err=%v", consumers, err)
+	consumers, err := store.LifecycleInboundBusinessRefs(context.Background(), 5, "server-five", "shared", "alice")
+	if err != nil || len(consumers) != 1 || consumers[0].Username != "bob" {
+		t.Fatalf("shared consumer refs=%#v err=%v", consumers, err)
 	}
 	if err := store.SaveDeletePlan(context.Background(), "alice", "op-postgres", nil); err != nil {
 		t.Fatal(err)
