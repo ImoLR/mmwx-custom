@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import {
+  ArrowLeft,
   Copy,
   Edit3,
   KeyRound,
@@ -8,6 +10,7 @@ import {
   Plus,
   Power,
   PowerOff,
+  QrCode,
   RefreshCw,
   RotateCcw,
   Search,
@@ -27,10 +30,12 @@ import {
   fetchManagedUsers,
   fetchManagedUserDeletionPreview,
   fetchManagedUserLifecycles,
+  fetchManagedUserPackageAssignments,
   fetchManagedUserSubaccounts,
   fetchManagedUserTelegram,
   fetchPackages,
-  managedSubscriptionUrl,
+  fetchUserConfig,
+  managedSubscriptionUrlFromCode,
   createManagedUserTelegramInvite,
   resetManagedUserPassword,
   resetManagedUserTraffic,
@@ -42,7 +47,7 @@ import {
   updateManagedUserRemark,
   updateManagedUserShortCode,
 } from "./api";
-import type { ManagedPackage, ManagedUser, ManagedUserDeleteResult, ManagedUserDeletionPreview, ManagedUserLifecycle, ManagedUserLifecycleItem, UserSubaccount, XrayNode } from "./types";
+import type { ManagedPackage, ManagedUser, ManagedUserDeleteResult, ManagedUserDeletionPreview, ManagedUserLifecycle, ManagedUserLifecycleItem, ManagedUserPackageAssignment, UserSubaccount, XrayNode } from "./types";
 import { fetchUserManagementData } from "./user-management-state";
 
 type Notice = { tone: "success" | "error" | "info"; text: string } | null;
@@ -59,6 +64,7 @@ type Dialog =
   | null;
 
 const clients = [
+  ["auto", "自动识别"],
   ["clash", "Clash"], ["stash", "Stash"], ["shadowrocket", "Shadowrocket"],
   ["clash-to-shadowrocket", "Clash → Shadowrocket"], ["surfboard", "Surfboard"],
   ["surge", "Surge"], ["surgemac", "Surge Mac"], ["clash-to-surge", "Clash → Surge"],
@@ -230,7 +236,7 @@ export function UserManagementPage({ token }: { token: string }) {
       {dialog?.kind === "package" && <PackageDialog token={token} user={dialog.user} packages={packages} onClose={() => setDialog(null)} onSaved={async (text) => { setDialog(null); setNotice({ tone: "success", text }); await load(); }} />}
       {dialog?.kind === "limits" && <LimitsDialog token={token} user={dialog.user} nodes={nodes} onClose={() => setDialog(null)} onSaved={async () => { setDialog(null); setNotice({ tone: "success", text: "用户限制已更新" }); await load(); }} />}
       {dialog?.kind === "accounts" && <AccountsDialog token={token} user={dialog.user} initial={dialog.initial} onClose={() => setDialog(null)} />}
-      {dialog?.kind === "subscription" && <SubscriptionDialog user={dialog.user} pkg={dialog.user.package_id ? packageById.get(dialog.user.package_id) : undefined} onClose={() => setDialog(null)} onCopied={(client) => setNotice({ tone: "success", text: `${client} 订阅地址已复制` })} />}
+      {dialog?.kind === "subscription" && <SubscriptionDialog token={token} user={dialog.user} pkg={dialog.user.package_id ? packageById.get(dialog.user.package_id) : undefined} onClose={() => setDialog(null)} onCopied={(client) => setNotice({ tone: "success", text: `${client} 订阅地址已复制` })} />}
       {dialog?.kind === "telegram" && <TelegramDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onChanged={async (text) => { setDialog(null); setNotice({ tone: "success", text }); await load(); }} />}
       {dialog?.kind === "delete" && <DeleteUserDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onResult={async (result) => {
         if (result.user_deleted) {
@@ -363,10 +369,94 @@ function AccountsDialog({ token, user, initial = "all", onClose }: { token: stri
   return <DialogShell wide title="子账户与节点" subtitle={`用户：${user.username}`} onClose={onClose}><div className="user-account-tabs"><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>全部</button><button className={filter === "inbound" ? "active" : ""} onClick={() => setFilter("inbound")}>入站绑定</button><button className={filter === "routed" ? "active" : ""} onClick={() => setFilter("routed")}>路由出站</button></div>{loading ? <div className="user-empty small">正在读取...</div> : error ? <p className="user-form-error">{error}</p> : visible.length === 0 ? <div className="user-empty small">没有对应记录</div> : <div className="user-account-list">{visible.map((item, index) => <article key={`${item.type}-${item.node_id}-${item.server_id}-${item.inbound_tag}-${index}`}><div><strong>{item.node_name || item.inbound_tag || "未命名绑定"}</strong><span>{item.type === "routed" ? "路由出站" : "入站绑定"} · {item.server_name || "服务器未知"}</span></div><div><code>{item.email || item.identifier || "—"}</code><span>{item.protocol || item.inbound_tag || "—"}</span></div><b className={item.is_active ? "ok" : "off"}>{item.is_active ? "有效" : "暂停"}</b></article>)}</div>}</DialogShell>;
 }
 
-function SubscriptionDialog({ user, pkg, onClose, onCopied }: { user: ManagedUser; pkg?: ManagedPackage; onClose: () => void; onCopied: (client: string) => void }) {
+type SubscriptionPackage = {
+  id: string;
+  name: string;
+  shortCode: string;
+  isPrimary: boolean;
+};
+
+function SubscriptionDialog({ token, user, pkg, onClose, onCopied }: { token: string; user: ManagedUser; pkg?: ManagedPackage; onClose: () => void; onCopied: (client: string) => void }) {
   const code = user.custom_user_short_code || user.user_short_code || "";
-  async function copy(client: string, name: string) { if (!pkg?.short_code || !code) return; await copyText(managedSubscriptionUrl(pkg.short_code, code, client)); onCopied(name); onClose(); }
-  return <DialogShell title="复制订阅" subtitle={`${user.username} · ${pkg?.name || "未绑定套餐"}`} onClose={onClose}><div className="user-client-list">{clients.map(([client, name]) => <button key={client} type="button" onClick={() => void copy(client, name)} disabled={!pkg?.short_code || !code}><Copy /><span>{name}</span></button>)}</div>{(!pkg?.short_code || !code) && <p className="user-form-error">套餐短码或用户短码不可用，暂时无法生成订阅地址。</p>}</DialogShell>;
+  const [assignments, setAssignments] = useState<ManagedUserPackageAssignment[]>([]);
+  const [subscriptionBaseUrl, setSubscriptionBaseUrl] = useState("");
+  const [selection, setSelection] = useState<{ packageId: string; mode: "copy" | "qr" } | null>(null);
+  const [qrClient, setQrClient] = useState("auto");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      fetchManagedUserPackageAssignments(token, user.username),
+      fetchUserConfig(token).catch(() => undefined),
+    ]).then(([packageResult, config]) => {
+      if (!active) return;
+      setAssignments(packageResult.assignments ?? []);
+      setSubscriptionBaseUrl(config?.subscription_url?.trim() ?? "");
+    }).catch((err) => {
+      if (active) setError(messageOf(err, "读取用户套餐订阅失败"));
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, [token, user.username]);
+
+  const subscriptionPackages = useMemo<SubscriptionPackage[]>(() => {
+    const current = assignments.filter((assignment) => assignment.short_code).map((assignment) => ({
+      id: String(assignment.id),
+      name: assignment.package_name || `套餐 ${assignment.package_id}`,
+      shortCode: assignment.short_code!,
+      isPrimary: Boolean(assignment.is_primary),
+    }));
+    if (current.length > 0 || !pkg?.short_code || !code) return current;
+    return [{ id: "legacy", name: pkg.name || "当前套餐", shortCode: `${pkg.short_code}${code}`, isPrimary: true }];
+  }, [assignments, code, pkg]);
+
+  useEffect(() => {
+    if (subscriptionPackages.length === 1 && !selection) {
+      setSelection({ packageId: subscriptionPackages[0].id, mode: "copy" });
+    }
+  }, [selection, subscriptionPackages]);
+
+  const selectedPackage = selection ? subscriptionPackages.find((item) => item.id === selection.packageId) : undefined;
+  const subscriptionUrl = (selectedPackage && selection)
+    ? managedSubscriptionUrlFromCode(selectedPackage.shortCode, selection.mode === "qr" ? qrClient : "auto", subscriptionBaseUrl)
+    : "";
+
+  async function copy(client: string, name: string) {
+    if (!selectedPackage) return;
+    await copyText(managedSubscriptionUrlFromCode(selectedPackage.shortCode, client, subscriptionBaseUrl));
+    onCopied(name);
+    onClose();
+  }
+
+  function selectPackage(item: SubscriptionPackage, mode: "copy" | "qr") {
+    setSelection({ packageId: item.id, mode });
+    if (mode === "qr") setQrClient("auto");
+  }
+
+  return <DialogShell title="复制订阅" subtitle={`${user.username} · 每个套餐使用独立订阅地址`} onClose={onClose}>
+    {loading ? <div className="user-empty small">正在读取套餐订阅...</div> : subscriptionPackages.length === 0 ? <p className="user-form-error">该用户暂无可用套餐订阅。</p> : <>
+      <div className="user-subscription-packages">{subscriptionPackages.map((item) => <article key={item.id}>
+        <div><strong>{item.name}</strong><span>{item.isPrimary ? "主套餐" : "独立套餐"}</span></div>
+        <div className="user-subscription-actions">
+          <button className={selection?.packageId === item.id && selection.mode === "copy" ? "active" : ""} type="button" onClick={() => selectPackage(item, "copy")}><Copy /><span>复制订阅</span></button>
+          <button className={selection?.packageId === item.id && selection.mode === "qr" ? "active" : ""} type="button" onClick={() => selectPackage(item, "qr")}><QrCode /><span>QR code</span></button>
+        </div>
+      </article>)}</div>
+      {selectedPackage && selection?.mode === "copy" && <section className="user-subscription-panel">
+        <header><div><strong>{selectedPackage.name}</strong><span>选择客户端格式</span></div>{subscriptionPackages.length > 1 && <button type="button" onClick={() => setSelection(null)}><ArrowLeft /><span>返回套餐</span></button>}</header>
+        <div className="user-client-list">{clients.map(([client, name]) => <button key={client} type="button" onClick={() => void copy(client, name)}><Copy /><span>{name}</span></button>)}</div>
+      </section>}
+      {selectedPackage && selection?.mode === "qr" && <section className="user-subscription-panel user-subscription-qr">
+        <header><div><strong>{selectedPackage.name}</strong><span>选择二维码对应的客户端</span></div>{subscriptionPackages.length > 1 && <button type="button" onClick={() => setSelection(null)}><ArrowLeft /><span>返回套餐</span></button>}</header>
+        <label><span>客户端格式</span><select value={qrClient} onChange={(event) => setQrClient(event.target.value)}>{clients.map(([client, name]) => <option key={client} value={client}>{name}</option>)}</select></label>
+        <div className="user-subscription-qr-code"><QRCodeSVG value={subscriptionUrl} size={216} level="M" title={`${selectedPackage.name} 订阅二维码`} /></div>
+      </section>}
+    </>}
+    {error && <p className="user-form-error">{error}</p>}
+  </DialogShell>;
 }
 
 function TelegramDialog({ token, user, onClose, onChanged }: { token: string; user: ManagedUser; onClose: () => void; onChanged: (text: string) => Promise<void> }) {

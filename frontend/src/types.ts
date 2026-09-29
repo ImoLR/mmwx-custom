@@ -897,6 +897,18 @@ export type ManagedUser = {
 
 export type ManagedUsersResponse = { users?: ManagedUser[] };
 
+export type ManagedUserPackageAssignment = {
+  id: number;
+  package_id: number;
+  package_name?: string;
+  short_code?: string;
+  is_primary?: boolean;
+};
+
+export type ManagedUserPackageAssignmentsResponse = {
+  assignments?: ManagedUserPackageAssignment[];
+};
+
 export type ManagedUserStateResponse = {
   success: boolean;
   user: {
@@ -1301,6 +1313,7 @@ export type ExternalSyncResponse = {
 
 export type UserConfigResponse = Record<string, unknown> & {
   node_order?: number[];
+  subscription_url?: string;
 };
 
 export type NodeTrafficItem = {

@@ -5063,6 +5063,25 @@ button {
 .user-client-list { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .user-client-list button { min-width: 0; justify-content: flex-start; }
 .user-client-list button span { min-width: 0; overflow-wrap: anywhere; text-align: left; }
+.user-subscription-packages { min-width: 0; display: grid; gap: 8px; }
+.user-subscription-packages article { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+.user-subscription-packages article > div:first-child { min-width: 0; display: grid; gap: 3px; }
+.user-subscription-packages strong { overflow-wrap: anywhere; }
+.user-subscription-packages article > div:first-child span,
+.user-subscription-panel header span,
+.user-subscription-qr label > span { color: var(--muted); font-size: var(--user-font-min); }
+.user-subscription-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.user-subscription-actions button { min-height: 38px; white-space: nowrap; }
+.user-subscription-actions button.active { border-color: var(--text); background: var(--fill-strong); }
+.user-subscription-panel { min-width: 0; display: grid; gap: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--fill); padding: 10px; }
+.user-subscription-panel > header { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.user-subscription-panel > header > div { min-width: 0; display: grid; gap: 3px; }
+.user-subscription-panel > header strong { overflow-wrap: anywhere; }
+.user-subscription-panel > header button { min-height: 36px; flex: 0 0 auto; }
+.user-subscription-qr label { min-width: 0; display: grid; gap: 6px; }
+.user-subscription-qr select { width: 100%; }
+.user-subscription-qr-code { width: min(100%, 240px); aspect-ratio: 1; display: grid; place-items: center; justify-self: center; border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 12px; }
+.user-subscription-qr-code svg { width: 100%; height: 100%; }
 .user-telegram-state { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
 .user-telegram-state > svg { width: 30px; height: 30px; color: var(--success); }
 .user-telegram-state > div { min-width: 0; display: grid; gap: 2px; }
@@ -5099,6 +5118,10 @@ button {
   .user-package > div:first-child { display: grid; }
   .user-package > div:first-child span { text-align: left; }
   .user-client-list { grid-template-columns: minmax(0, 1fr); }
+  .user-subscription-packages article { grid-template-columns: minmax(0, 1fr); }
+  .user-subscription-actions { width: 100%; }
+  .user-subscription-panel > header { align-items: flex-start; }
+  .user-subscription-panel > header button span { display: none; }
   .user-delete-plan article { grid-template-columns: minmax(0, 1fr); }
   .user-delete-plan article b { text-align: left; }
 }

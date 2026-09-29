@@ -50,6 +50,7 @@ import type {
   ManagedUserDeleteResponse,
   ManagedUserAccessResponse,
   ManagedUserLifecycleResponse,
+  ManagedUserPackageAssignmentsResponse,
   UserSubaccountsResponse,
   CarpoolPublishRequest,
   PackageForwardChainsResponse,
@@ -1229,6 +1230,12 @@ export function fetchManagedUsers(token: string) {
   return requestOperation<ManagedUsersResponse>(token, "0a1198b61f66f49e");
 }
 
+export function fetchManagedUserPackageAssignments(token: string, username: string) {
+  return requestOperation<ManagedUserPackageAssignmentsResponse>(token, "f9a17c030173ed26", null, {
+    query: `username=${encodeURIComponent(username)}`,
+  });
+}
+
 export function fetchManagedUserState(token: string, username: string) {
   return request<ManagedUserStateResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/users/${encodeURIComponent(username)}/state`), token, {
     cache: "no-store",
@@ -1364,8 +1371,12 @@ export function fetchManagedUserNodes(token: string) {
 }
 
 export function managedSubscriptionUrl(packageCode: string, userCode: string, client: string) {
-  const base = MMWX_API_BASE_URL || window.location.origin;
-  return `${base}/x/${packageCode}${userCode}?t=${encodeURIComponent(client)}`;
+  return managedSubscriptionUrlFromCode(`${packageCode}${userCode}`, client);
+}
+
+export function managedSubscriptionUrlFromCode(shortCode: string, client: string, subscriptionBaseUrl?: string) {
+  const base = normalizeBaseUrl(subscriptionBaseUrl || MMWX_API_BASE_URL || window.location.origin);
+  return `${base}/x/${shortCode}?t=${encodeURIComponent(client)}`;
 }
 
 export function updateXrayUserEmail(token: string, username: string, email: string) {
