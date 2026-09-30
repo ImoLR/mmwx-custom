@@ -69,6 +69,12 @@ const countryLabels: Record<string, string> = {
   KE: "肯尼亚",
 };
 
+export const editableServerRegions = Object.entries(countryLabels).map(([code, label]) => ({
+  code,
+  label,
+  value: flagFromCountryCode(code),
+}));
+
 const countryCodeAliases: Record<string, string> = {
   "hong kong": "HK",
   japan: "JP",

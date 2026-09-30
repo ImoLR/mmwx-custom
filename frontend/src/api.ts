@@ -59,6 +59,7 @@ import type {
   PackagesResponse,
   PackageTemplatesResponse,
   RemoteServerCreateRequest,
+  RemoteServerUpdateRequest,
   RemoteServerMutationResponse,
   RemoteServer,
   RemoteServersResponse,
@@ -597,6 +598,16 @@ export function createRemoteServer(token: string, body: RemoteServerCreateReques
   return request<RemoteServerMutationResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/remote-servers/create"), token, {
     method: "POST",
     body: JSON.stringify(body),
+  });
+}
+
+export function updateRemoteServer(token: string, body: RemoteServerUpdateRequest) {
+  return requestOperation<RemoteServerMutationResponse>(token, "d58b17e8273c27d8", body);
+}
+
+export function switchRemoteServerDeployMode(token: string, serverId: number, stealMode: "tunnel" | "fallback" | "default") {
+  return requestOperation<RemoteServerMutationResponse>(token, "3dfc94bc2c92113b", { steal_mode: stealMode }, {
+    query: `server_id=${encodeURIComponent(String(serverId))}`,
   });
 }
 

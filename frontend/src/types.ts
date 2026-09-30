@@ -69,6 +69,7 @@ export type RemoteServer = {
   speed_updated_at?: string;
   traffic_reset_day?: number;
   last_traffic_reset_at?: string;
+  traffic_source?: string;
   ipv6_enabled?: boolean;
   ws_connected?: boolean;
   fallback_to_pull?: boolean;
@@ -82,6 +83,13 @@ export type RemoteServer = {
   steal_mode?: string;
   domain_v6?: string;
   traffic_stats_mode?: string;
+  lock_entry_ip?: boolean;
+  port_range_min?: number;
+  port_range_max?: number;
+  renewal_price?: number;
+  renewal_cycle?: string;
+  renewal_currency?: string;
+  expires_at?: string | null;
   use_443?: boolean;
   inbounds?: Array<{
     tag?: string;
@@ -119,6 +127,33 @@ export type RemoteServerCreateRequest = {
   ipv6_enabled?: boolean;
   ddns_enabled?: boolean;
   ddns_provider_id?: number;
+};
+
+export type RemoteServerUpdateRequest = {
+  id: number;
+  name: string;
+  pull_address?: string;
+  pull_address_v6?: string;
+  domain: string;
+  domain_v6: string;
+  traffic_limit: number;
+  traffic_used?: number;
+  traffic_reset_day: number;
+  region: string;
+  renewal_price: number;
+  renewal_cycle: string;
+  renewal_currency: string;
+  expires_at: string;
+  xray_mode: "external" | "embedded" | string;
+  listen_port: number;
+  traffic_stats_mode: "both" | "upload" | "download" | "max" | string;
+  traffic_source: "xray" | "system" | string;
+  ddns_enabled: boolean;
+  ddns_provider_id: number;
+  ipv6_enabled: boolean;
+  lock_entry_ip: boolean;
+  port_range_min: number;
+  port_range_max: number;
 };
 
 export type RemoteServerMutationResponse = {

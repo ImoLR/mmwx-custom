@@ -95,14 +95,16 @@ import {
   saveSession,
   saveGitHubAcceleratorSettings,
   saveCustomServiceGroups,
+  switchRemoteServerDeployMode,
   streamAgentAction,
   syncRemoteNodeAddress,
   syncRemoteNodes,
+  updateRemoteServer,
   validateRemoteWebsite,
 } from "./api";
 import { formatBytes, formatDurationSince, formatSpeed } from "./format";
 import { ConnectionsManager } from "./connections-manager";
-import { loadingRegion, lookupServerRegion, serverRegionAddress, serverRegionFromFields, unknownRegion } from "./geo";
+import { editableServerRegions, loadingRegion, lookupServerRegion, serverRegionAddress, serverRegionFromFields, unknownRegion } from "./geo";
 import type {
   AdminTrafficResponse,
   ConnectionMetric,
@@ -118,6 +120,7 @@ import type {
   PeriodUserTrafficItem,
   RealtimeSnapshot,
   RemoteServer,
+  RemoteServerUpdateRequest,
   RemoteServerCreateRequest,
   RemoteSystemInfo,
   RemoteWebsitesResponse,
@@ -2638,6 +2641,8 @@ function ServiceDialog({
           <AddRemoteServerDialog sessionToken={sessionToken} servers={servers} onChanged={onChanged} onClose={onClose} />
         ) : dialog.kind === "access" ? (
           <AddSharedServerDialog sessionToken={sessionToken} servers={servers} onChanged={onChanged} onClose={onClose} />
+        ) : dialog.kind === "edit" && server ? (
+          <EditRemoteServerDialog server={server} sessionToken={sessionToken} onChanged={onChanged} onClose={onClose} />
         ) : dialog.kind === "xray" && server ? (
           <div className="service-dialog-body">
             <XrayManager server={server} token={sessionToken} username={sessionUsername} />
@@ -2657,7 +2662,7 @@ function ServiceDialog({
         ) : (
           <div className="service-dialog-body">
             <div className="service-dialog-section">
-              <h4>{dialog.kind === "edit" ? "基本信息" : "功能入口"}</h4>
+              <h4>功能入口</h4>
               <p>本次重构仅迁移服务管理视觉和入口层级，不自动保存或执行配置变更。</p>
             </div>
             <div className="service-form-grid">
@@ -2678,18 +2683,299 @@ function ServiceDialog({
                 <input value={formatXrayMode(server?.xray_mode)} readOnly placeholder="Xray Mode" />
               </label>
             </div>
-            {dialog.kind === "edit" && server && <CoreControlPanel server={server} sessionToken={sessionToken} compact />}
           </div>
         )}
 
-        {dialog.kind !== "add" && dialog.kind !== "access" && (
+        {dialog.kind !== "add" && dialog.kind !== "access" && dialog.kind !== "edit" && (
           <div className="service-dialog-actions">
             <button type="button" onClick={onClose}>关闭</button>
-            {dialog.kind === "edit" && <button type="button" disabled>保存</button>}
           </div>
         )}
       </section>
     </div>
+  );
+}
+
+type EditRemoteServerFormState = {
+  name: string;
+  pullAddress: string;
+  pullAddressV6: string;
+  domain: string;
+  domainV6: string;
+  lockEntryIP: boolean;
+  portRangeMin: string;
+  portRangeMax: string;
+  agentPort: string;
+  trafficLimitGb: string;
+  trafficUsedGb: string;
+  resetDay: string;
+  region: string;
+  expiresAt: string;
+  renewalPrice: string;
+  renewalCurrency: string;
+  renewalCycle: string;
+  xrayMode: "external" | "embedded";
+  trafficStatsMode: "both" | "upload" | "download" | "max";
+  trafficSource: "xray" | "system";
+  ipv6Enabled: boolean;
+  ddnsEnabled: boolean;
+  ddnsProviderId: number;
+  stealMode: "tunnel" | "fallback" | "default";
+};
+
+const renewalCurrencies = ["CNY", "USD", "EUR", "GBP", "JPY", "HKD", "TWD", "SGD", "KRW", "CAD"];
+
+function nextResetDate(resetDay?: number) {
+  const day = Number(resetDay);
+  if (!Number.isInteger(day) || day < 1 || day > 31) return "";
+  const now = new Date();
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const dateForMonth = (year: number, month: number) => new Date(Date.UTC(year, month, Math.min(day, new Date(Date.UTC(year, month + 1, 0)).getUTCDate())));
+  let next = dateForMonth(now.getUTCFullYear(), now.getUTCMonth());
+  if (next.getTime() < today) next = dateForMonth(now.getUTCFullYear(), now.getUTCMonth() + 1);
+  return next.toISOString().slice(0, 10);
+}
+
+function editRemoteServerState(server: RemoteServer): EditRemoteServerFormState {
+  return {
+    name: server.name,
+    pullAddress: server.pull_address || server.ip_address || "",
+    pullAddressV6: server.pull_address_v6 || "",
+    domain: server.domain || "",
+    domainV6: server.domain_v6 || "",
+    lockEntryIP: Boolean(server.lock_entry_ip),
+    portRangeMin: server.port_range_min ? String(server.port_range_min) : "",
+    portRangeMax: server.port_range_max ? String(server.port_range_max) : "",
+    agentPort: server.listen_port ? String(server.listen_port) : "",
+    trafficLimitGb: server.traffic_limit ? (server.traffic_limit / 1024 / 1024 / 1024).toFixed(2) : "",
+    trafficUsedGb: "",
+    resetDay: server.traffic_reset_day ? String(server.traffic_reset_day) : "",
+    region: server.region || "",
+    expiresAt: server.expires_at?.slice(0, 10) || nextResetDate(server.traffic_reset_day),
+    renewalPrice: server.renewal_price ? String(server.renewal_price) : "",
+    renewalCurrency: server.renewal_currency || "CNY",
+    renewalCycle: server.renewal_cycle || "month",
+    xrayMode: server.xray_mode === "embedded" ? "embedded" : "external",
+    trafficStatsMode: server.traffic_stats_mode === "upload" || server.traffic_stats_mode === "download" || server.traffic_stats_mode === "max" ? server.traffic_stats_mode : "both",
+    trafficSource: server.traffic_source === "system" ? "system" : "xray",
+    ipv6Enabled: server.ipv6_enabled !== false,
+    ddnsEnabled: Boolean(server.ddns_enabled),
+    ddnsProviderId: server.ddns_provider_id || 0,
+    stealMode: server.steal_mode === "tunnel" || server.steal_mode === "fallback" ? server.steal_mode : "default",
+  };
+}
+
+function EditRemoteServerDialog({
+  server,
+  sessionToken,
+  onChanged,
+  onClose,
+}: {
+  server: RemoteServer;
+  sessionToken: string;
+  onChanged: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const initial = useMemo(() => editRemoteServerState(server), [server.id]);
+  const [form, setForm] = useState<EditRemoteServerFormState>(initial);
+  const [baseline, setBaseline] = useState<EditRemoteServerFormState>(initial);
+  const [dnsProviders, setDnsProviders] = useState<DNSProvider[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<{ kind: "success" | "error" | "info"; text: string } | null>(null);
+  const dirty = JSON.stringify(form) !== JSON.stringify(baseline);
+
+  useEffect(() => {
+    let current = true;
+    void fetchDNSProviders(sessionToken)
+      .then((response) => {
+        if (current) setDnsProviders(response.providers ?? []);
+      })
+      .catch(() => {
+        if (current) setNotice({ kind: "error", text: "读取 DDNS 服务商失败；其他字段仍可编辑。" });
+      });
+    return () => { current = false; };
+  }, [sessionToken]);
+
+  function update<K extends keyof EditRemoteServerFormState>(key: K, value: EditRemoteServerFormState[K]) {
+    setForm((current) => ({ ...current, [key]: value }));
+    if (notice?.kind === "error") setNotice(null);
+  }
+
+  function parsePort(value: string) {
+    const parsed = parseOptionalInt(value);
+    return parsed ?? 0;
+  }
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    if (!dirty || saving) return;
+    if (!form.name.trim()) {
+      setNotice({ kind: "error", text: "服务器名称不能为空。" });
+      return;
+    }
+    if (form.ddnsEnabled && (!form.pullAddress.trim() || isIPAddress(form.pullAddress))) {
+      setNotice({ kind: "error", text: "DDNS 开启时，服务器地址必须填写域名。" });
+      return;
+    }
+
+    const listenPort = parsePort(form.agentPort);
+    if (listenPort !== 0 && (listenPort < 1024 || listenPort > 65535)) {
+      setNotice({ kind: "error", text: "Agent 端口应为 1024-65535，留空或 0 恢复默认 23889。" });
+      return;
+    }
+    const resetDay = parsePort(form.resetDay);
+    if (resetDay !== 0 && (resetDay < 1 || resetDay > 31)) {
+      setNotice({ kind: "error", text: "每月重置日应为 1-31，留空表示不自动重置。" });
+      return;
+    }
+    const portRangeMin = parsePort(form.portRangeMin);
+    const portRangeMax = parsePort(form.portRangeMax);
+    if (portRangeMin < 0 || portRangeMax < 0 || portRangeMin > 65535 || portRangeMax > 65535 || (portRangeMin > 0 && portRangeMax > 0 && portRangeMin > portRangeMax)) {
+      setNotice({ kind: "error", text: "随机端口范围必须在 0-65535 内，且起始端口不能大于结束端口。" });
+      return;
+    }
+    const trafficLimitValue = form.trafficLimitGb.trim() ? Number(form.trafficLimitGb) : 0;
+    const trafficLimit = Number.isFinite(trafficLimitValue) && trafficLimitValue >= 0
+      ? (trafficLimitValue > 0 ? Math.floor(trafficLimitValue * 1024 * 1024 * 1024) : 0)
+      : null;
+    const trafficUsed = form.trafficUsedGb.trim() ? gbToBytes(form.trafficUsedGb) : undefined;
+    if (trafficLimit == null || trafficUsed === null) {
+      setNotice({ kind: "error", text: "流量字段必须是非负数字。" });
+      return;
+    }
+    const renewalPrice = form.renewalPrice.trim() ? Number(form.renewalPrice) : 0;
+    if (!Number.isFinite(renewalPrice) || renewalPrice < 0) {
+      setNotice({ kind: "error", text: "续费价格必须是非负数字。" });
+      return;
+    }
+    if (listenPort !== parsePort(baseline.agentPort) && !window.confirm(listenPort === 0
+      ? "确认清空 Agent 端口并恢复默认 23889？Agent 会重启并短暂掉线。"
+      : `确认把 Agent 监听端口改为 ${listenPort}？Agent 会重启并短暂掉线。`)) return;
+    const payload: RemoteServerUpdateRequest = {
+      id: server.id,
+      name: form.name.trim(),
+      pull_address: form.pullAddress.trim() || undefined,
+      pull_address_v6: form.pullAddressV6.trim() || undefined,
+      domain: form.domain.trim(),
+      domain_v6: form.domainV6.trim(),
+      traffic_limit: trafficLimit,
+      traffic_used: trafficUsed,
+      traffic_reset_day: resetDay,
+      region: form.region,
+      renewal_price: renewalPrice,
+      renewal_cycle: form.renewalCycle,
+      renewal_currency: form.renewalCurrency,
+      expires_at: form.expiresAt,
+      xray_mode: form.xrayMode,
+      listen_port: listenPort,
+      traffic_stats_mode: form.trafficStatsMode,
+      traffic_source: form.trafficSource,
+      ddns_enabled: form.ddnsEnabled,
+      ddns_provider_id: form.ddnsProviderId,
+      ipv6_enabled: form.ipv6Enabled,
+      lock_entry_ip: form.lockEntryIP,
+      port_range_min: portRangeMin,
+      port_range_max: portRangeMax,
+    };
+
+    setSaving(true);
+    setNotice(null);
+    let deployModeApplied = false;
+    try {
+      if (form.stealMode !== baseline.stealMode && server.status === "connected") {
+        const modeResponse = await switchRemoteServerDeployMode(sessionToken, server.id, form.stealMode);
+        if (modeResponse.success === false) throw new Error(modeResponse.message || "切换部署模式失败");
+        deployModeApplied = true;
+      }
+      const response = await updateRemoteServer(sessionToken, payload);
+      if (response.success === false) throw new Error(response.message || "保存服务器失败");
+
+      const refreshed = await fetchRemoteServers(sessionToken);
+      const latest = (refreshed.servers ?? []).find((item) => item.id === server.id);
+      if (!latest) throw new Error("保存已返回成功，但重新读取服务器最终状态失败");
+      const next = editRemoteServerState(latest);
+      setForm(next);
+      setBaseline(next);
+      setNotice({ kind: "success", text: "已保存，并从正式服务重新读取最终状态。" });
+      await onChanged();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "保存服务器失败";
+      setNotice({ kind: "error", text: deployModeApplied ? `部署模式已切换，但其余字段保存失败：${message}` : message });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const currentRegionKnown = !form.region || editableServerRegions.some((item) => item.value === form.region);
+
+  return (
+    <>
+      <form id="edit-remote-server-form" className="service-dialog-body add-server-form edit-server-form" onSubmit={save}>
+        {notice && <div className={`add-server-notice ${notice.kind}`} role="status">
+          {notice.kind === "success" ? <CheckCircle2 /> : notice.kind === "error" ? <AlertTriangle /> : <ShieldCheck />}
+          <span>{notice.text}</span>
+        </div>}
+
+        <section className="add-server-section">
+          <h4>基本信息</h4>
+          <div className="service-form-grid">
+            <label><span>服务器名称</span><input value={form.name} onChange={(event) => update("name", event.target.value)} placeholder="例如：US Node 1" /></label>
+            <label><span>服务器地址</span><input value={form.pullAddress} onChange={(event) => update("pullAddress", event.target.value)} placeholder="例如：example.com" /></label>
+            <label><span>服务器域名（可选）</span><input value={form.domain} onChange={(event) => update("domain", event.target.value)} placeholder="example.com" /><small>填写后，节点服务器地址优先使用该域名。</small></label>
+            <label><span>Agent 端口</span><input type="number" min={0} max={65535} value={form.agentPort} onChange={(event) => update("agentPort", event.target.value)} placeholder="23889" /><small>修改会通知 Agent 更新配置并重启；留空恢复默认端口。</small></label>
+          </div>
+        </section>
+
+        <section className="add-server-section">
+          <h4>入口、DDNS 与 IPv6</h4>
+          <ToggleLine title="DDNS" desc="开启后按 Agent 上报地址同步 DNS；服务器地址必须是域名。" checked={form.ddnsEnabled} onChange={(checked) => update("ddnsEnabled", checked)} />
+          {form.ddnsEnabled && <div className="service-form-grid">
+            <label><span>DDNS 服务商</span><select value={form.ddnsProviderId} onChange={(event) => update("ddnsProviderId", Number(event.target.value))}>
+              <option value={0}>自动（按证书和 DNS 服务商）</option>
+              {dnsProviders.map((provider) => { const id = provider.id ?? provider.ID ?? 0; return <option key={id} value={id}>{provider.name ?? provider.Name ?? `Provider ${id}`}</option>; })}
+            </select></label>
+            {form.ipv6Enabled && <label><span>IPv6 DDNS 域名（AAAA）</span><input value={form.pullAddressV6} onChange={(event) => update("pullAddressV6", event.target.value)} placeholder="留空则与服务器地址相同" /></label>}
+          </div>}
+          <ToggleLine title="锁定节点入口 IP" desc="忽略节点的域名与 DDNS 值，使用服务器地址中的 IP；适用于入口 IP 固定、出口 IP 变化的 NAT 服务器。" checked={form.lockEntryIP} onChange={(checked) => update("lockEntryIP", checked)} />
+          <div className="service-form-grid">
+            <label className="wide"><span>随机端口范围（可选）</span><div className="edit-port-range"><input type="number" min={0} max={65535} value={form.portRangeMin} onChange={(event) => update("portRangeMin", event.target.value)} placeholder="10000" /><em>至</em><input type="number" min={0} max={65535} value={form.portRangeMax} onChange={(event) => update("portRangeMax", event.target.value)} placeholder="65535" /></div><small>自动分配端口必须落在此范围；两端留空或为 0 表示不限。</small></label>
+            {form.ipv6Enabled && <label className="wide"><span>IPv6 域名（可选）</span><input value={form.domainV6} onChange={(event) => update("domainV6", event.target.value)} placeholder="v6.example.com" /><small>创建 IPv6 节点时默认使用；留空则使用 IPv6 地址。</small></label>}
+          </div>
+        </section>
+
+        <section className="add-server-section">
+          <h4>流量与账期</h4>
+          <div className="service-form-grid">
+            <label><span>流量额度（GB）</span><input type="number" min={0} step="0.01" value={form.trafficLimitGb} onChange={(event) => update("trafficLimitGb", event.target.value)} placeholder="留空为无限流量" /></label>
+            <label><span>已用流量（GB）</span><input type="number" min={0} step="0.01" value={form.trafficUsedGb} onChange={(event) => update("trafficUsedGb", event.target.value)} placeholder={`当前 ${((server.traffic_used ?? 0) / 1024 / 1024 / 1024).toFixed(2)} GB（留空保持不变）`} /></label>
+            <label><span>每月重置日</span><input type="number" min={1} max={31} value={form.resetDay} onChange={(event) => update("resetDay", event.target.value)} placeholder="1-31，留空不重置" /></label>
+            <label><span>到期时间</span><input type="date" value={form.expiresAt} onChange={(event) => update("expiresAt", event.target.value)} /></label>
+            <label><span>探针展示地区</span><select value={form.region} onChange={(event) => update("region", event.target.value)}>
+              <option value="">未设置</option>
+              {!currentRegionKnown && <option value={form.region}>{form.region}</option>}
+              {editableServerRegions.map((item) => <option key={item.code} value={item.value}>{item.value} {item.label}</option>)}
+            </select></label>
+            <label><span>续费价格</span><input type="number" min={0} step="0.01" value={form.renewalPrice} onChange={(event) => update("renewalPrice", event.target.value)} placeholder="续费价格" /></label>
+            <label><span>续费币种</span><select value={form.renewalCurrency} onChange={(event) => update("renewalCurrency", event.target.value)}>{renewalCurrencies.map((currency) => <option key={currency} value={currency}>{currency}</option>)}</select></label>
+            <label><span>续费周期</span><select value={form.renewalCycle} onChange={(event) => update("renewalCycle", event.target.value)}><option value="month">月付</option><option value="quarter">季付</option><option value="half_year">半年付</option><option value="year">年付</option></select></label>
+          </div>
+        </section>
+
+        <section className="add-server-section">
+          <h4>运行模式</h4>
+          <RadioGroup label="Xray 模式" value={form.xrayMode} options={[{ value: "external", label: "External Xray" }, { value: "embedded", label: "Embedded Xray", desc: "Agent 内嵌 Xray-core，支持自动限速、设备限制、Snell 与 AnyTLS。" }]} onChange={(value) => update("xrayMode", value as EditRemoteServerFormState["xrayMode"])} />
+          <RadioGroup label="流量统计规则" value={form.trafficStatsMode} options={[{ value: "both", label: "上行 + 下行" }, { value: "upload", label: "仅上行" }, { value: "download", label: "仅下行" }, { value: "max", label: "取最大（上/下行）" }]} onChange={(value) => update("trafficStatsMode", value as EditRemoteServerFormState["trafficStatsMode"])} />
+          <RadioGroup label="服务器流量数据源" value={form.trafficSource} options={[{ value: "xray", label: "Xray 协议流量" }, { value: "system", label: "系统网卡流量", desc: "物理网卡 RX+TX，包含 SSH、软件更新和监控等非 Xray 流量；切换时后端保持显示值连续。" }]} onChange={(value) => update("trafficSource", value as EditRemoteServerFormState["trafficSource"])} />
+          <ToggleLine title="启用 IPv6" desc="关闭后不再展示该服务器 IPv6，添加节点时也不可选择 IPv6。" checked={form.ipv6Enabled} onChange={(checked) => update("ipv6Enabled", checked)} />
+          <RadioGroup label="部署模式" value={form.stealMode} options={[{ value: "tunnel", label: "Tunnel" }, { value: "fallback", label: "Fallback" }, { value: "default", label: "Default", desc: "不使用 Steal Self，Xray 直接监听协议端口。" }]} onChange={(value) => update("stealMode", value as EditRemoteServerFormState["stealMode"])} />
+        </section>
+      </form>
+
+      <div className="service-dialog-actions">
+        <button type="button" onClick={onClose}>取消</button>
+        <button type="submit" className="primary" form="edit-remote-server-form" disabled={!dirty || saving}>{saving ? "保存中..." : "保存"}</button>
+      </div>
+    </>
   );
 }
 
