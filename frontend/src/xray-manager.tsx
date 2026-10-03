@@ -505,21 +505,26 @@ function useCoreModes(servers: RemoteServer[], token: string) {
     if (!serverIds) return;
     let active = true;
     let pending = false;
+    let controller: AbortController | undefined;
     const refresh = async () => {
       // Recheck report age even if a previous request is still waiting.
       setState((current) => ({ ...current }));
       if (pending) return;
       pending = true;
+      const requestController = new AbortController();
+      controller = requestController;
+      const timeout = window.setTimeout(() => requestController.abort(), 10_000);
       const entries = await Promise.all(serverIds.split(",").map(async (id) => {
-        try { return [id, await fetchCoreMode(token, Number(id))] as const; }
+        try { return [id, await fetchCoreMode(token, Number(id), requestController.signal)] as const; }
         catch { return [id, undefined] as const; }
       }));
+      window.clearTimeout(timeout);
       if (active) setState({ serverIds, token, modes: Object.fromEntries(entries) });
       pending = false;
     };
     void refresh();
     const timer = window.setInterval(() => void refresh(), 5000);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => { active = false; controller?.abort(); window.clearInterval(timer); };
   }, [serverIds, token]);
   return state.serverIds === serverIds && state.token === token ? state.modes : {};
 }
