@@ -1245,6 +1245,8 @@ export type NodeMutationRequest = {
   relay_group_node_ids?: number[] | null;
   relay_server?: string;
   relay_port?: number;
+  relay_orig_server?: string;
+  relay_orig_port?: number;
 };
 
 export type NodeMutationResponse = {

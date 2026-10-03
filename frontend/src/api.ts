@@ -1070,6 +1070,24 @@ export function fetchNodeSubscription(token: string, url: string, userAgent: str
   });
 }
 
+export function registerExternalSubscription(token: string, body: { name: string; url: string; user_agent: string }) {
+  return request<{ id?: number }>(joinUrl(MMWX_API_BASE_URL, "/api/user/external-subscriptions"), token, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function setNodeWholeOutbound(token: string, nodeId: number, body: { outbound: Record<string, unknown>; target_node_id: number } | { balancer_tag: string }) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/${encodeURIComponent(String(nodeId))}/whole-outbound`), token, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteNodeWholeOutbound(token: string, nodeId: number) {
+  return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/${encodeURIComponent(String(nodeId))}/whole-outbound`), token, { method: "DELETE" });
+}
+
 export function fetchNodeURI(token: string, nodeId: number) {
   return request<NodeURIResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/${encodeURIComponent(String(nodeId))}/uri`), token);
 }
@@ -1104,7 +1122,7 @@ export function mutateRemoteOutbound(token: string, serverId: number, body: Reco
 }
 
 export function fetchRemoteRouting(token: string, serverId: number) {
-  return request<{ success?: boolean; routing?: { rules?: Array<Record<string, unknown>> } }>(joinUrl(MMWX_API_BASE_URL, `/api/admin/remote/routing?server_id=${encodeURIComponent(String(serverId))}`), token);
+  return request<{ success?: boolean; routing?: { rules?: Array<Record<string, unknown>>; balancers?: Array<Record<string, unknown>> } }>(joinUrl(MMWX_API_BASE_URL, `/api/admin/remote/routing?server_id=${encodeURIComponent(String(serverId))}`), token);
 }
 
 export function mutateRemoteRouting(token: string, serverId: number, body: Record<string, unknown>) {
@@ -1221,10 +1239,10 @@ export function fetchSpeedTesters(token: string) {
   return request<SpeedTestersResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/speedtest/testers"), token);
 }
 
-export function createNodeTempSubscription(token: string, proxies: Array<Record<string, unknown>>, maxAccess: number, expireSeconds: number) {
+export function createNodeTempSubscription(token: string, nodes: Array<Record<string, unknown>> | { node_ids: number[] }, maxAccess: number, expireSeconds: number) {
   return request<NodeTempSubscriptionResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/temp-subscription"), token, {
     method: "POST",
-    body: JSON.stringify({ proxies, max_access: maxAccess, expire_seconds: expireSeconds }),
+    body: JSON.stringify({ ...(Array.isArray(nodes) ? { proxies: nodes } : nodes), max_access: maxAccess, expire_seconds: expireSeconds }),
   });
 }
 
@@ -1461,7 +1479,7 @@ export function updateRemoteServerDomain(token: string, server: RemoteServer, do
   });
 }
 
-export function mutateXrayInbound(token: string, serverId: number, body: { action: "add"; inbound: XrayObject; node_name?: string } | { action: "update"; tag: string; inbound: XrayObject; node_name?: string } | { action: "remove"; tag: string }) {
+export function mutateXrayInbound(token: string, serverId: number, body: { action: "add"; inbound: XrayObject; node_name?: string; ip_version?: "v4" | "v6" | "both" } | { action: "update"; tag: string; inbound: XrayObject; node_name?: string } | { action: "remove"; tag: string }) {
   return request<{ success?: boolean; message?: string }>(remoteUrl("/api/admin/remote/inbounds", serverId), token, {
     method: "POST",
     body: JSON.stringify(body),
