@@ -46,6 +46,7 @@ type serverMachineProtectionSettings struct {
 }
 
 type serverConnectionSettings struct {
+	BlockedIdentities              *[]serverConnectionIdentity      `json:"blocked_identities,omitempty"`
 	MachineProtection              *serverMachineProtectionSettings `json:"machine_protection,omitempty"`
 	DefaultCloseWaitTimeoutSeconds *int64                           `json:"default_close_wait_timeout_seconds"`
 	OnlineIPGracePeriodSeconds     int64                            `json:"online_ip_grace_period_seconds"`
@@ -100,6 +101,8 @@ type serverInboundConnections struct {
 }
 
 type serverProxyUserConnections struct {
+	Blocked                        bool                     `json:"blocked"`
+	RejectedBlocked                uint64                   `json:"rejected_blocked"`
 	Identity                       serverConnectionIdentity `json:"identity"`
 	InboundTag                     string                   `json:"inbound_tag"`
 	User                           string                   `json:"user"`
@@ -154,10 +157,11 @@ type serverGlobalConnections struct {
 }
 
 type serverCoreConnectionStatus struct {
-	Available bool      `json:"available"`
-	Version   int       `json:"interface_version,omitempty"`
-	StartedAt time.Time `json:"started_at,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	TrafficBlockSupported bool      `json:"traffic_block_supported"`
+	Available             bool      `json:"available"`
+	Version               int       `json:"interface_version,omitempty"`
+	StartedAt             time.Time `json:"started_at,omitempty"`
+	Error                 string    `json:"error,omitempty"`
 }
 
 type serverMachineProtectionStatus struct {
@@ -241,6 +245,9 @@ func cloneServerConnectionSettings(settings serverConnectionSettings) serverConn
 }
 
 func validateServerConnectionSettings(settings serverConnectionSettings) error {
+	if settings.BlockedIdentities != nil {
+		return errors.New("blocked_identities is computed from package traffic groups and cannot be edited")
+	}
 	if settings.MachineProtection != nil {
 		machine := settings.MachineProtection
 		if machine.MaxActive != nil && *machine.MaxActive <= 0 {
@@ -359,6 +366,9 @@ func settingsForHelper(settings serverConnectionSettings, helperVersion string) 
 	if !helperSupportsMachineProtection(helperVersion) {
 		settings.MachineProtection = nil
 	}
+	if !helperSupportsTrafficBlocks(helperVersion) {
+		settings.BlockedIdentities = nil
+	}
 	return settings
 }
 
@@ -455,6 +465,7 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 			settings.ManagementMappings = mappings
 		}
 	}
+	settings = a.trafficBlocksForHelper(settings, officialID, request.HelperVersion)
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "settings": sortedConnectionSettings(settingsForHelper(settings, request.HelperVersion)), "command": command})
 }
 

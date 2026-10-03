@@ -146,7 +146,7 @@ func trafficGroupConfiguredIdentities(raw string) (map[string][]trafficGroupConf
 		for _, entry := range entries {
 			identity, _ := entry["email"].(string)
 			key := trafficGroupAuthenticationKey(protocol)
-			if identity = strings.TrimSpace(identity); identity != "" && key != "" && nonEmptyCredentialValue(entry, key) {
+			if identity = strings.TrimSpace(identity); key != "" && nonEmptyCredentialValue(entry, key) {
 				result[tag] = append(result[tag], trafficGroupConfiguredIdentity{Identity: identity, Protocol: protocol, Credential: entry})
 			}
 		}
@@ -185,6 +185,9 @@ func trafficGroupRefIdentities(ref trafficGroupIdentityRef, configured []traffic
 	}
 	var result []string
 	for _, candidate := range configured {
+		if candidate.Identity == "" {
+			continue
+		}
 		if identity != "" && candidate.Identity != identity {
 			continue
 		}
@@ -314,7 +317,7 @@ func resolveTrafficGroupIdentity(data trafficGroupIdentityData, assignment traff
 			}
 			otherIdentities := trafficGroupNodeIdentities(data, binding.AssignmentID, binding.Username, other)
 			if binding.Username != assignment.Username {
-				if containsString(otherIdentities, identity) || (len(otherIdentities) == 0 && (len(configured) == 1 || containsString(data.NodeIdentities[other.ID], identity))) {
+				if len(otherIdentities) != 1 || otherIdentities[0] == identity {
 					return missing, "该身份被其他套餐用户共用，无法安全拦截"
 				}
 				continue

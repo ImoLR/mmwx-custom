@@ -350,6 +350,7 @@ func (s *helperState) connectionSettings(officialServerID string) serverConnecti
 func (s *helperState) setConnectionSettings(officialServerID string, settings serverConnectionSettings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	settings.BlockedIdentities = nil
 	s.data.ConnectionSettings[officialServerID] = cloneServerConnectionSettings(settings)
 	return s.saveLocked()
 }

@@ -92,6 +92,9 @@ func TestTrafficGroupIdentityResolution(t *testing.T) {
 			d.NodeIdentities[1] = []string{"alice-a"}
 			d.Bindings = append(d.Bindings, trafficGroupIdentityBinding{AssignmentID: 8, Username: "bob", NodeIDs: []int64{1}})
 		}},
+		{name: "unresolved bound user on multi-user inbound", change: func(d *trafficGroupIdentityData, _ map[int64]trafficGroupNode, _ *[]int64) {
+			d.Bindings = append(d.Bindings, trafficGroupIdentityBinding{AssignmentID: 8, Username: "bob", NodeIDs: []int64{1}})
+		}},
 		{name: "single configured secret with another user", change: func(d *trafficGroupIdentityData, _ map[int64]trafficGroupNode, _ *[]int64) {
 			d.Configured["in-a"] = d.Configured["in-a"][:1]
 			d.Bindings = append(d.Bindings, trafficGroupIdentityBinding{AssignmentID: 8, Username: "bob", NodeIDs: []int64{1}})
@@ -170,7 +173,22 @@ func TestTrafficGroupConfiguredIdentitiesIgnoreSingleSecretAndNestedEmails(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(configured["single"]) != 0 || len(configured["nested"]) != 0 || len(configured["clients"]) != 1 {
+	if len(configured["single"]) != 0 || len(configured["nested"]) != 1 || configured["nested"][0].Identity != "" || len(configured["clients"]) != 1 {
 		t.Fatalf("unsafe config identities included: %#v", configured)
+	}
+	if identities := trafficGroupRefIdentities(trafficGroupIdentityRef{Credential: `{"id":"uuid"}`}, configured["nested"]); len(identities) != 0 {
+		t.Fatal("anonymous credential must not resolve to a blocking identity")
+	}
+}
+
+func TestTrafficGroupIdentityAnonymousCredentialCollision(t *testing.T) {
+	data, assignment, nodes := trafficGroupIdentityFixture(t)
+	var err error
+	data.Configured, err = trafficGroupConfiguredIdentities(`{"inbounds":[{"tag":"in-a","protocol":"vless","settings":{"clients":[{"id":"uuid-alice","email":"alice-a"},{"id":"uuid-alice"}]}}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, reason := resolveTrafficGroupIdentity(data, assignment, nodes[1], []int64{1}, nodes); reason == "" {
+		t.Fatal("anonymous duplicate auth credential can share the blocked identity")
 	}
 }

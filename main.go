@@ -118,6 +118,11 @@ type app struct {
 	userStatusTasks        *managedUserStatusTaskStore
 	userLifecycleMu        sync.Mutex
 	userLifecycleLocks     map[string]*sync.Mutex
+	trafficGroupsMu        sync.Mutex
+	trafficGroupsReady     bool
+	trafficGroupBlocks     map[string][]serverConnectionIdentity
+	trafficGroupUsage      map[int64]packageTrafficGroupUsageResponse
+	trafficGroupActive     []trafficGroupBlock
 
 	mu      sync.Mutex
 	lastCPU cpuTimes
@@ -194,6 +199,10 @@ func main() {
 			_ = adminStore.Close()
 			log.Fatalf("[mmwx-custom] user lifecycle migration failed: %v", err)
 		}
+		if err := adminStore.EnsurePackageTrafficGroupsSchema(context.Background()); err != nil {
+			_ = adminStore.Close()
+			log.Fatalf("[mmwx-custom] package traffic groups migration failed: %v", err)
+		}
 		defer adminStore.Close()
 	}
 	api.helperState, err = openHelperState(getenv("MMWXC_HELPER_STATE_FILE", defaultHelperStatePath), helperInstallTokenTTLFromEnv())
@@ -233,6 +242,7 @@ func main() {
 	mux.HandleFunc("/api/custom/ui/routing-presets", api.withCORS(api.uiRoutingPresetsHandler))
 	mux.HandleFunc("/api/custom/users/", api.withCORS(api.userManagementHandler))
 	mux.HandleFunc("/api/custom/user-lifecycle", api.withCORS(api.userLifecycleIndexHandler))
+	mux.HandleFunc("/api/custom/packages/", api.withCORS(api.packageTrafficGroupsHandler))
 	mux.HandleFunc("/api/custom/user-status-tasks", api.withCORS(api.userStatusTaskHandler))
 	mux.HandleFunc("/api/custom/user-status-tasks/", api.withCORS(api.userStatusTaskHandler))
 	mux.Handle("/api/", api.withCORSHandler(mmwxAPIProxy(mmwxAPITarget)))
@@ -250,6 +260,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go api.releaseCache.run(ctx, defaultReleaseRefreshInterval)
+	go api.runTrafficGroups(ctx)
 
 	go func() {
 		log.Printf("[mmwx-custom] listening on %s", listenAddr)
