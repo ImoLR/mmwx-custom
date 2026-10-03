@@ -28,11 +28,15 @@ export function useNodeSpeedTests(token: string, onNotice: Notice, enabled = tru
   const [now, setNow] = useState(Date.now());
   const attempts = useRef(new Map<number, number>());
   const optimistic = useRef(new Map<number, SpeedTestResult>());
+  const refreshSequence = useRef(0);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const refresh = useCallback(async () => {
-    const response = await fetchSpeedTestResults(token, undefined, true);
-    if (!mounted.current) return;
+    const sequence = ++refreshSequence.current;
+    let response;
+    try { response = await fetchSpeedTestResults(token, undefined, true); }
+    catch (reason) { if (mounted.current && sequence === refreshSequence.current) throw reason; return; }
+    if (!mounted.current || sequence !== refreshSequence.current) return;
     const next = speedTestLatest(response.results ?? []);
     for (const [id, pending] of optimistic.current) {
       const received = next.get(id);
@@ -63,6 +67,7 @@ export function useNodeSpeedTests(token: string, onNotice: Notice, enabled = tru
   const start = async (nodes: XrayNode[], latencyOnly = false, options = defaultOptions()) => {
     if (!nodes.length) return;
     if (error === SPEED_TEST_PRO_REQUIRED) { onNotice("error", error); return; }
+    refreshSequence.current++;
     const started = Date.now();
     const entries = nodes.map((node) => {
       const result: SpeedTestResult = { node_id: node.id, node_name: node.node_name, status: "running", created_at: new Date(started).toISOString() };
@@ -73,12 +78,14 @@ export function useNodeSpeedTests(token: string, onNotice: Notice, enabled = tru
       try {
         const response = await runSpeedTest(token, { node_id: node.id, ...options, ...(latencyOnly ? { latency_only: true } : {}) });
         if (mounted.current && response.result && attempts.current.get(node.id) === started) {
+          refreshSequence.current++;
           optimistic.current.delete(node.id);
           setLatest((current) => new Map(current).set(node.id, response.result!));
         }
       } catch (reason) {
         const message = speedTestError(reason);
         if (mounted.current && attempts.current.get(node.id) === started) {
+          refreshSequence.current++;
           optimistic.current.delete(node.id);
           setLatest((current) => new Map(current).set(node.id, { node_id: node.id, status: "failed", error: message, created_at: new Date(started).toISOString() }));
           if (message === SPEED_TEST_PRO_REQUIRED) setError(message);
@@ -226,7 +233,8 @@ export function SpeedTesterManagerDialog({ token, onClose, onNotice, autoRotateI
   useEffect(() => {
     const tester = testers.find((item) => item.id === autoRotateId);
     if (!tester || !autoRotateId || rotated.current === autoRotateId) return;
-    rotated.current = autoRotateId; void rotate(tester);
+    rotated.current = autoRotateId;
+    if (!tester.online) void rotate(tester);
   }, [autoRotateId, testers]);
   const copy = async (value: string) => { try { await navigator.clipboard.writeText(value); onNotice("success", "已复制"); } catch { onNotice("error", "复制失败"); } };
   const rows = updates ?? info.testers ?? [];
