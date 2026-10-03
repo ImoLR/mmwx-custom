@@ -917,6 +917,44 @@ export type PackagePayload = Omit<ManagedPackage, "id" | "nodes_configured" | "s
 export type PackagesResponse = { packages?: ManagedPackage[] };
 export type PackageTemplatesResponse = { templates?: PackageTemplate[] };
 
+export type PackageTrafficGroupInput = {
+  id?: number;
+  name: string;
+  limit_bytes: number;
+  node_ids: number[];
+};
+
+export type PackageTrafficGroup = PackageTrafficGroupInput & {
+  id: number;
+  package_id: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type PackageTrafficGroupNode = {
+  node_id: number;
+  node_name: string;
+  server_name: string;
+  status: "enforced" | "embedded" | "core_outdated" | "helper_outdated" | "external_node" | "no_identity";
+  reason?: string;
+};
+
+export type PackageTrafficGroupUsage = {
+  username: string;
+  assignment_id: number;
+  group_id: number;
+  group_name: string;
+  used_bytes: number;
+  limit_bytes: number;
+  blocked: boolean;
+  cycle_start: string;
+  cycle_end: string | null;
+  nodes: PackageTrafficGroupNode[];
+};
+
+export type PackageTrafficGroupsResponse = { groups: PackageTrafficGroup[] };
+export type PackageTrafficGroupUsageResponse = { usage: PackageTrafficGroupUsage[]; nodes: PackageTrafficGroupNode[] };
+
 export type ManagedUser = {
   username: string;
   email?: string;

@@ -57,6 +57,9 @@ import type {
   PackagePayload,
   PackagesResponse,
   PackageTemplatesResponse,
+  PackageTrafficGroupInput,
+  PackageTrafficGroupsResponse,
+  PackageTrafficGroupUsageResponse,
   RemoteServerCreateRequest,
   RemoteServerUpdateRequest,
   RemoteServerMutationResponse,
@@ -467,6 +470,22 @@ export function createPackage(token: string, body: PackagePayload) {
 
 export function updatePackage(token: string, body: PackagePayload & { id: number }) {
   return requestOperation<PackageMutationResponse>(token, "f9bed75c75a38c5f", body);
+}
+
+export function fetchPackageTrafficGroups(token: string, packageId: number) {
+  return requestCustomOperator<PackageTrafficGroupsResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/packages/${packageId}/traffic-groups`), token);
+}
+
+export function savePackageTrafficGroups(token: string, packageId: number, groups: PackageTrafficGroupInput[]) {
+  return requestCustomOperator<PackageTrafficGroupsResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/packages/${packageId}/traffic-groups`), token, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ groups }),
+  });
+}
+
+export function fetchPackageTrafficGroupUsage(token: string, packageId: number) {
+  return requestCustomOperator<PackageTrafficGroupUsageResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/packages/${packageId}/traffic-groups/usage`), token);
 }
 
 export function deletePackage(token: string, packageId: number) {
