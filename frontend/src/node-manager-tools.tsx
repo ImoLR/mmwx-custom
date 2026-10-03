@@ -6,12 +6,10 @@ import {
   Check,
   Copy,
   Edit3,
-  Gauge,
   KeyRound,
   Link2,
   Loader2,
   Network,
-  Play,
   Plus,
   RefreshCw,
   Route,
@@ -34,14 +32,11 @@ import {
   fetchNodeURIs,
   fetchPackageNodeTrafficName,
   fetchRemoteRouting,
-  fetchSpeedTestResults,
-  fetchSpeedTesters,
   fetchRoutedOutbounds,
   fetchXrayNodes,
   mutateRemoteInbound,
   mutateRemoteOutbound,
   mutateRemoteRouting,
-  runSpeedTest,
   setNodeRelay,
   setNodeWholeOutbound,
   syncExternalSubscriptions,
@@ -54,13 +49,13 @@ import type {
   NodeTunnelChain,
   NodeURIItem,
   RemoteServer,
-  SpeedTestResult,
-  SpeedTester,
   XrayNode,
 } from "./types";
 import { chainNodePayload, chainProxyCandidates, relayGroupCandidates, relayGroupPayload } from "./node-manager-logic";
 import { ManagedNodeCreateDialog, nodeToOutbound } from "./xray-manager";
 import { routedLabelFor } from "./node-routing-logic";
+
+import { SpeedTestPanel, type NodeSpeedTestController } from "./node-speedtest";
 
 type ToolNotice = (tone: "success" | "error" | "info", text: string) => void;
 
@@ -102,37 +97,9 @@ export function URIManagerDialog({ token, onClose, onNotice }: { token: string; 
   </ToolDialog>;
 }
 
-export function SpeedTestDialog({ token, nodes, onClose, onNotice }: { token: string; nodes: XrayNode[]; onClose: () => void; onNotice: ToolNotice }) {
-  const [selected, setSelected] = useState<Set<number>>(() => new Set());
-  const [testers, setTesters] = useState<SpeedTester[]>([]);
-  const [results, setResults] = useState<SpeedTestResult[]>([]);
-  const [tester, setTester] = useState("master");
-  const [threads, setThreads] = useState(4);
-  const [buffer, setBuffer] = useState(1);
-  const [busy, setBusy] = useState(false);
-  const load = async () => {
-    const [testerResp, resultResp] = await Promise.all([fetchSpeedTesters(token), fetchSpeedTestResults(token, undefined, true)]);
-    setTesters(testerResp.testers ?? []); setResults(resultResp.results ?? []);
-  };
-  useEffect(() => { void load().catch((error) => onNotice("error", error instanceof Error ? error.message : "读取测速信息失败")); }, [token]);
-  const latest = useMemo(() => new Map(results.map((item) => [item.node_id, item])), [results]);
-  const start = async (latencyOnly: boolean) => {
-    const ids = [...selected]; if (!ids.length) return;
-    setBusy(true);
-    try {
-      await Promise.all(ids.map((nodeId) => runSpeedTest(token, { node_id: nodeId, threads, buf_size: buffer * 1024 * 1024, ...(tester !== "master" ? { tester_id: Number(tester) } : {}), ...(latencyOnly ? { latency_only: true } : {}) })));
-      onNotice("success", `${ids.length} 个节点的${latencyOnly ? "延迟" : "下载"}测速已开始`);
-      await new Promise((resolve) => window.setTimeout(resolve, 1200)); await load();
-    } catch (error) { onNotice("error", error instanceof Error ? error.message : "启动测速失败"); } finally { setBusy(false); }
-  };
-  return <ToolDialog title="节点测速" subtitle="选择测速源、并发和缓冲区后批量测试延迟或下载速度" onClose={onClose}>
-    <div className="node-form-grid">
-      <label><span>测速源</span><select value={tester} onChange={(event) => setTester(event.target.value)}><option value="master">主控服务器</option>{testers.map((item) => <option key={item.id} value={item.id}>{item.name}{item.online === false ? "（离线）" : ""}</option>)}</select></label>
-      <label><span>并发线程</span><select value={threads} onChange={(event) => setThreads(Number(event.target.value))}>{[1, 2, 4, 8].map((value) => <option key={value}>{value}</option>)}</select></label>
-      <label><span>缓冲区</span><select value={buffer} onChange={(event) => setBuffer(Number(event.target.value))}>{[1, 2, 4, 8].map((value) => <option key={value} value={value}>{value} MB</option>)}</select></label>
-    </div>
-    <div className="node-dialog-actions"><button type="button" onClick={() => setSelected(selected.size === nodes.length ? new Set() : new Set(nodes.map((node) => node.id)))}>{selected.size === nodes.length ? "取消全选" : "全选"}</button><button type="button" disabled={busy || !selected.size} onClick={() => void start(true)}><Gauge />延迟测试</button><button className="primary" type="button" disabled={busy || !selected.size} onClick={() => void start(false)}><Play />下载测速</button></div>
-    <div className="node-tool-list selectable">{nodes.map((node) => { const result = latest.get(node.id); return <label key={node.id}><input type="checkbox" checked={selected.has(node.id)} onChange={() => setSelected((current) => { const next = new Set(current); next.has(node.id) ? next.delete(node.id) : next.add(node.id); return next; })} /><div><strong>{node.node_name}</strong><p>{result ? `${result.status || "完成"} · ${result.latency_ms != null ? `${Math.round(result.latency_ms)} ms` : "--"} · ${result.down_mbps != null ? `${result.down_mbps.toFixed(2)} Mbps` : "--"}` : "暂无测速结果"}</p></div></label>; })}</div>
+export function SpeedTestDialog({ token, nodes, onClose, onNotice, controller }: { token: string; nodes: XrayNode[]; onClose: () => void; onNotice: ToolNotice; controller?: NodeSpeedTestController }) {
+  return <ToolDialog title="节点测速" subtitle="选择测速来源后,对节点进行测速;结果保存在服务端,关闭后重开仍可见。" onClose={onClose}>
+    <SpeedTestPanel token={token} nodes={nodes} onNotice={onNotice} controller={controller} />
   </ToolDialog>;
 }
 
