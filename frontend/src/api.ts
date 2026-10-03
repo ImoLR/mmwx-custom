@@ -1241,25 +1241,36 @@ export function fetchSpeedTesters(token: string) {
   return request<SpeedTestersResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/speedtest/testers"), token);
 }
 
-// v0.5.5 gates even unknown speedtest REST paths behind PRO; use its verified operation IDs.
 export function fetchSpeedTesterUpdateInfo(token: string) {
-  return requestOperation<{ has_update?: boolean; latest_version?: string; outdated_count?: number; testers?: SpeedTesterUpdate[] }>(token, "a2f481b1f6e1def1");
+  return request<{ has_update?: boolean; latest_version?: string; outdated_count?: number; testers?: SpeedTesterUpdate[] }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/speedtest/testers/update-info"), token);
 }
 
 export function createSpeedTester(token: string, name: string) {
-  return requestOperation<{ token: string }>(token, "d926ee889357ea17", { name });
+  return request<{ token: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/speedtest/testers/create"), token, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
 }
 
 export function rotateSpeedTesterToken(token: string, id: number) {
-  return requestOperation<{ token: string }>(token, "677336396e10376c", { id });
+  return request<{ token: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/speedtest/testers/rotate-token"), token, {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  });
 }
 
 export function revokeSpeedTester(token: string, id: number) {
-  return requestOperation<{ success?: boolean }>(token, "21a68812958259a2", { id });
+  return request<{ success?: boolean }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/speedtest/testers/revoke"), token, {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  });
 }
 
 export function updateAllSpeedTesters(token: string) {
-  return requestOperation<{ results?: SpeedTesterUpdate[] }>(token, "4a9d5ef58baf6b85");
+  return request<{ results?: SpeedTesterUpdate[] }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/speedtest/testers/update-all"), token, {
+    method: "POST",
+    body: JSON.stringify(null),
+  });
 }
 
 export function fetchBlockedNodeIds(token: string) {
