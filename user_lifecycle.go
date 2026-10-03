@@ -575,6 +575,16 @@ func (s *postgresAdminSessionStore) LifecyclePackageBindings(ctx context.Context
 		if err := json.Unmarshal([]byte(rawNodes), &item.NodeIDs); err != nil {
 			return nil, fmt.Errorf("package %d has invalid node list", item.ID)
 		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range result {
+		item := &result[i]
 		if err := s.db.QueryRowContext(ctx, `
 			SELECT COUNT(DISTINCT username) FROM (
 				SELECT a.username FROM user_package_assignments a
@@ -584,9 +594,8 @@ func (s *postgresAdminSessionStore) LifecyclePackageBindings(ctx context.Context
 			) package_users`, item.ID, username).Scan(&item.RemainingUsers); err != nil {
 			return nil, err
 		}
-		result = append(result, item)
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 func (s *postgresAdminSessionStore) lifecyclePackageBusinessRefs(ctx context.Context, columns map[string]map[string]bool, serverID int64, serverName, inboundTag, excludeUsername string) ([]lifecycleCredentialRef, error) {
