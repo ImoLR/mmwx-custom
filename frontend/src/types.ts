@@ -853,6 +853,7 @@ export type XrayNode = {
   routed_owner?: string;
   created_by?: string;
   multiplier?: number;
+  probe_enabled?: boolean;
   relay_orig_server?: string;
   relay_orig_port?: number;
   created_at?: string;
@@ -1322,6 +1323,17 @@ export type SpeedTestResult = {
   egress_ip?: string;
   created_at?: string;
   updated_at?: string;
+};
+
+export type SpeedTesterUpdate = {
+  id: number;
+  name?: string;
+  online?: boolean;
+  version?: string;
+  update_available?: boolean;
+  update_supported?: boolean;
+  status?: string;
+  error?: string;
 };
 
 export type SpeedTestResultsResponse = {

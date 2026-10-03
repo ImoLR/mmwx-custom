@@ -23,6 +23,7 @@ import type {
   SpeedTestResultsResponse,
   SpeedTestRunResponse,
   SpeedTestersResponse,
+  SpeedTesterUpdate,
   ExternalSyncResponse,
   ForwardCertificatesResponse,
   ForwardChainsResponse,
@@ -98,6 +99,7 @@ import type {
   XrayWarpStatus,
   WebsiteMutationResponse,
 } from "./types";
+import type { NodePackageMemberships, NodeProbeSettings, NodeProbeStatus, RelayCredentialRepairReport } from "./node-auxiliary-logic";
 import { formatHTTPError, parseJSONBody } from "./http-error";
 const SESSION_KEY = "mmwx-session";
 const MMWX_API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_MMWX_API_BASE_URL ?? "");
@@ -1126,7 +1128,7 @@ export function fetchRemoteRouting(token: string, serverId: number) {
 }
 
 export function mutateRemoteRouting(token: string, serverId: number, body: Record<string, unknown>) {
-  return request<{ success?: boolean; message?: string }>(joinUrl(MMWX_API_BASE_URL, `/api/admin/remote/routing?server_id=${encodeURIComponent(String(serverId))}`), token, {
+  return request<{ success?: boolean; message?: string; hot_applied?: boolean }>(joinUrl(MMWX_API_BASE_URL, `/api/admin/remote/routing?server_id=${encodeURIComponent(String(serverId))}`), token, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -1223,8 +1225,8 @@ export function batchTcpingNodes(token: string, requests: Array<{ host: string; 
   });
 }
 
-export function fetchSpeedTestResults(token: string, nodeId?: number, latest = false) {
-  const query = latest ? "?latest=1" : nodeId ? `?node_id=${encodeURIComponent(String(nodeId))}&limit=20` : "?limit=50";
+export function fetchSpeedTestResults(token: string, nodeId?: number, latest = false, limit = 100) {
+  const query = latest ? "?latest=1" : nodeId ? `?node_id=${encodeURIComponent(String(nodeId))}&limit=${limit}` : `?limit=${limit}`;
   return request<SpeedTestResultsResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/speedtest/results${query}`), token);
 }
 
@@ -1239,6 +1241,35 @@ export function fetchSpeedTesters(token: string) {
   return request<SpeedTestersResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/speedtest/testers"), token);
 }
 
+// v0.5.5 gates even unknown speedtest REST paths behind PRO; use its verified operation IDs.
+export function fetchSpeedTesterUpdateInfo(token: string) {
+  return requestOperation<{ has_update?: boolean; latest_version?: string; outdated_count?: number; testers?: SpeedTesterUpdate[] }>(token, "a2f481b1f6e1def1");
+}
+
+export function createSpeedTester(token: string, name: string) {
+  return requestOperation<{ token: string }>(token, "d926ee889357ea17", { name });
+}
+
+export function rotateSpeedTesterToken(token: string, id: number) {
+  return requestOperation<{ token: string }>(token, "677336396e10376c", { id });
+}
+
+export function revokeSpeedTester(token: string, id: number) {
+  return requestOperation<{ success?: boolean }>(token, "21a68812958259a2", { id });
+}
+
+export function updateAllSpeedTesters(token: string) {
+  return requestOperation<{ results?: SpeedTesterUpdate[] }>(token, "4a9d5ef58baf6b85");
+}
+
+export function fetchBlockedNodeIds(token: string) {
+  return requestOperation<{ node_ids?: number[] }>(token, "edc667caa2f10498");
+}
+
+export function fetchNodeUnlocks(token: string) {
+  return request<{ nodes?: Record<string, { unlocked: number; total: number }> }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/node-unlocks"), token);
+}
+
 export function createNodeTempSubscription(token: string, nodes: Array<Record<string, unknown>> | { node_ids: number[] }, maxAccess: number, expireSeconds: number) {
   return request<NodeTempSubscriptionResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/temp-subscription"), token, {
     method: "POST",
@@ -1250,7 +1281,7 @@ export function fetchRoutedOutbounds(token: string, parentNodeId: number) {
   return request<{ items?: Array<Record<string, unknown>> }>(joinUrl(MMWX_API_BASE_URL, `/api/admin/routed-outbound?parent_id=${encodeURIComponent(String(parentNodeId))}`), token);
 }
 
-export function createRoutedOutbound(token: string, body: { parent_node_id: number; target_node_id?: number; label: string; outbound: Record<string, unknown>; node_name?: string }) {
+export function createRoutedOutbound(token: string, body: { parent_node_id: number; target_node_id?: number; label: string; outbound: Record<string, unknown>; node_name?: string } | { parent_node_id: number; from_node_id: number; label: string; node_name?: string }) {
   return request<NodeMutationResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/routed-outbound"), token, {
     method: "POST",
     body: JSON.stringify(body),
@@ -1563,5 +1594,41 @@ export function deleteRoutingRulePreset(token: string, id: number) {
   return requestCustomApi<{ success?: boolean }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/ui/routing-presets?id=${encodeURIComponent(String(id))}`), {
     method: "DELETE",
     headers: { "MM-Authorization": token },
+  });
+}
+
+export function fetchNodePackageMemberships(token: string) {
+  return request<NodePackageMemberships>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes/package-membership"), token);
+}
+
+export function toggleNodePackageMembership(token: string, body: { package_id: number; node_id: number; member: boolean }) {
+  return request<{ success?: boolean; changed?: boolean; error?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/packages/toggle-node"), token, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchNodeProbe(token: string) {
+  return request<NodeProbeStatus>(joinUrl(MMWX_API_BASE_URL, "/api/admin/node-probe"), token);
+}
+
+export function updateNodeProbeSettings(token: string, body: NodeProbeSettings) {
+  return request<{ success?: boolean; error?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/node-probe/settings"), token, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function toggleNodeProbe(token: string, body: { node_id: number; enabled: boolean }) {
+  return request<{ success?: boolean; error?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/node-probe/toggle"), token, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function repairRelayCredentials(token: string, apply = false) {
+  return request<{ success?: boolean; report?: RelayCredentialRepairReport; error?: string }>(joinUrl(MMWX_API_BASE_URL, `/api/admin/nodes/repair-relay-credentials${apply ? "?apply=1" : ""}`), token, {
+    method: "POST",
+    body: "null",
   });
 }
