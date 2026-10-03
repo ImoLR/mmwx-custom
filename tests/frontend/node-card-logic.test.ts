@@ -31,4 +31,6 @@ test("chain mapping disambiguates entry port and address, never picks ambiguous 
 test("external source uses official first tag and omits managed nodes", () => {
   assert.equal(externalNodeSource({ id: 3, node_name: "external", tags: ["subscription", "other"] }, []), "📥 外部:subscription");
   assert.equal(externalNodeSource({ ...node, tags: ["managed"] }, [server]), "");
+  assert.equal(externalNodeSource({ id: 4, node_name: "historical", tags: ["old-source"], parsed_config: JSON.stringify({ server: "entry.example" }) }, [server]), "");
+  assert.equal(externalNodeSource({ id: 5, node_name: "invalid", tags: ["subscription"], parsed_config: "invalid" }, [server]), "📥 外部:subscription");
 });

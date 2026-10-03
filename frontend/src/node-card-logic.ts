@@ -43,6 +43,10 @@ export function nodeTunnelChain(node: XrayNode, chains: NodeTunnelChain[], serve
 
 export function externalNodeSource(node: XrayNode, servers: RemoteServer[]) {
   if (nodeManagedServer(node, servers)) return "";
+  try {
+    const address = JSON.parse(node.parsed_config || "{}").server;
+    if (address && servers.some((server) => [server.ip_address, server.ip_address_v6, server.domain, server.domain_v6, server.pull_address].includes(String(address).trim()))) return "";
+  } catch { /* Historical nodes may only have their source tag. */ }
   const source = node.tags?.[0]?.trim();
   return source ? `📥 外部:${source}` : "";
 }

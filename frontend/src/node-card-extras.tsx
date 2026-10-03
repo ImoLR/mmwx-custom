@@ -40,17 +40,21 @@ export function useNodeCardExtras(token: string, nodes: XrayNode[], servers: Rem
     return () => { active = false; window.clearInterval(timer); };
   }, [token]);
   useEffect(() => {
-    let active = true;
+    let active = true, inFlight = false;
     const load = async () => {
-      const next: Record<number, NodeRoutingState> = {}, failures: number[] = [];
-      // One pair of reads per server, irrespective of its node count.
-      for (const id of serverIds.split(",").filter(Boolean).map(Number)) {
-        const [rules, outbounds] = await Promise.allSettled([fetchRemoteRouting(token, id), fetchXrayOutbounds(token, id)]);
-        if (!active) return;
-        if (rules.status === "fulfilled" && outbounds.status === "fulfilled") next[id] = { ...rules.value.routing, outbounds: outbounds.value.outbounds || [] };
-        else failures.push(id);
-      }
-      if (active) { setRouting(next); setErrors((current) => ({ ...current, routing: failures.length ? "部分服务器出站状态读取失败" : "" })); }
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const next: Record<number, NodeRoutingState> = {}, failures: number[] = [];
+        // One pair of reads per server, irrespective of its node count.
+        for (const id of serverIds.split(",").filter(Boolean).map(Number)) {
+          const [rules, outbounds] = await Promise.allSettled([fetchRemoteRouting(token, id), fetchXrayOutbounds(token, id)]);
+          if (!active) return;
+          if (rules.status === "fulfilled" && outbounds.status === "fulfilled") next[id] = { ...rules.value.routing, outbounds: outbounds.value.outbounds || [] };
+          else failures.push(id);
+        }
+        if (active) { setRouting(next); setErrors((current) => ({ ...current, routing: failures.length ? "部分服务器出站状态读取失败" : "" })); }
+      } finally { inFlight = false; }
     };
     void load(); const timer = window.setInterval(() => { if (!document.hidden) void load(); }, 60000);
     return () => { active = false; window.clearInterval(timer); };
@@ -76,7 +80,7 @@ export function NodeCardExtras({ node, state, servers, onTunnel, onRelay, onReve
       {!!state?.tunnels.length && <span title={`以下 tunnel 入站转发到此节点:\n${state.tunnels.map((tunnel) => `${tunnel.server_name}:${tunnel.listen_port} → ${tunnel.target_address}:${tunnel.target_port} · ${tunnel.tag}`).join("\n")}`}>被 tunnel 转发</span>}
     </div>
     {node.relay_orig_server && <button type="button" className="node-state-link" onClick={onRelay} title="点击修改 / 取消中转">中转原服务器 {node.relay_orig_server}:{node.relay_orig_port}</button>}
-    {chain && <button type="button" className="node-state-link" onClick={() => onRevertChain(entry)} title={`链式隧道路径\n${[...chain.hops.map((hop) => hop.server_name || `#${hop.server_id}`), node.node_name].join(" → ")}\n点击切回源节点地址`}>链式隧道 {entry}</button>}
+    {chain && <button type="button" className="node-state-link" onClick={() => onRevertChain(entry)} title={`链式隧道路径\n${[...(chain.hops || []).map((hop) => hop.server_name || `#${hop.server_id}`), node.node_name].join(" → ")}\n点击切回源节点地址`}>链式隧道 {entry}</button>}
     {state?.tunnels.map((tunnel) => {
       const host = tunnelEntryHost(tunnel, servers), current = host === parsed.server && Number(tunnel.listen_port) === Number(parsed.port);
       return <button key={`${tunnel.server_id}:${tunnel.tag}`} type="button" className="node-state-link" title="点击管理此 tunnel 转发" onClick={() => onTunnel(tunnel)}>{host}:{tunnel.listen_port}{current ? "" : " (其他入口)"}</button>;
