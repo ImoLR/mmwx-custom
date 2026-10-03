@@ -14,7 +14,7 @@ export function trafficGroupDraft(group: PackageTrafficGroupInput): PackageTraff
 }
 
 export function trafficGroupPayload(group: PackageTrafficGroupDraft): PackageTrafficGroupInput {
-  return { id: group.id, name: group.name.trim(), limit_bytes: Math.round(group.limit_gb * TRAFFIC_GB), node_ids: [...group.node_ids] };
+  return { id: group.id, name: group.name.trim(), limit_bytes: Math.floor(group.limit_gb * TRAFFIC_GB), node_ids: [...group.node_ids] };
 }
 
 export function retainTrafficGroupNodes(groups: PackageTrafficGroupDraft[], nodeIds: number[]): PackageTrafficGroupDraft[] {
@@ -25,18 +25,20 @@ export function retainTrafficGroupNodes(groups: PackageTrafficGroupDraft[], node
 export function validateTrafficGroups(groups: PackageTrafficGroupDraft[], packageLimitGB: number, nodeIds: number[], nodeLimits: Record<number, number>): string {
   const allowed = new Set(nodeIds);
   const assigned = new Set<number>();
+  const packageLimitBytes = Math.floor(packageLimitGB * TRAFFIC_GB);
   for (const [index, group] of groups.entries()) {
     const label = group.name.trim() ? `共享组“${group.name.trim()}”` : `第 ${index + 1} 个共享组`;
+    const limitBytes = Math.floor(group.limit_gb * TRAFFIC_GB);
     if (!group.name.trim()) return `${label}请输入名称`;
     if ([...group.name.trim()].length > 100) return "共享组名称不能超过 100 个字符";
-    if (!Number.isFinite(group.limit_gb) || group.limit_gb <= 0 || Math.round(group.limit_gb * TRAFFIC_GB) < 1) return `${label}的共享额度必须大于 0 GB`;
-    if (!Number.isSafeInteger(Math.round(group.limit_gb * TRAFFIC_GB))) return `${label}的共享额度过大`;
-    if (group.limit_gb > packageLimitGB) return `${label}的共享额度不能超过套餐总额度`;
+    if (!Number.isFinite(group.limit_gb) || limitBytes < 1) return `${label}的共享额度必须大于 0 GB`;
+    if (!Number.isSafeInteger(limitBytes)) return `${label}的共享额度过大`;
+    if (limitBytes > packageLimitBytes) return `${label}的共享额度不能超过套餐总额度`;
     if (group.node_ids.length === 0) return `${label}至少需要一个节点`;
     for (const nodeId of group.node_ids) {
       if (!allowed.has(nodeId)) return `${label}包含未关联到套餐的节点 ${nodeId}`;
       if (assigned.has(nodeId)) return `节点 ${nodeId} 只能属于一个共享组`;
-      if (Number(nodeLimits[nodeId]) > group.limit_gb) return `节点 ${nodeId} 的单节点流量额度不能超过${label}的共享额度`;
+      if (Math.floor(Number(nodeLimits[nodeId]) * TRAFFIC_GB) > limitBytes) return `节点 ${nodeId} 的单节点流量额度不能超过${label}的共享额度`;
       assigned.add(nodeId);
     }
   }

@@ -37,7 +37,22 @@ test("removing package nodes prunes memberships and preserves empty groups for v
 test("traffic group draft converts GB to integral bytes and retains stable IDs", () => {
   const original = { id: 7, name: " 亚洲 ", limit_bytes: 20 * TRAFFIC_GB + 1, node_ids: [1] };
   assert.deepEqual(trafficGroupPayload(trafficGroupDraft(original)), { ...original, name: "亚洲" });
-  assert.equal(trafficGroupPayload({ ...group(), limit_gb: 0.01 }).limit_bytes, Math.round(TRAFFIC_GB * 0.01));
+  assert.equal(trafficGroupPayload({ ...group(), limit_gb: 0.01 }).limit_bytes, 10737418);
+  assert.equal(trafficGroupPayload({ ...group(), limit_gb: 0.03 }).limit_bytes, 32212254);
+  assert.equal(trafficGroupPayload({ ...group(), limit_gb: 1.9 / TRAFFIC_GB }).limit_bytes, 1);
+});
+
+test("fractional GB quotas can reopen and save with equal node and package limits", () => {
+  const original = { id: 1, name: "亚洲", limit_bytes: 10737418, node_ids: [1] };
+  const reopened = trafficGroupDraft(original);
+  assert.equal(validateTrafficGroups([reopened], 0.03, [1], { 1: 0.01 }), "");
+  assert.equal(validateTrafficGroups([reopened], 0.01, [1], { 1: 0.01 }), "");
+  assert.deepEqual(trafficGroupPayload(reopened), original);
+  const fullQuota = { ...reopened, limit_gb: 0.03 };
+  assert.equal(validateTrafficGroups([fullQuota], 0.03, [1], { 1: 0.03 }), "");
+  assert.equal(validateTrafficGroups([trafficGroupDraft(trafficGroupPayload(fullQuota))], 0.03, [1], { 1: 0.03 }), "");
+  assert.match(validateTrafficGroups([{ ...reopened, limit_gb: 32212255 / TRAFFIC_GB }], 0.03, [1], {}), /套餐总额度/);
+  assert.match(validateTrafficGroups([reopened], 0.03, [1], { 1: 10737419 / TRAFFIC_GB }), /单节点流量额度不能超过/);
 });
 
 test("all unsupported execution modes show Chinese warnings", () => {
