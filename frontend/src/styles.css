@@ -7302,3 +7302,11 @@ button {
 .node-speedtest-table { width: 100%; border-collapse: collapse; }
 .node-speedtest-table th, .node-speedtest-table td { padding: 8px; white-space: nowrap; border-bottom: 1px solid var(--line); text-align: left; }
 .node-speedtest-table td svg { width: 16px; height: 16px; vertical-align: middle; }
+
+.package-node-details { font-size: var(--package-font-min); }
+.package-node-details summary { cursor: pointer; color: var(--muted); }
+.package-node-details > div { display: flex; justify-content: space-between; gap: 12px; padding-top: 8px; }
+.package-node-details strong { overflow-wrap: anywhere; }
+.package-node-details span { flex-shrink: 0; color: var(--muted); }
+.package-node-drag { touch-action: none; cursor: grab; justify-self: start; }
+.package-auto-rules { display: grid; gap: 12px; margin-bottom: 12px; }

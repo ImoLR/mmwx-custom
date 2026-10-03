@@ -871,6 +871,16 @@ export type PackageTemplate = {
   type?: "clash" | "surge" | string;
 };
 
+export type PackageAutoSpeedRule = {
+  type: "sustained" | "burst" | string;
+  threshold_mbps: number;
+  sustained_seconds: number;
+  window_seconds: number;
+  burst_count: number;
+  limit_mbps: number;
+  limit_duration: number;
+};
+
 export type ManagedPackage = {
   id: number;
   name: string;
@@ -889,6 +899,9 @@ export type ManagedPackage = {
   node_traffic_limits?: Record<number, number> | null;
   speed_limit_mbps: number;
   device_limit: number;
+  ip_limit?: number;
+  ip_over_limit_action?: "reject" | "kick_oldest" | string;
+  auto_speed_rules?: PackageAutoSpeedRule[] | null;
   forward_rule_limit: number;
   forward_port_limit: number;
   forward_speed_mbps: number;
@@ -898,6 +911,7 @@ export type ManagedPackage = {
   traffic_mode: "oneway" | "twoway" | string;
   template_filename?: string;
   surge_template_filename?: string;
+  loon_template_filename?: string;
   created_at?: string;
   updated_at?: string;
 };
@@ -913,6 +927,10 @@ export type PackagePayload = Omit<ManagedPackage, "id" | "nodes_configured" | "s
   forward_chains: number[];
   template_filename: string;
   surge_template_filename: string;
+  loon_template_filename: string;
+  ip_limit: number;
+  ip_over_limit_action: "reject" | "kick_oldest" | string;
+  auto_speed_rules: PackageAutoSpeedRule[];
 };
 
 export type PackagesResponse = { packages?: ManagedPackage[] };

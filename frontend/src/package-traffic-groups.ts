@@ -33,7 +33,7 @@ export function validateTrafficGroups(groups: PackageTrafficGroupDraft[], packag
     if ([...group.name.trim()].length > 100) return "共享组名称不能超过 100 个字符";
     if (!Number.isFinite(group.limit_gb) || limitBytes < 1) return `${label}的共享额度必须大于 0 GB`;
     if (!Number.isSafeInteger(limitBytes)) return `${label}的共享额度过大`;
-    if (limitBytes > packageLimitBytes) return `${label}的共享额度不能超过套餐总额度`;
+    if (packageLimitGB > 0 && limitBytes > packageLimitBytes) return `${label}的共享额度不能超过套餐总额度`;
     if (group.node_ids.length === 0) return `${label}至少需要一个节点`;
     for (const nodeId of group.node_ids) {
       if (!allowed.has(nodeId)) return `${label}包含未关联到套餐的节点 ${nodeId}`;
