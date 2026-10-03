@@ -3439,6 +3439,9 @@ button {
 }
 
 .node-tag-filter summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-height: 40px;
   cursor: pointer;
   line-height: 40px;
