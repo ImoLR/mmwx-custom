@@ -170,14 +170,25 @@ func TestCoreClientFallsBackToV2ConfigDuringRollingUpgrade(t *testing.T) {
 			t.Errorf("decode request: %v", err)
 		}
 		if requests == 1 {
+			if _, exists := body["blocked_identities"]; !exists {
+				t.Error("v7 config was not attempted first")
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"json: unknown field blocked_identities"}`))
+			return
+		}
+		if requests == 2 {
 			if _, exists := body["management_mappings"]; !exists {
-				t.Error("v5 config was not attempted first")
+				t.Error("v6 compatibility config lost management mappings")
+			}
+			if _, exists := body["blocked_identities"]; exists {
+				t.Error("v6 compatibility config still contained traffic blocks")
 			}
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"json: unknown field max_total_connections"}`))
 			return
 		}
-		if requests == 2 {
+		if requests == 3 {
 			if _, exists := body["management_mappings"]; !exists {
 				t.Error("v4 compatibility config lost management mappings")
 			}
@@ -191,12 +202,14 @@ func TestCoreClientFallsBackToV2ConfigDuringRollingUpgrade(t *testing.T) {
 		_, _ = w.Write([]byte(`{"success":true}`))
 	}))
 	settings := defaultConnectionSettings()
+	settings.BlockedIdentities = []coreIdentity{{InboundTag: "in-a", User: "proto-a"}}
 	settings.ManagementMappings = []managementMapping{{Identity: coreIdentity{InboundTag: "in-a", User: "proto-a"}, Group: "ken"}}
-	if err := newCoreClient(path).apply(context.Background(), settings); err != nil {
+	client := newCoreClient(path)
+	if err := client.apply(context.Background(), settings); err != nil {
 		t.Fatal(err)
 	}
-	if requests != 3 {
-		t.Fatalf("requests=%d, want 3", requests)
+	if requests != 4 || client.trafficBlockSupported {
+		t.Fatalf("requests=%d, supported=%t, want 4/false", requests, client.trafficBlockSupported)
 	}
 }
 

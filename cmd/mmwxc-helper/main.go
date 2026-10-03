@@ -24,7 +24,7 @@ const (
 	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
 	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
 	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
-	helperVersion        = "v0.6.7"
+	helperVersion        = "v0.6.8"
 )
 
 type config struct {
@@ -184,7 +184,7 @@ func main() {
 			state.PendingResult = nil
 		}
 		state.ControllerConnectedAt = time.Now().UTC()
-		state.Settings = response.Settings
+		state.updateSettings(response.Settings)
 		if response.Command != nil && !completedCommand(state.CompletedCommandIDs, response.Command.ID) {
 			commandCtx, cancelCommand := context.WithTimeout(context.Background(), 31*time.Minute)
 			result := executor.execute(commandCtx, *response.Command, cfg.Token)
@@ -357,7 +357,7 @@ func collectDetailedSnapshot(ctx context.Context, core *coreClient, tracker *onl
 		snapshot.Core = coreStatus{Available: false, Error: coreErr.Error()}
 		return snapshot
 	}
-	snapshot.Core = coreStatus{Available: true, Version: coreSnapshot.Version, StartedAt: coreSnapshot.StartedAt}
+	snapshot.Core = coreStatus{Available: true, Version: coreSnapshot.Version, StartedAt: coreSnapshot.StartedAt, TrafficBlockSupported: coreSnapshot.Version >= 7 && core.trafficBlockSupported}
 	snapshot.Global = coreSnapshot.Global
 	snapshot.ManagementGroups = append([]managementGroupSnapshot(nil), coreSnapshot.ManagementGroups...)
 	snapshot.Inbounds, snapshot.ProxyUsers = tracker.aggregate(sockets, coreSnapshot, settings)

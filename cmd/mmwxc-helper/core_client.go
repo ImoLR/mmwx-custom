@@ -12,7 +12,8 @@ import (
 )
 
 type coreClient struct {
-	client *http.Client
+	client                *http.Client
+	trafficBlockSupported bool
 }
 
 func newCoreClient(socketPath string) *coreClient {
@@ -46,14 +47,27 @@ func (client *coreClient) snapshot(ctx context.Context) (coreSnapshotResponse, e
 	if err := decoder.Decode(&snapshot); err != nil {
 		return coreSnapshotResponse{}, fmt.Errorf("decode core snapshot: %w", err)
 	}
-	if snapshot.Version < 1 || snapshot.Version > 6 {
+	if snapshot.Version < 1 || snapshot.Version > 7 {
 		return coreSnapshotResponse{}, fmt.Errorf("unsupported core interface version %d", snapshot.Version)
 	}
 	return snapshot, nil
 }
 
 func (client *coreClient) apply(ctx context.Context, settings connectionSettings) error {
-	unknownFields, err := client.applyConfig(ctx, settings.coreConfig())
+	client.trafficBlockSupported = false
+	config := settings.coreConfig()
+	unknownFields, err := client.applyConfig(ctx, config)
+	if err == nil {
+		client.trafficBlockSupported = true
+		return nil
+	}
+	if !unknownFields {
+		return err
+	}
+	// Older Cores must keep their supported limits, but must not be reported
+	// as enforcing traffic blocks when the blocking field was rejected.
+	config.BlockedIdentities = nil
+	unknownFields, err = client.applyConfig(ctx, config)
 	if err == nil {
 		return nil
 	}

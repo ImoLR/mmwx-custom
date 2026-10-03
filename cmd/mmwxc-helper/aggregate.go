@@ -182,6 +182,8 @@ func (tracker *onlineIPTracker) aggregate(entries []socketEntry, core coreSnapsh
 		limit := settingsByIdentity[user.Identity]
 		proxyUsers = append(proxyUsers, proxyUserSnapshot{
 			Identity:                       user.Identity,
+			Blocked:                        user.Blocked,
+			RejectedBlocked:                user.RejectedBlocked,
 			InboundTag:                     user.Identity.InboundTag,
 			User:                           user.Identity.User,
 			InboundPort:                    user.InboundPort,

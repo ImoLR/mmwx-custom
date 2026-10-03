@@ -51,6 +51,9 @@ func loadLocalState(path string) (localState, error) {
 	if state.Settings.Users == nil {
 		state.Settings.Users = []userConnectionSettings{}
 	}
+	if state.Settings.BlockedIdentities == nil {
+		state.Settings.BlockedIdentities = []coreIdentity{}
+	}
 	if state.Settings.Ports == nil {
 		state.Settings.Ports = []portConnectionSettings{}
 	}
@@ -61,6 +64,15 @@ func loadLocalState(path string) (localState, error) {
 		state.Settings.ManagementMappings = []managementMapping{}
 	}
 	return state, nil
+}
+
+func (state *localState) updateSettings(settings connectionSettings) {
+	// An omitted list means the controller has no fresh traffic decision.
+	// Only an explicit empty list clears the last persisted blocks.
+	if settings.BlockedIdentities == nil {
+		settings.BlockedIdentities = state.Settings.BlockedIdentities
+	}
+	state.Settings = settings
 }
 
 func saveLocalState(path string, state localState) error {

@@ -25,6 +25,8 @@ type coreIdentity struct {
 
 type coreUserSnapshot struct {
 	Identity                       coreIdentity   `json:"identity"`
+	Blocked                        bool           `json:"blocked"`
+	RejectedBlocked                uint64         `json:"rejected_blocked"`
 	InboundName                    string         `json:"inbound_name,omitempty"`
 	InboundPort                    uint32         `json:"inbound_port,omitempty"`
 	OutboundTag                    string         `json:"outbound_tag,omitempty"`
@@ -156,6 +158,7 @@ type machineProtectionStatus struct {
 }
 
 type connectionSettings struct {
+	BlockedIdentities              []coreIdentity             `json:"blocked_identities"`
 	MachineProtection              *machineProtectionSettings `json:"machine_protection,omitempty"`
 	DefaultCloseWaitTimeoutSeconds *int64                     `json:"default_close_wait_timeout_seconds"`
 	OnlineIPGracePeriodSeconds     int64                      `json:"online_ip_grace_period_seconds"`
@@ -192,6 +195,7 @@ type managementMapping struct {
 }
 
 type coreConfig struct {
+	BlockedIdentities              *[]coreIdentity          `json:"blocked_identities,omitempty"`
 	DefaultCloseWaitTimeoutSeconds *int64                   `json:"default_close_wait_timeout_seconds"`
 	OnlineIPGracePeriodSeconds     int64                    `json:"online_ip_grace_period_seconds"`
 	MaxGlobalTotalConnections      *int64                   `json:"max_global_total_connections"`
@@ -281,6 +285,8 @@ type inboundSnapshot struct {
 
 type proxyUserSnapshot struct {
 	Identity                       coreIdentity   `json:"identity"`
+	Blocked                        bool           `json:"blocked"`
+	RejectedBlocked                uint64         `json:"rejected_blocked"`
 	InboundTag                     string         `json:"inbound_tag"`
 	User                           string         `json:"user"`
 	InboundPort                    uint32         `json:"inbound_port,omitempty"`
@@ -325,10 +331,11 @@ type proxyUserSnapshot struct {
 }
 
 type coreStatus struct {
-	Available bool      `json:"available"`
-	Version   int       `json:"interface_version,omitempty"`
-	StartedAt time.Time `json:"started_at,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	TrafficBlockSupported bool      `json:"traffic_block_supported"`
+	Available             bool      `json:"available"`
+	Version               int       `json:"interface_version,omitempty"`
+	StartedAt             time.Time `json:"started_at,omitempty"`
+	Error                 string    `json:"error,omitempty"`
 }
 
 type detailedConnectionSnapshot struct {
@@ -359,11 +366,13 @@ type detailedMetricsResponse struct {
 }
 
 func defaultConnectionSettings() connectionSettings {
-	return connectionSettings{OnlineIPGracePeriodSeconds: 30, Users: []userConnectionSettings{}, Ports: []portConnectionSettings{}, ManagementUsers: []managementUserSettings{}, ManagementMappings: []managementMapping{}}
+	return connectionSettings{BlockedIdentities: []coreIdentity{}, OnlineIPGracePeriodSeconds: 30, Users: []userConnectionSettings{}, Ports: []portConnectionSettings{}, ManagementUsers: []managementUserSettings{}, ManagementMappings: []managementMapping{}}
 }
 
 func (settings connectionSettings) coreConfig() coreConfig {
+	blockedIdentities := append([]coreIdentity{}, settings.BlockedIdentities...)
 	config := coreConfig{
+		BlockedIdentities:              &blockedIdentities,
 		DefaultCloseWaitTimeoutSeconds: settings.DefaultCloseWaitTimeoutSeconds,
 		OnlineIPGracePeriodSeconds:     settings.OnlineIPGracePeriodSeconds,
 		MaxGlobalInboundConnections:    settings.MaxGlobalInboundConnections,
