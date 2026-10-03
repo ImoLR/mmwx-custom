@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, Plus, Trash2, X } from "lucide-react";
+import { Loader2, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { controlRemoteService, fetchRemoteRouting, fetchXrayOutbounds, mutateRemoteOutbound, mutateRemoteRouting } from "./api";
 import { nodeRoutingQuickRules, nodeRuleName, routingAppliedHot, splitNodeRoutingRules, withRoutingTarget } from "./node-routing-logic";
 import type { IndexedNodeRule, NodeRoutingRule } from "./node-routing-logic";
@@ -38,10 +38,15 @@ export function NodeRoutingDialog({ token, node, server, onChanged, onClose, onN
         try { await mutateRemoteOutbound(token, server.id, { action: "remove", tag: removedTag }); } catch { /* Match the official best-effort outbound cleanup. */ }
       }
       const hot = routingAppliedHot(response);
+      let restartError = "";
       if (!hot) {
-        try { await controlRemoteService(token, server.id, "xray", "restart"); } catch { /* Official routing mutations tolerate restart errors. */ }
+        try {
+          const restarted = await controlRemoteService(token, server.id, "xray", "restart");
+          if (restarted.success === false) throw new Error(restarted.message || "重启 Xray 失败");
+        } catch (reason) { restartError = reason instanceof Error ? reason.message : "重启 Xray 失败"; }
       }
-      onNotice("success", removed ? hot ? "路由规则已删除并热生效 (未重启 Xray)" : "路由规则已删除并重启 Xray" : hot ? "路由规则已添加并热生效 (未重启 Xray)" : "路由规则已添加并重启 Xray");
+      if (restartError) onNotice("error", `路由规则已${removed ? "删除" : "添加"}，但重启 Xray 失败: ${restartError}`);
+      else onNotice("success", removed ? hot ? "路由规则已删除并热生效 (未重启 Xray)" : "路由规则已删除并重启 Xray" : hot ? "路由规则已添加并热生效 (未重启 Xray)" : "路由规则已添加并重启 Xray");
       setCustom(false); setQuick(null); setMatch(""); setMark(""); setTarget("");
       await load(); await onChanged?.();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "路由配置失败"); }
@@ -56,7 +61,7 @@ export function NodeRoutingDialog({ token, node, server, onChanged, onClose, onN
   return <div className="node-dialog-layer" role="presentation" onClick={busy ? undefined : onClose}><section className="node-dialog node-tool-dialog" role="dialog" aria-modal="true" aria-label="节点路由" onClick={(event) => event.stopPropagation()}>
     <header><div><h2>节点路由 — {node.node_name}</h2><p>服务器: {server.name} | 入站: {inboundTag}</p></div><button type="button" disabled={busy} onClick={onClose} aria-label="关闭"><X /></button></header>
     <div className="node-dialog-body">
-      {error && <p className="node-error" role="alert">{error}</p>}
+      {error && <div role="alert"><p className="node-error">{error}</p><button type="button" disabled={busy || loading} onClick={() => { setError(""); setLoading(true); void load().catch((reason) => setError(reason instanceof Error ? reason.message : "加载路由配置失败")).finally(() => setLoading(false)); }}><RefreshCw />重试</button></div>}
       {loading ? <div className="node-empty"><Loader2 className="spin" />加载路由配置...</div> : <>
         <section className="node-subpanel"><h3>专属路由规则 ({split.dedicatedRules.length})</h3><p>针对此入站</p><div className="node-tool-list">{split.dedicatedRules.map(renderRule)}</div>{!split.dedicatedRules.length && <p>无专属规则，流量将按全局规则处理</p>}</section>
         {split.catchAll && <p className="node-error">全部流量已被路由到 {String(split.catchAll.rule.balancerTag || split.catchAll.rule.outboundTag || "未设置")}，后续全局规则和默认出站不再生效</p>}
