@@ -89,6 +89,11 @@ for arch in amd64 arm64; do
 done
 
 install -m 0755 "$ROOT_DIR/scripts/install-helper.sh" "$RELEASE_DIR/install-helper.sh"
+HELPER_VERSION="$(sed -n 's/^[[:space:]]*helperVersion[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT_DIR/cmd/mmwxc-helper/main.go")"
+if [[ ! "$HELPER_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Unable to read Helper version from cmd/mmwxc-helper/main.go." >&2
+  exit 1
+fi
 cat >"$RELEASE_DIR/core-build-info.txt" <<EOF
 repository=https://github.com/ImoLR/Xray-core-mmwx
 branch=custom-connection-control
@@ -97,7 +102,7 @@ EOF
 cat >"$RELEASE_DIR/component-versions.json" <<EOF
 {
   "custom_version": "$TAG",
-  "helper_version": "v0.6.7",
+  "helper_version": "$HELPER_VERSION",
   "core_version": "$(git -C "$CORE_SOURCE_DIR" rev-parse --short=7 HEAD)"
 }
 EOF
