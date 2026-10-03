@@ -1023,7 +1023,7 @@ func analyzeLifecycleInbound(config map[string]any, refs, businessRefs []lifecyc
 	var targets []map[string]any
 	var nonTargets []map[string]any
 	for _, entry := range entries {
-		if lifecycleEntryMatchesRefs(entry, item.Protocol, refs) {
+		if lifecycleEntryMatchesRefs(entry, inbound, item.Protocol, refs) {
 			targets = append(targets, entry)
 		} else {
 			nonTargets = append(nonTargets, entry)
@@ -1043,7 +1043,7 @@ func analyzeLifecycleInbound(config map[string]any, refs, businessRefs []lifecyc
 	for _, entry := range nonTargets {
 		matchedBusiness := false
 		for _, ref := range businessRefs {
-			if lifecycleEntryMatchesRefs(entry, item.Protocol, []lifecycleCredentialRef{ref}) {
+			if lifecycleEntryMatchesRefs(entry, inbound, item.Protocol, []lifecycleCredentialRef{ref}) {
 				matchedBusiness = true
 				matchedBusinessUsers[ref.Username] = true
 			}
@@ -1137,7 +1137,7 @@ func inboundCredentialEntries(inbound map[string]any) ([]map[string]any, string,
 	return entries, key, nil
 }
 
-func lifecycleEntryMatchesRefs(entry map[string]any, protocol string, refs []lifecycleCredentialRef) bool {
+func lifecycleEntryMatchesRefs(entry, inbound map[string]any, protocol string, refs []lifecycleCredentialRef) bool {
 	for _, ref := range refs {
 		if ref.Identity != "" && credentialContainsIdentity(entry, ref.Identity) {
 			return true
@@ -1150,7 +1150,7 @@ func lifecycleEntryMatchesRefs(entry map[string]any, protocol string, refs []lif
 			return true
 		}
 		var rawValues []string
-		if json.Unmarshal([]byte(ref.CredentialRaw), &rawValues) == nil && lifecycleNodeValuesMatch(entry, rawValues) {
+		if json.Unmarshal([]byte(ref.CredentialRaw), &rawValues) == nil && lifecycleNodeValuesMatch(entry, inbound, rawValues) {
 			return true
 		}
 	}
@@ -1175,8 +1175,22 @@ func nonEmptyCredentialValue(value map[string]any, key string) bool {
 	return text != "" && text != "<nil>"
 }
 
-func lifecycleNodeValuesMatch(entry map[string]any, rawValues []string) bool {
-	return len(matchNodeProtocolIdentities(rawValues, []protocolCredential{{Identity: "match", Secrets: credentialSecrets(entry)}})) > 0
+func lifecycleNodeValuesMatch(entry, inbound map[string]any, rawValues []string) bool {
+	return len(matchNodeProtocolIdentities(rawValues, []protocolCredential{{Identity: "match", Secrets: credentialSecrets(entry), SS2022ServerKey: lifecycleInboundSS2022ServerKey(inbound)}})) > 0
+}
+
+func lifecycleInboundSS2022ServerKey(inbound map[string]any) string {
+	protocol, _ := inbound["protocol"].(string)
+	settings, _ := inbound["settings"].(map[string]any)
+	method, _ := settings["method"].(string)
+	if protocol == "shadowsocks" || protocol == "ss" {
+		switch method {
+		case "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305":
+			serverKey, _ := settings["password"].(string)
+			return serverKey
+		}
+	}
+	return ""
 }
 
 func credentialContainsIdentity(credential map[string]any, identity string) bool {

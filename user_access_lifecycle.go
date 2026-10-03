@@ -254,7 +254,23 @@ func analyzeAccessInbound(username string, enable bool, config map[string]any, r
 	for _, ref := range refs {
 		var credential map[string]any
 		if json.Unmarshal([]byte(ref.CredentialRaw), &credential) != nil || len(credential) == 0 {
-			continue
+			var rawValues []string
+			if lifecycleInboundSS2022ServerKey(inbound) == "" || json.Unmarshal([]byte(ref.CredentialRaw), &rawValues) != nil {
+				continue
+			}
+			for _, actual := range entries {
+				if !lifecycleNodeValuesMatch(actual, inbound, rawValues) {
+					continue
+				}
+				if credential != nil {
+					item.Status, item.LastError = lifecycleItemFailed, "节点 credential 对应多个 runtime credential，需要人工检查"
+					return item
+				}
+				credential = actual
+			}
+			if credential == nil {
+				continue
+			}
 		}
 		credentialKey := accessCredentialKey(item.Protocol, credential)
 		if credentialKey == "" || seen[credentialKey] {
