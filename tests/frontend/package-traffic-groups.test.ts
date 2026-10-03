@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TRAFFIC_GB, retainTrafficGroupNodes, trafficGroupDraft, trafficGroupNodeWarning, trafficGroupPayload, validateTrafficGroups } from "../../frontend/src/package-traffic-groups.ts";
+import { TRAFFIC_GB, retainTrafficGroupNodes, trafficGroupDraft, trafficGroupNodeWarning, trafficGroupPayload, trafficGroupUsageStatus, validateTrafficGroups } from "../../frontend/src/package-traffic-groups.ts";
 
 const group = () => ({ name: "亚洲", limit_gb: 50, node_ids: [1, 2] });
 
@@ -62,4 +62,18 @@ test("all unsupported execution modes show Chinese warnings", () => {
     assert.match(trafficGroupNodeWarning({ ...node, status }), /无法强制执行/);
   }
   assert.match(trafficGroupNodeWarning({ ...node, status: "no_identity", reason: "多个节点共用身份" }), /多个节点共用身份/);
+});
+
+
+test("over-quota usage distinguishes desired blocking from actual enforcement", () => {
+  const row = { used_bytes: 100, limit_bytes: 100, blocked: true, nodes: [{ node_id: 1, node_name: "A", server_name: "server", status: "enforced" as const }] };
+  assert.equal(trafficGroupUsageStatus({ ...row, used_bytes: 99 }).overQuota, false);
+  assert.equal(trafficGroupUsageStatus(row).label, "已超额 · 待执行确认");
+  assert.match(trafficGroupUsageStatus(row).warning, /实际执行结果.*确认/);
+  const unsafe = { ...row.nodes[0], status: "no_identity" as const };
+  assert.match(trafficGroupUsageStatus({ ...row, nodes: [row.nodes[0], unsafe] }).warning, /部分节点无法执行/);
+  const skipped = trafficGroupUsageStatus({ ...row, blocked: false, nodes: [unsafe] });
+  assert.equal(skipped.label, "已超额 · 无法执行拦截");
+  assert.match(skipped.warning, /仍可能继续产生流量/);
+  assert.match(trafficGroupUsageStatus({ ...row, blocked: false, nodes: [] }).warning, /没有可安全执行/);
 });

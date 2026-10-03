@@ -1,4 +1,4 @@
-import type { PackageTrafficGroupInput, PackageTrafficGroupNode } from "./types";
+import type { PackageTrafficGroupInput, PackageTrafficGroupNode, PackageTrafficGroupUsage } from "./types";
 
 export const TRAFFIC_GB = 1024 ** 3;
 
@@ -55,4 +55,17 @@ export function trafficGroupNodeWarning(node: PackageTrafficGroupNode): string {
     case "no_identity": return `无法安全识别独立用户身份，共享组额度无法强制执行${node.reason ? `：${node.reason}` : ""}`;
     default: return "共享组执行能力未知";
   }
+}
+
+export function trafficGroupUsageStatus(row: Pick<PackageTrafficGroupUsage, "used_bytes" | "limit_bytes" | "blocked" | "nodes">) {
+  const overQuota = row.limit_bytes > 0 && row.used_bytes >= row.limit_bytes;
+  if (!overQuota) return { overQuota: false, label: "", warning: "" };
+  const unavailable = row.nodes.length === 0 || row.nodes.some((node) => node.status !== "enforced");
+  return {
+    overQuota: true,
+    label: row.blocked ? "已超额 · 待执行确认" : "已超额 · 无法执行拦截",
+    warning: row.blocked
+      ? `${unavailable ? "部分节点无法执行拦截。" : ""}已生成拦截配置，实际执行结果需在服务器连接状态中确认。`
+      : "当前没有可安全执行拦截的节点，超额后仍可能继续产生流量，请检查节点提醒。",
+  };
 }

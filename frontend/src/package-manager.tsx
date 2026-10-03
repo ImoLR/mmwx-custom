@@ -39,7 +39,7 @@ import type {
   RemoteServer,
   XrayNode,
 } from "./types";
-import { TRAFFIC_GB, retainTrafficGroupNodes, trafficGroupDraft, trafficGroupNodeWarning, trafficGroupPayload, validateTrafficGroups } from "./package-traffic-groups";
+import { TRAFFIC_GB, retainTrafficGroupNodes, trafficGroupDraft, trafficGroupNodeWarning, trafficGroupPayload, trafficGroupUsageStatus, validateTrafficGroups } from "./package-traffic-groups";
 import type { PackageTrafficGroupDraft } from "./package-traffic-groups";
 
 type Notice = { tone: "success" | "error" | "info"; text: string } | null;
@@ -353,7 +353,7 @@ function PackageEditor({ token, pkg, nodes, servers, templates, chains, onClose,
       }
       return next;
     });
-    const allowed = nextNodes.length > 0 ? nextNodes : nodes.map((node) => node.id).filter((id) => !removed.includes(id));
+    const allowed = nextNodes.length > 0 ? nextNodes : nodes.map((node) => node.id);
     setGroups((current) => retainTrafficGroupNodes(current, allowed));
   }
 
@@ -574,11 +574,12 @@ function PackageTrafficUsageDialog({ token, pkg, onClose }: { token: string; pkg
         {error && <div className="package-notice error"><span>{error}</span></div>}
         {loading ? <p className="package-field-help">正在读取共享组用量...</p> : !error && (data?.usage?.length ? data.usage.map((row) => {
           const percent = row.limit_bytes > 0 ? Math.min(100, Math.max(0, row.used_bytes / row.limit_bytes * 100)) : 0;
-          return <article className={`package-group-usage${row.blocked ? " blocked" : ""}`} key={`${row.assignment_id}-${row.username}-${row.group_id}`}>
-            <header><div><strong>{row.username}</strong><span>{row.group_name}</span></div>{row.blocked && <span className="package-group-blocked">已拦截</span>}</header>
+          const status = trafficGroupUsageStatus(row);
+          return <article className={`package-group-usage${status.overQuota ? " blocked" : ""}`} key={`${row.assignment_id}-${row.username}-${row.group_id}`}>
+            <header><div><strong>{row.username}</strong><span>{row.group_name}</span></div>{status.overQuota && <span className="package-group-blocked">{status.label}</span>}</header>
             <div className="package-group-usage-amount"><strong>{formatNumber(row.used_bytes / TRAFFIC_GB)} / {formatNumber(row.limit_bytes / TRAFFIC_GB)} GB</strong><span>{formatNumber(row.limit_bytes > 0 ? row.used_bytes / row.limit_bytes * 100 : 0)}%</span></div>
             <progress max={100} value={percent} aria-label={`${row.username} · ${row.group_name} 用量`} />
-            {row.blocked && row.nodes?.some((node) => node.status !== "enforced") && <p className="package-group-warning">部分节点无法执行拦截，请查看节点提醒。</p>}
+            {status.warning && <p className="package-group-warning">{status.warning}</p>}
             <p className="package-field-help">周期：{formatCycleDate(row.cycle_start)} 至 {formatCycleDate(row.cycle_end)}</p>
             <ul className="package-group-node-status">{(row.nodes ?? []).map(nodeStatus)}</ul>
           </article>;
