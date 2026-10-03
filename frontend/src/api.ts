@@ -990,7 +990,8 @@ export function fetchXrayInbounds(token: string, serverId: number) {
   return request<XrayInboundsResponse>(remoteUrl("/api/admin/remote/inbounds", serverId), token);
 }
 
-export function fetchXrayNodes(token: string) {
+export function fetchXrayNodes(token: string, includePrivate = false) {
+  if (includePrivate) return request<XrayNodesResponse>(joinUrl(MMWX_API_BASE_URL, "/api/admin/nodes?include_private=1"), token);
   return requestOperation<XrayNodesResponse>(token, "c87c168b92b5f22d");
 }
 
