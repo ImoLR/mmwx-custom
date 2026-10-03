@@ -37,6 +37,7 @@ import {
   fetchSpeedTestResults,
   fetchSpeedTesters,
   fetchRoutedOutbounds,
+  fetchXrayNodes,
   mutateRemoteInbound,
   mutateRemoteOutbound,
   mutateRemoteRouting,
@@ -58,7 +59,8 @@ import type {
   XrayNode,
 } from "./types";
 import { chainNodePayload, chainProxyCandidates, relayGroupCandidates, relayGroupPayload } from "./node-manager-logic";
-import { nodeToOutbound } from "./xray-manager";
+import { ManagedNodeCreateDialog, nodeToOutbound } from "./xray-manager";
+import { routedLabelFor } from "./node-routing-logic";
 
 type ToolNotice = (tone: "success" | "error" | "info", text: string) => void;
 
@@ -374,14 +376,10 @@ function landingOutbound(node: XrayNode, domain = "") {
   return outbound;
 }
 
-function routedLabelFor(node: XrayNode) {
-  const clean = node.node_name.normalize("NFKD").replace(/[^a-zA-Z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 27);
-  return `rout-${clean || node.id}`.slice(0, 32);
-}
-
-export function LandingNodeDialog({ token, source, nodes, servers, onChanged, onClose, onNotice }: { token: string; source: XrayNode; nodes: XrayNode[]; servers: RemoteServer[]; onChanged: () => Promise<void>; onClose: () => void; onNotice: ToolNotice }) {
+export function LandingNodeDialog({ token, username, source, nodes, servers, onChanged, onClose, onNotice }: { token: string; username: string; source: XrayNode; nodes: XrayNode[]; servers: RemoteServer[]; onChanged: () => Promise<void>; onClose: () => void; onNotice: ToolNotice }) {
   const [scope, setScope] = useState<"all" | "routed">("all");
-  const [tab, setTab] = useState<"nodes" | "balancer">("nodes");
+  const [tab, setTab] = useState<"nodes" | "servers" | "balancer">("nodes");
+  const [createServer, setCreateServer] = useState<RemoteServer | null>(null);
   const [query, setQuery] = useState("");
   const [targetId, setTargetId] = useState(0);
   const [label, setLabel] = useState("");
@@ -403,7 +401,39 @@ export function LandingNodeDialog({ token, source, nodes, servers, onChanged, on
   }, [scope, sourceServer?.id, tab, token]);
   const targets = useMemo(() => nodes.filter((node) => node.id !== source.id && node.node_type !== "routed" && !node.protocol?.includes("⇋") && node.clash_config && `${node.node_name} ${node.protocol || ""} ${node.tag || ""} ${(node.tags || []).join(" ")}`.toLowerCase().includes(query.trim().toLowerCase())), [nodes, query, source.id]);
   const selected = nodes.find((node) => node.id === targetId);
-  const select = (node: XrayNode) => { setTargetId(node.id); if (!label.trim()) setLabel(routedLabelFor(node)); };
+  const select = (node: XrayNode) => { setTargetId(node.id); if (!label.trim()) setLabel(routedLabelFor(node.node_name)); };
+  const applyTarget = async (target: XrayNode, fromCreatedNode = false) => {
+    if (!sourceServer) throw new Error("源节点未关联远程服务器，无法配置出站路由");
+    if (!source.inbound_tag) throw new Error("源节点缺少 inbound_tag，无法配置路由");
+    if (scope === "routed") {
+      const clean = label.trim() || routedLabelFor(target.node_name);
+      if (!/^[a-zA-Z0-9-]{2,32}$/.test(clean)) throw new Error("Label 只能包含字母、数字和短横线，长度 2-32");
+      if (fromCreatedNode) await createRoutedOutbound(token, { parent_node_id: source.id, from_node_id: target.id, label: clean, node_name: `${source.node_name}-${clean}` });
+      else await createRoutedOutbound(token, { parent_node_id: source.id, target_node_id: target.id, label: clean, outbound: landingOutbound(target), node_name: `${source.node_name}-${clean}` });
+    } else {
+      const domain = target.original_server ? servers.find((server) => server.name === target.original_server)?.domain?.trim() || "" : "";
+      await setNodeWholeOutbound(token, source.id, { outbound: landingOutbound(target, domain), target_node_id: target.id });
+    }
+  };
+  const inboundCreated = async (server: RemoteServer, tag: string) => {
+    setBusy(true);
+    try {
+      await new Promise((resolve) => window.setTimeout(resolve, 800));
+      const response = await fetchXrayNodes(token);
+      await onChanged();
+      const target = (response.nodes || []).find((node) => node.original_server === server.name && node.inbound_tag === tag);
+      if (!target) { onNotice("info", "入站已创建，但未找到同步的节点，请手动配置落地"); onClose(); return; }
+      setTargetId(target.id);
+      if (!label.trim()) setLabel(routedLabelFor(target.node_name));
+      setTab("nodes");
+      try { await applyTarget(target, true); }
+      catch (error) { onNotice("error", error instanceof Error ? error.message : "创建落地失败"); return; }
+      await onChanged();
+      onNotice("success", scope === "routed" ? "路由出站创建成功,套餐分配该节点的用户会自动开子账号" : "落地节点配置成功（出站+路由已添加）");
+      onClose();
+    } catch (error) { onNotice("error", `入站已创建，${error instanceof Error ? error.message : "创建落地失败"}`); }
+    finally { setBusy(false); setCreateServer(null); }
+  };
   const save = async () => {
     if (!sourceServer) throw new Error("源节点未关联远程服务器，无法配置出站路由");
     if (!source.inbound_tag) throw new Error("源节点缺少 inbound_tag，无法配置路由");
@@ -412,29 +442,25 @@ export function LandingNodeDialog({ token, source, nodes, servers, onChanged, on
       if (scope === "all" && tab === "balancer") {
         if (!balancerTag) throw new Error("请选择负载均衡器");
         await setNodeWholeOutbound(token, source.id, { balancer_tag: balancerTag });
-      } else if (scope === "all") {
-        if (!selected) throw new Error("请选择落地节点");
-        const domain = selected.original_server ? servers.find((server) => server.name === selected.original_server)?.domain?.trim() || "" : "";
-        await setNodeWholeOutbound(token, source.id, { outbound: landingOutbound(selected, domain), target_node_id: selected.id });
       } else {
         if (!selected) throw new Error("请选择落地节点");
-        const clean = label.trim();
-        if (!/^[a-zA-Z0-9-]{2,32}$/.test(clean)) throw new Error("Label 只能包含字母、数字和短横线，长度 2-32");
-        await createRoutedOutbound(token, { parent_node_id: source.id, target_node_id: selected.id, label: clean, outbound: landingOutbound(selected), node_name: `${source.node_name}-${clean}` });
+        await applyTarget(selected);
       }
       await onChanged(); onNotice("success", scope === "routed" ? "路由出站子节点已创建" : tab === "balancer" ? "负载均衡器路由已绑定到入站" : "落地节点配置成功（出站+路由已添加）"); onClose();
     } finally { setBusy(false); }
   };
-  return <ToolDialog title="新增落地节点" subtitle={`为「${source.node_name}」选择落地节点`} onClose={onClose}>
-    <div className="node-subpanel"><h3>作用范围</h3><div className="node-dialog-tabs"><button className={scope === "all" ? "active" : ""} onClick={() => setScope("all")}><strong>整个节点</strong><small>源入站的所有用户共享此落地</small></button><button className={scope === "routed" ? "active" : ""} onClick={() => setScope("routed")}><strong>子节点（路由出站）</strong><small>创建可单独加入套餐的虚拟子节点</small></button></div></div>
-    {scope === "all" && <div className="node-dialog-tabs"><button className={tab === "nodes" ? "active" : ""} onClick={() => setTab("nodes")}>选择落地节点</button><button className={tab === "balancer" ? "active" : ""} onClick={() => setTab("balancer")}>选择负载均衡器</button></div>}
-    {scope === "all" && tab === "balancer" ? <><p>在源服务器添加一条路由规则:入站 → 负载均衡器(不创建出站,不创建节点)</p>{loadingBalancers ? <ToolLoading /> : balancerError ? <div className="node-empty">{balancerError}</div> : <div className="node-tool-list selectable">{balancers.map((item) => <label key={String(item.tag)}><input type="radio" name="landing-balancer" checked={balancerTag === item.tag} onChange={() => setBalancerTag(String(item.tag))} /><div><strong>{String(item.tag)}</strong><p>{String(typeof item.strategy === "object" && item.strategy ? (item.strategy as Record<string, unknown>).type || "random" : item.strategy || "random")} · {Array.isArray(item.selector) ? item.selector.join(", ") : "—"}</p></div></label>)}{!balancers.length && <div className="node-empty">源服务器未配置负载均衡器,请先在「Xray 管理 → 路由 → 负载均衡器」中创建</div>}</div>}</> : <>
+  if (createServer) return <ManagedNodeCreateDialog servers={[createServer]} token={token} username={username} onClose={() => setCreateServer(null)} onCreated={onChanged} onInboundCreated={inboundCreated} />;
+  return <ToolDialog title="新增落地节点" subtitle={`为 "${source.node_name}" 选择落地节点或服务器`} onClose={onClose}>
+    <div className="node-subpanel"><h3>作用范围</h3><div className="node-dialog-tabs"><button className={scope === "all" ? "active" : ""} onClick={() => setScope("all")}><strong>整个节点</strong><small>源入站的所有用户共享此落地</small></button><button className={scope === "routed" ? "active" : ""} onClick={() => { setScope("routed"); if (tab === "balancer") setTab("nodes"); }}><strong>子节点（路由出站）</strong><small>创建可单独加入套餐的虚拟子节点</small></button></div></div>
+    <div className="node-dialog-tabs"><button className={tab === "nodes" ? "active" : ""} onClick={() => setTab("nodes")}>选择落地节点</button><button className={tab === "servers" ? "active" : ""} onClick={() => setTab("servers")}>选择服务器</button>{scope === "all" && <button className={tab === "balancer" ? "active" : ""} onClick={() => setTab("balancer")}>选择负载均衡器</button>}</div>
+    {tab === "servers" ? <><p>选择服务器后将创建新入站，并自动配置出站和路由规则</p><div className="node-tool-list">{servers.filter((server) => server.status === "connected" && server.name !== sourceServerName).map((server) => <article key={server.id}><div><strong>{server.name}</strong><p>{server.domain || server.ip_address || server.pull_address}</p></div><button type="button" disabled={busy || !sourceServer || !source.inbound_tag} onClick={() => setCreateServer(server)}><Plus />创建落地入站</button></article>)}{!servers.some((server) => server.status === "connected" && server.name !== sourceServerName) && <div className="node-empty">无可用的其他服务器</div>}</div></> :
+    scope === "all" && tab === "balancer" ? <><p>在源服务器添加一条路由规则:入站 → 负载均衡器(不创建出站,不创建节点)</p>{loadingBalancers ? <ToolLoading /> : balancerError ? <div className="node-empty">{balancerError}</div> : <div className="node-tool-list selectable">{balancers.map((item) => <label key={String(item.tag)}><input type="radio" name="landing-balancer" checked={balancerTag === item.tag} onChange={() => setBalancerTag(String(item.tag))} /><div><strong>{String(item.tag)}</strong><p>{String(typeof item.strategy === "object" && item.strategy ? (item.strategy as Record<string, unknown>).type || "random" : item.strategy || "random")} · {Array.isArray(item.selector) ? item.selector.join(", ") : "—"}</p></div></label>)}{!balancers.length && <div className="node-empty">源服务器未配置负载均衡器,请先在「Xray 管理 → 路由 → 负载均衡器」中创建</div>}</div>}</> : <>
     <div className="node-inline-input"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索节点名称、协议或标签..." /></div>
     <p>自动排除链式代理节点和源节点自身</p>
     <div className="node-tool-list selectable node-landing-targets">{targets.map((node) => <label key={node.id} className={targetId === node.id ? "selected" : ""}><input type="radio" name="landing-target" checked={targetId === node.id} onChange={() => select(node)} /><div><strong>{node.node_name}</strong><p>{(node.protocol || "node").toUpperCase()} · {node.original_server || "外部节点"}</p><p>{(node.tags || []).join(" · ")}</p></div></label>)}{!targets.length && <div className="node-empty">没有可用的落地节点</div>}</div>
     {scope === "routed" && <div className="node-form-grid"><label className="wide"><span>Label</span><input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="例如 rout-HK" /><small>仅允许字母、数字和短横线，长度 2-32；选择节点后会自动填写。</small></label></div>}
     {selected && <div className="node-selected-target"><Check /><span>已选择</span><strong>{selected.node_name}</strong></div>}</>}
-    <div className="node-dialog-actions"><button type="button" onClick={onClose}>取消</button><button className="primary" type="button" disabled={busy || (scope === "all" && tab === "balancer" ? !balancerTag : !selected) || (scope === "routed" && !/^[a-zA-Z0-9-]{2,32}$/.test(label.trim()))} onClick={() => void save().catch((error) => onNotice("error", error instanceof Error ? error.message : "配置失败"))}><Plus />{scope === "routed" ? "创建路由出站" : tab === "balancer" ? "确认绑定" : "保存落地"}</button></div>
+    <div className="node-dialog-actions"><button type="button" onClick={onClose}>取消</button>{tab !== "servers" && <button className="primary" type="button" disabled={busy || (scope === "all" && tab === "balancer" ? !balancerTag : !selected) || (scope === "routed" && !/^[a-zA-Z0-9-]{2,32}$/.test(label.trim()))} onClick={() => void save().catch((error) => onNotice("error", error instanceof Error ? error.message : "配置失败"))}><Plus />{scope === "routed" ? "创建路由出站" : tab === "balancer" ? "确认绑定" : "保存落地"}</button>}</div>
   </ToolDialog>;
 }
 

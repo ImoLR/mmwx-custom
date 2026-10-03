@@ -933,7 +933,7 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
   );
 }
 
-export function ManagedNodeCreateDialog({ servers, token, username, onClose, onCreated }: { servers: RemoteServer[]; token: string; username: string; onClose: () => void; onCreated: () => Promise<void> }) {
+export function ManagedNodeCreateDialog({ servers, token, username, onClose, onCreated, onInboundCreated }: { servers: RemoteServer[]; token: string; username: string; onClose: () => void; onCreated: () => Promise<void>; onInboundCreated?: (server: RemoteServer, tag: string) => Promise<void> }) {
   const connectedServers = servers.filter((value) => value.status === "connected");
   const [serverIds, setServerIds] = useState<Set<number>>(() => new Set(connectedServers[0] ? [connectedServers[0].id] : []));
   const [ipSelections, setIPSelections] = useState<Record<number, { v4: boolean; v6: boolean }>>({});
@@ -1030,7 +1030,8 @@ export function ManagedNodeCreateDialog({ servers, token, username, onClose, onC
         await onCreated();
         throw new Error(`已创建 ${targets.length - failures.length} 台，失败：${failures.join("、")}。请先关闭并检查，不要直接重复提交。`);
       }
-      await onCreated();
+      if (onInboundCreated && targets.length === 1) await onInboundCreated(targets[0], tag);
+      else await onCreated();
       onClose();
     } catch (reason) {
       setError(getError(reason, "添加节点失败"));
