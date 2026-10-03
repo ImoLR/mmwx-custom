@@ -60,7 +60,7 @@ import {
 import { serverRegionFromFields } from "./geo";
 import type { ExternalSyncCandidate, NodeMutationRequest, NodeTunnel, RemoteServer, XrayNode } from "./types";
 import { NodeRoutingDialog } from "./node-routing";
-import { NodeCardExtras, NodeRelayActionDialog, useNodeCardExtras } from "./node-card-extras";
+import { NodeCardBadges, NodeCardExtras, NodeRelayActionDialog, useNodeCardExtras } from "./node-card-extras";
 import { nodeManagedServer } from "./node-card-logic";
 import { NodePackageChip, useNodePackages } from "./node-package-chip";
 import { NodeProbeBadge, NodeProbeDialog, useNodeProbe } from "./node-probe";
@@ -640,11 +640,12 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
                 onRelayGroup={() => setDialog({ kind: "relay-group", node })}
                 onCancelWholeOutbound={() => cancelWholeOutbound(node)}
                 onRouting={node.inbound_tag && nodeManagedServer(node, servers) ? () => setDialog({ kind: "node-routing", node, server: nodeManagedServer(node, servers)! }) : undefined}
-                extras={<><NodeCardExtras node={node} state={cardExtras.cards.get(node.id)} servers={servers}
+                extraActions={<NodeCardExtras node={node} state={cardExtras.cards.get(node.id)} servers={servers}
                   onTunnel={(tunnel) => setDialog({ kind: "relay-action", node, tunnel })}
                   onRelay={() => setDialog({ kind: "relay-action", node })}
                   onRevertChain={(entry) => { if (window.confirm(`切回源服务器地址?\n节点「${node.node_name}」当前经链式隧道入口 ${entry} 连接。切回后将拆除该节点的中转配置,恢复为源服务器地址。`)) void run("切回源服务器地址", async () => { await cancelNodeRelay(token, node.id); await cardExtras.refresh(); }); }}
-                  onSwitchWhole={() => setDialog({ kind: "landing", node })} onCancelWhole={() => cancelWholeOutbound(node)} />
+                  onSwitchWhole={() => setDialog({ kind: "landing", node })} onCancelWhole={() => cancelWholeOutbound(node)} />}
+                extras={<><NodeCardBadges node={node} state={cardExtras.cards.get(node.id)} servers={servers} />
                   <NodePackageChip token={token} nodeId={node.id} loading={packages.loading} memberships={packages.memberships[String(node.id)] || []} packages={packages.packages} onChanged={packages.refresh} onNotice={toolNotice} />
                   <NodeProbeBadge node={node} state={probeStates.get(node.id)} onClick={() => setDialog({ kind: "node-probe" })} />
                 </>}
@@ -793,6 +794,7 @@ function NodeCard({
   onCancelWholeOutbound,
   onRouting,
   extras,
+  extraActions,
   speedActions,
   onCopy,
   onTcping,
@@ -816,6 +818,7 @@ function NodeCard({
   onCancelWholeOutbound: () => void;
   onRouting?: () => void;
   extras: React.ReactNode;
+  extraActions: React.ReactNode;
   speedActions: React.ReactNode;
   onCopy: () => void;
   onTcping: () => void;
@@ -844,7 +847,7 @@ function NodeCard({
         </div>
         <span className="node-protocol">{protocol.toUpperCase() || "NODE"}</span>
       </div>
-      <div className="node-chip-row">
+      <div className="node-chip-row node-card-badges">
         {nodeTags(node).map((item) => <span key={item}>{item}</span>)}
         {node.inbound_tag && <span>入站 {node.inbound_tag}</span>}
         {node.node_type === "routed" && <span>路由出站</span>}
@@ -852,8 +855,8 @@ function NodeCard({
         {transport && <span>{transport}</span>}
         {tls && <span>{tls}</span>}
         {latency && <span className={latency.ok ? "ok" : "bad"}>{latency.loading ? "测试中" : latency.text}</span>}
+        {extras}
       </div>
-      {extras}
       <div className="node-card-footer">
         {speedActions}
         <button className="node-card-menu-button" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen}>
@@ -861,23 +864,26 @@ function NodeCard({
         </button>
       </div>
       {menuOpen && (
-        <div className="node-action-row">
-          <button type="button" onClick={onEdit}><Edit3 /> 编辑名称</button>
-          {(node.inbound_tag || node.original_server || node.tag?.startsWith("远程:")) && node.node_type !== "routed" && <button type="button" onClick={onEditInbound}><Edit3 /> 编辑节点</button>}
-          {onRouting && <button type="button" onClick={onRouting}><Route /> 节点路由</button>}
-          <button type="button" onClick={onChain}><Link2 /> 链式出站</button>
-          <button type="button" onClick={onRelayGroup}><Link2 /> 中转组</button>
-          <button type="button" onClick={onEmoji}><Tags /> 地区 emoji</button>
-          <button type="button" onClick={onResolve}><Server /> 解析 IP</button>
-          <button type="button" onClick={onRestore}><RefreshCw /> 恢复域名</button>
-          <button type="button" onClick={onDetails}><Eye /> 查看配置</button>
-          <button type="button" onClick={onCopy}><Copy /> 复制 URI</button>
-          <button type="button" onClick={onTemp}><Link2 /> 临时订阅</button>
-          <button type="button" onClick={onTcping}><Zap /> TCPing</button>
-          {node.node_type !== "routed" && <button type="button" onClick={onLanding}><Route /> 新增落地节点</button>}
-          {node.inbound_tag && node.node_type !== "routed" && <button type="button" onClick={onCancelWholeOutbound}><Route /> 取消整个节点出站</button>}
-          <button className="danger" type="button" onClick={onDelete}><Trash2 /> 删除</button>
-      </div>
+        <div className="node-card-menu">
+          <div className="node-action-row">
+            <button type="button" onClick={onEdit}><Edit3 /> 编辑名称</button>
+            {(node.inbound_tag || node.original_server || node.tag?.startsWith("远程:")) && node.node_type !== "routed" && <button type="button" onClick={onEditInbound}><Edit3 /> 编辑节点</button>}
+            {onRouting && <button type="button" onClick={onRouting}><Route /> 节点路由</button>}
+            <button type="button" onClick={onChain}><Link2 /> 链式出站</button>
+            <button type="button" onClick={onRelayGroup}><Link2 /> 中转组</button>
+            <button type="button" onClick={onEmoji}><Tags /> 地区 emoji</button>
+            <button type="button" onClick={onResolve}><Server /> 解析 IP</button>
+            <button type="button" onClick={onRestore}><RefreshCw /> 恢复域名</button>
+            <button type="button" onClick={onDetails}><Eye /> 查看配置</button>
+            <button type="button" onClick={onCopy}><Copy /> 复制 URI</button>
+            <button type="button" onClick={onTemp}><Link2 /> 临时订阅</button>
+            <button type="button" onClick={onTcping}><Zap /> TCPing</button>
+            {node.node_type !== "routed" && <button type="button" onClick={onLanding}><Route /> 新增落地节点</button>}
+            {node.inbound_tag && node.node_type !== "routed" && <button type="button" onClick={onCancelWholeOutbound}><Route /> 取消整个节点出站</button>}
+            <button className="danger" type="button" onClick={onDelete}><Trash2 /> 删除</button>
+          </div>
+          {extraActions}
+        </div>
       )}
     </article>
   );

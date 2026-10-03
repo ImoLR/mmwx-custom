@@ -7286,6 +7286,19 @@ button {
 .node-whole-outbound summary { cursor: pointer; }
 .node-card-footer { flex-wrap: wrap; gap: 6px; }
 .node-card-footer .node-action-row { flex: 1; padding: 0; border: 0; }
+.node-card-badges { align-items: center; }
+.node-card-badges span { font-size: var(--node-font-min); }
+.node-card-badges .node-package-chip { min-height: 0; border: 0; padding: 0; background: transparent; justify-content: flex-start; }
+.node-card-badges .node-probe-badge { min-height: 0; padding: 4px 7px; font-size: var(--node-font-min); }
+.node-card-footer { align-items: center; }
+.node-card-footer button { padding: 0 7px; font-size: var(--node-font-min); }
+.node-card-footer button svg { width: 16px; height: 16px; flex-shrink: 0; }
+.node-card-footer .node-card-menu-button { min-width: 0; gap: 3px; }
+.node-card-footer .node-card-menu-button > svg:first-child { display: none; }
+.node-card-footer .node-action-row { flex: 1 1 auto; gap: 6px; }
+.node-card-footer .node-action-row button { flex: 0 1 auto; }
+.node-card-footer .node-action-row button:last-child { width: 34px; font-size: 0; gap: 0; }
+.node-card-menu { display: grid; gap: 8px; min-width: 0; }
 .node-speedtest-table { width: 100%; border-collapse: collapse; }
 .node-speedtest-table th, .node-speedtest-table td { padding: 8px; white-space: nowrap; border-bottom: 1px solid var(--line); text-align: left; }
 .node-speedtest-table td svg { width: 16px; height: 16px; vertical-align: middle; }

@@ -67,18 +67,25 @@ export function useNodeCardExtras(token: string, nodes: XrayNode[], servers: Rem
 }
 
 type CardState = ReturnType<typeof useNodeCardExtras>["cards"] extends Map<number, infer State> ? State : never;
+export function NodeCardBadges({ node, state, servers }: { node: XrayNode; state?: CardState; servers: RemoteServer[] }) {
+  const chain = state?.chain, chainEntry = chain ? servers.find((server) => server.id === chain.entry_server) : undefined;
+  return <>
+    {state?.blocked && <span className="bad">被墙</span>}
+    {node.multiplier != null && node.multiplier !== 1 && <span title={`此节点流量按 ${node.multiplier}× 计入套餐配额`}>×{node.multiplier}</span>}
+    {state?.source && <span>{state.source}</span>}
+    {!!state?.unlock?.total && <span title="解锁服务数量">解锁 {state.unlock.unlocked}/{state.unlock.total}</span>}
+    {!!state?.tunnels.length && <span title={`以下 tunnel 入站转发到此节点:\n${state.tunnels.map((tunnel) => `${tunnel.server_name}:${tunnel.listen_port} → ${tunnel.target_address}:${tunnel.target_port} · ${tunnel.tag}`).join("\n")}`}>被 tunnel 转发</span>}
+    {node.relay_orig_server && <span>中转原服务器 {node.relay_orig_server}:{node.relay_orig_port}</span>}
+    {chain && <span title={`链式隧道路径\n${[...(chain.hops || []).map((hop) => hop.server_name || `#${hop.server_id}`), node.node_name].join(" → ")}`}>链式隧道 {chainEntry?.name || chainEntry?.ip_address || ""}:{chain.entry_port}</span>}
+    {state?.whole && <span>整个节点出站: {state.whole.label}</span>}
+  </>;
+}
+
 export function NodeCardExtras({ node, state, servers, onTunnel, onRelay, onRevertChain, onSwitchWhole, onCancelWhole }: { node: XrayNode; state?: CardState; servers: RemoteServer[]; onTunnel: (tunnel: NodeTunnel) => void; onRelay: () => void; onRevertChain: (entry: string) => void; onSwitchWhole: () => void; onCancelWhole: () => void }) {
   const chain = state?.chain, chainEntry = chain ? servers.find((server) => server.id === chain.entry_server) : undefined;
   const entry = chain ? `${chainEntry?.name || chainEntry?.ip_address || ""}:${chain.entry_port}` : "";
   const parsed = nodeCardConfig(node);
   return <div className="node-card-extras">
-    <div className="node-chip-row">
-      {state?.blocked && <span className="bad">被墙</span>}
-      {node.multiplier != null && node.multiplier !== 1 && <span title={`此节点流量按 ${node.multiplier}× 计入套餐配额`}>×{node.multiplier}</span>}
-      {state?.source && <span>{state.source}</span>}
-      {!!state?.unlock?.total && <span title="解锁服务数量">解锁 {state.unlock.unlocked}/{state.unlock.total}</span>}
-      {!!state?.tunnels.length && <span title={`以下 tunnel 入站转发到此节点:\n${state.tunnels.map((tunnel) => `${tunnel.server_name}:${tunnel.listen_port} → ${tunnel.target_address}:${tunnel.target_port} · ${tunnel.tag}`).join("\n")}`}>被 tunnel 转发</span>}
-    </div>
     {node.relay_orig_server && <button type="button" className="node-state-link" onClick={onRelay} title="点击修改 / 取消中转">中转原服务器 {node.relay_orig_server}:{node.relay_orig_port}</button>}
     {chain && <button type="button" className="node-state-link" onClick={() => onRevertChain(entry)} title={`链式隧道路径\n${[...(chain.hops || []).map((hop) => hop.server_name || `#${hop.server_id}`), node.node_name].join(" → ")}\n点击切回源节点地址`}>链式隧道 {entry}</button>}
     {state?.tunnels.map((tunnel) => {
