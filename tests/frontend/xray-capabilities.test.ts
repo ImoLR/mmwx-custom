@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isInboundProtocolAllowed, supportsCustomCoreFeatures } from "../../frontend/src/xray-capabilities.ts";
+import { supportsCustomCoreFeatures } from "../../frontend/src/xray-capabilities.ts";
 import type { CoreModeResponse } from "../../frontend/src/types.ts";
 
 const now = Date.parse("2026-10-03T12:00:00Z");
 const external = { xray_mode: "external" };
 const embedded = { xray_mode: "embedded" };
-const protocols = ["anytls", "snell", "mieru"];
 
 function ownedCore(): CoreModeResponse {
   return {
@@ -19,23 +18,18 @@ function ownedCore(): CoreModeResponse {
   };
 }
 
-test("Embedded protocols and WARP retain their availability without Helper data", () => {
-  for (const protocol of protocols) assert.equal(isInboundProtocolAllowed(protocol, embedded, undefined, now), true);
+test("Embedded WARP retains its availability without Helper data", () => {
   assert.equal(supportsCustomCoreFeatures(embedded, undefined, now), true);
 });
 
-test("confirmed running Custom Core enables all three protocols and WARP", () => {
-  for (const protocol of protocols) assert.equal(isInboundProtocolAllowed(protocol, external, ownedCore(), now), true);
+test("confirmed running Custom Core enables WARP", () => {
   assert.equal(supportsCustomCoreFeatures(external, ownedCore(), now), true);
 });
 
 test("unknown External status and installed or intended ownership alone cannot enable features", () => {
   const mode = ownedCore();
   mode.agent_status = { core: { installed: true, ready: true }, reported_at: new Date(now).toISOString() };
-  for (const protocol of protocols) {
-    assert.equal(isInboundProtocolAllowed(protocol, external, undefined, now), false);
-    assert.equal(isInboundProtocolAllowed(protocol, external, mode, now), false);
-  }
+  assert.equal(supportsCustomCoreFeatures(external, undefined, now), false);
   assert.equal(supportsCustomCoreFeatures(external, mode, now), false);
 });
 
@@ -62,15 +56,8 @@ test("stale, missing, malformed, and future reports are disabled", () => {
   for (const timestamp of [undefined, "invalid", new Date(now - 15_001).toISOString(), new Date(now + 1).toISOString()]) {
     const mode = ownedCore();
     mode.agent_status!.reported_at = timestamp;
-    for (const protocol of protocols) assert.equal(isInboundProtocolAllowed(protocol, external, mode, now), false);
     assert.equal(supportsCustomCoreFeatures(external, mode, now), false);
   }
   assert.equal(supportsCustomCoreFeatures(external, ownedCore(), now + 15_000), true);
   assert.equal(supportsCustomCoreFeatures(external, ownedCore(), now + 15_001), false);
-});
-
-test("ordinary protocols are unchanged on stock or unknown External Core", () => {
-  for (const protocol of ["vless", "vmess", "shadowsocks", "shadowsocks2022", "socks", "http", "trojan", "hysteria", "tunnel"]) {
-    assert.equal(isInboundProtocolAllowed(protocol, external, undefined, now), true);
-  }
 });

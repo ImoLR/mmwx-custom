@@ -19,7 +19,3 @@ export function supportsCustomCoreFeatures(server: Pick<RemoteServer, "xray_mode
     && ownership.service_active === true
     && ownership.core_ready === true;
 }
-
-export function isInboundProtocolAllowed(protocol: string, server: Pick<RemoteServer, "xray_mode">, mode?: CoreModeResponse, now = Date.now()): boolean {
-  return !["anytls", "snell", "mieru"].includes(protocol.toLowerCase()) || supportsCustomCoreFeatures(server, mode, now);
-}
