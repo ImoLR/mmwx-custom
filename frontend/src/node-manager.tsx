@@ -33,13 +33,14 @@ import {
   batchDisableNodeSkipCert,
   batchRenameNodes,
   batchTcpingNodes,
-  batchUpdateSnellOptions,
   cancelNodeRelay,
   clearNodes,
   copyNodeWithRelay,
   createNode,
   createNodeTempSubscription,
   deleteNode,
+  deleteNodeWholeOutbound,
+  registerExternalSubscription,
   fetchNodeRelatedInbounds,
   fetchNodeSubscription,
   fetchNodeTags,
@@ -58,8 +59,11 @@ import {
 } from "./api";
 import { serverRegionFromFields } from "./geo";
 import type { ExternalSyncCandidate, NodeMutationRequest, RemoteServer, XrayNode } from "./types";
-import { ManagedNodeCreateDialog } from "./xray-manager";
+import { duplicateNodeKey as duplicateKey, duplicateNodeGroups as findDuplicateGroups, subscriptionDefaultTag, batchRenameTransform, matchesNodeSource, moveSelectedNodes } from "./node-manager-logic";
+import { ManagedNodeCreateDialog, ManagedNodeEditDialog } from "./xray-manager";
 import {
+  ChainProxyDialog,
+  RelayGroupDialog,
   ClearNodesConfirmDialog,
   DisableSkipCertDialog,
   ExternalSyncDialog,
@@ -82,6 +86,13 @@ type Notice = { tone: "success" | "error" | "info"; text: string } | null;
 type Dialog =
   | { kind: "details"; node: XrayNode; tab?: "clash" | "parsed" | "raw" | "related" | "temp" }
   | { kind: "edit"; node: XrayNode }
+  | { kind: "chain"; node: XrayNode }
+  | { kind: "relay-group"; node: XrayNode }
+  | { kind: "managed-edit"; node: XrayNode }
+  | { kind: "resolve"; node: XrayNode; ips: string[] }
+  | { kind: "batch-rename" }
+  | { kind: "batch-tag" }
+  | { kind: "batch-temp" }
   | { kind: "duplicates" }
   | { kind: "manual" }
   | { kind: "batch" }
@@ -110,7 +121,8 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
   const [notice, setNotice] = useState<Notice>(null);
   const [query, setQuery] = useState("");
   const [protocol, setProtocol] = useState(ALL);
-  const [tag, setTag] = useState(ALL);
+  const [filterTags, setFilterTags] = useState<string[]>([]);
+  const [sourceFilter, setSourceFilter] = useState<"all" | "manual" | "subscription">("all");
   const [serverName, setServerName] = useState(ALL);
   const [stateFilter, setStateFilter] = useState(ALL);
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
@@ -125,6 +137,8 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
   const [importText, setImportText] = useState("");
   const [subscriptionURL, setSubscriptionURL] = useState("");
   const [subscriptionUA, setSubscriptionUA] = useState("clash.meta");
+  const [customSubscriptionUA, setCustomSubscriptionUA] = useState("");
+  const [parsedSubscriptionURL, setParsedSubscriptionURL] = useState("");
   const [forceSkipCert, setForceSkipCert] = useState(false);
   const [relayEnabled, setRelayEnabled] = useState(false);
   const [relayServer, setRelayServer] = useState("");
@@ -154,7 +168,6 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
       const currentIds = new Set(nextNodes.map((node) => node.id));
       const savedOrder = Array.isArray(configResp.node_order) ? configResp.node_order.map(Number).filter((id) => Number.isFinite(id) && currentIds.has(id)) : [];
       setNodeOrder([...savedOrder, ...nextNodes.map((node) => node.id).filter((id) => !savedOrder.includes(id))]);
-      setNotice(null);
     } catch (err) {
       setNotice({ tone: "error", text: err instanceof Error ? err.message : "读取节点失败" });
     } finally {
@@ -197,7 +210,8 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
       ].join(" ").toLowerCase();
       if (text && !haystack.includes(text)) return false;
       if (protocol !== ALL && currentProtocol !== protocol) return false;
-      if (tag !== ALL && !currentTags.includes(tag)) return false;
+      if (filterTags.length && !currentTags.some((value) => filterTags.includes(value))) return false;
+      if (!matchesNodeSource(node, sourceFilter)) return false;
       if (serverName !== ALL && (node.original_server || "外部节点") !== serverName) return false;
       if (stateFilter === "enabled" && node.enabled === false) return false;
       if (stateFilter === "disabled" && node.enabled !== false) return false;
@@ -205,7 +219,7 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
       if (stateFilter === "routed" && node.node_type !== "routed") return false;
       return true;
     });
-  }, [parsedNodes, protocol, query, serverName, stateFilter, tag]);
+  }, [parsedNodes, protocol, query, serverName, stateFilter, filterTags, sourceFilter]);
 
   const run = useCallback(async (label: string, action: () => Promise<void>) => {
     setBusy(label);
@@ -225,15 +239,21 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
     setBusy(label);
     setNotice(null);
     try {
+      const userAgent = (subscriptionUA === "custom" ? customSubscriptionUA : subscriptionUA).trim();
+      const url = subscriptionURL.trim();
+      if (importMode === "subscription" && subscriptionUA === "custom" && !userAgent) throw new Error("请输入自定义 User-Agent");
       const resp = importMode === "socks5"
         ? buildSocks5ParseResponse(socksName, socksUsername, socksPassword, socksServer, socksPort, importTag)
         : importMode === "subscription"
-          ? await fetchNodeSubscription(token, subscriptionURL.trim(), subscriptionUA.trim(), false)
+          ? await fetchNodeSubscription(token, url, userAgent, false)
           : await parseNodeURIs(token, importText, forceSkipCert);
       const proxies = resp.proxies ?? [];
       setParsedProxies(proxies);
       setParsedImportMode(importMode);
-      if (!importTag.trim() && resp.suggested_tag) setImportTag(resp.suggested_tag);
+      const tag = importMode === "subscription" ? subscriptionDefaultTag(url, importTag, resp.suggested_tag) : importTag.trim() || "手动输入";
+      setImportTag(tag);
+      setParsedSubscriptionURL(importMode === "subscription" ? url : "");
+      if (importMode === "subscription") await registerExternalSubscription(token, { name: splitList(tag)[0] || tag, url, user_agent: userAgent }).catch(() => undefined);
       setNotice({ tone: "success", text: `已解析 ${resp.count ?? proxies.length} 个节点，确认后可保存` });
     } catch (err) {
       setNotice({ tone: "error", text: err instanceof Error ? err.message : `${label}失败` });
@@ -254,15 +274,26 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
       return;
     }
     const batch = parsedProxies.map((proxy) => ({
-      ...proxyToNodeRequest(proxy, importTag.trim()),
+      ...proxyToNodeRequest(proxy, importTag.trim() || (parsedImportMode === "subscription" ? subscriptionDefaultTag(parsedSubscriptionURL) : "手动输入"), parsedSubscriptionURL),
       ...(useRelay ? { relay_server: relayServer.trim(), relay_port: relayPortValue } : {}),
     }));
     await run("保存导入", async () => {
-      await batchCreateNodes(token, batch);
+      const created = await batchCreateNodes(token, batch);
+      const ids = (created.nodes ?? []).map((node) => node.id);
+      if (ids.length) {
+        const next = [...ids, ...nodeOrder.filter((id) => !ids.includes(id))];
+        try {
+          setUserConfig(await updateUserConfig(token, { ...userConfig, node_order: next }));
+          setNodeOrder(next);
+        } catch (error) {
+          setNotice({ tone: "error", text: `节点已导入，但保存置顶顺序失败：${error instanceof Error ? error.message : "请重试排序"}` });
+        }
+      }
       setImportText("");
       setSubscriptionURL("");
       setParsedProxies([]);
       setParsedImportMode(null);
+      setParsedSubscriptionURL("");
       setImportTag("");
       setSocksName("");
       setSocksUsername("");
@@ -344,6 +375,32 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
   );
   const toolNotice = useCallback((tone: "success" | "error" | "info", text: string) => setNotice({ tone, text }), []);
   const trafficName = useNodeTrafficNameSetting(token, toolNotice);
+  const saveOrder = async (next: number[]) => {
+    setBusy("保存节点顺序");
+    setNodeOrder(next);
+    try {
+      setUserConfig(await updateUserConfig(token, { ...userConfig, node_order: next }));
+      setNotice({ tone: "success", text: "节点顺序已保存" });
+    } catch (error) {
+      setNodeOrder(nodeOrder);
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "保存节点顺序失败" });
+    } finally { setBusy(""); }
+  };
+  const addSelectedEmoji = async () => {
+    setBusy("添加地区 Emoji");
+    let success = 0; let skip = 0; let fail = 0;
+    try {
+      for (const node of selectedNodes) {
+        if (/^[\u{1F1E6}-\u{1F1FF}]{2}/u.test(node.node_name)) { skip += 1; continue; }
+        const name = buildRegionNodeName(node, servers);
+        if (!name) { fail += 1; continue; }
+        try { await updateNode(token, node.id, nodeToMutation(node, { node_name: name })); success += 1; }
+        catch { fail += 1; }
+      }
+      await loadNodes();
+      setNotice({ tone: fail || skip ? "info" : "success", text: `成功 ${success}，跳过 ${skip} (已有emoji)，失败 ${fail}` });
+    } finally { setBusy(""); }
+  };
   const onDragEnd = async ({ active, over }: DragEndEvent) => {
     if (!over || active.id === over.id) return;
     const visibleIds = filtered.map(({ node }) => node.id);
@@ -354,15 +411,7 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
     const visible = new Set(visibleIds);
     let cursor = 0;
     const next = nodeOrder.map((id) => visible.has(id) ? nextVisible[cursor++] : id);
-    setNodeOrder(next);
-    try {
-      const saved = await updateUserConfig(token, { ...userConfig, node_order: next });
-      setUserConfig(saved);
-      setNotice({ tone: "success", text: "节点顺序已保存" });
-    } catch (error) {
-      setNodeOrder(nodeOrder);
-      setNotice({ tone: "error", text: error instanceof Error ? error.message : "保存节点顺序失败" });
-    }
+    await saveOrder(next);
   };
   const openTool = (next: NonNullable<Dialog>) => { setMenuOpen(false); setDialog(next); };
 
@@ -435,7 +484,9 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
                     <option value="clash-meta/2.4.0">clash-meta/2.4.0</option>
                     <option value="ClashforWindows/0.20.39">Clash for Windows</option>
                     <option value="v2rayN/6.45">v2rayN</option>
+                    <option value="custom">手动输入</option>
                   </select>
+                  {subscriptionUA === "custom" && <input value={customSubscriptionUA} onChange={(event) => setCustomSubscriptionUA(event.target.value)} placeholder="输入自定义 User-Agent" />}
                 </label>
               </div>
             ) : (
@@ -482,10 +533,13 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
             </div>
             {parsedProxies.length > 0 && (
               <div className="node-preview-list">
-                {parsedProxies.slice(0, 5).map((proxy, index) => (
-                  <span key={`${String(proxy.name)}-${index}`}>{String(proxy.type || "").toUpperCase() || "NODE"} · {String(proxy.name || `节点 ${index + 1}`)}</span>
+                {parsedProxies.map((proxy, index) => (
+                  <label key={index} className="node-inline-input">
+                    <span>{String(proxy.type || "").toUpperCase() || "NODE"}</span>
+                    <input aria-label={`预览节点 ${index + 1} 名称`} value={stringValue(proxy.name)} onChange={(event) => setParsedProxies((current) => current.map((item, i) => i === index ? { ...item, name: event.target.value } : item))} />
+                    <button type="button" aria-label={`移除预览节点 ${index + 1}`} onClick={() => setParsedProxies((current) => current.filter((_, i) => i !== index))}><X /></button>
+                  </label>
                 ))}
-                {parsedProxies.length > 5 && <span>还有 {parsedProxies.length - 5} 个</span>}
               </div>
             )}
           </>
@@ -498,7 +552,12 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、地址、标签、入站、出站" />
         </label>
         <NodeSelect icon={<Filter />} value={protocol} onChange={setProtocol} label="协议" options={[{ value: ALL, label: `全部协议 (${nodes.length})` }, ...protocols.map((item) => ({ value: item.value, label: `${item.value.toUpperCase()} (${item.count})` }))]} />
-        <NodeSelect icon={<Tags />} value={tag} onChange={setTag} label="标签" options={[{ value: ALL, label: `全部标签 (${nodes.length})` }, ...tagOptions.map((item) => ({ value: item.value, label: `${item.value} (${item.count})` })), ...tags.filter((value) => !tagOptions.some((item) => item.value === value)).map((value) => ({ value, label: value }))]} />
+        <details className="node-select node-tag-filter">
+          <summary><Tags />标签{filterTags.length ? ` (${filterTags.length})` : "：全部"}</summary>
+          <button type="button" onClick={() => setFilterTags([])}>全部标签</button>
+          {[...new Set([...tagOptions.map((item) => item.value), ...tags])].map((value) => <label className="node-check" key={value}><input type="checkbox" checked={filterTags.includes(value)} onChange={() => setFilterTags((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value])} /><span>{value} ({tagOptions.find((item) => item.value === value)?.count ?? 0})</span></label>)}
+        </details>
+        <NodeSelect icon={<Filter />} value={sourceFilter} onChange={(value) => setSourceFilter(value as typeof sourceFilter)} label="来源" options={[{ value: "all", label: "全部" }, { value: "manual", label: "手动输入" }, { value: "subscription", label: "订阅导入" }]} />
         <NodeSelect icon={<Server />} value={serverName} onChange={setServerName} label="服务器" options={[{ value: ALL, label: `全部服务器 (${nodes.length})` }, ...serverOptions.map((item) => ({ value: item.value, label: `${item.value} (${item.count})` }))]} />
         <select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)} aria-label="状态筛选">
           <option value={ALL}>全部状态</option>
@@ -521,6 +580,14 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
             <button type="button" onClick={() => setDialog({ kind: "batch" })} disabled={selected.size === 0}>批量</button>
           </div>
         </div>
+        {selectedNodes.length > 0 && <div className="node-dialog-actions">
+          <button type="button" disabled={Boolean(busy)} onClick={() => void addSelectedEmoji()}>添加emoji ({selectedNodes.length})</button>
+          <button type="button" disabled={Boolean(busy)} onClick={() => setDialog({ kind: "batch-rename" })}>修改名称 ({selectedNodes.length})</button>
+          <button type="button" disabled={Boolean(busy)} onClick={() => setDialog({ kind: "batch-tag" })}>管理标签 ({selectedNodes.length})</button>
+          <button type="button" disabled={Boolean(busy)} onClick={() => setDialog({ kind: "batch-temp" })}>生成临时订阅 ({selectedNodes.length})</button>
+          <button type="button" disabled={Boolean(busy)} onClick={() => void testSelected()}>延迟测试 ({selectedNodes.length})</button>
+          {sortMode && (["top", "up", "down", "bottom"] as const).map((direction, index) => <button type="button" key={direction} disabled={Boolean(busy)} onClick={() => void saveOrder(moveSelectedNodes(nodeOrder, selected, direction))}>{["置顶", "上移", "下移", "置底"][index]}</button>)}
+        </div>}
         {loading ? (
           <div className="node-empty"><Loader2 /> 正在读取节点</div>
         ) : filtered.length === 0 ? (
@@ -539,11 +606,18 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
                 onSelect={() => toggleSelected(node.id)}
                 onDetails={() => setDialog({ kind: "details", node })}
                 onEdit={() => setDialog({ kind: "edit", node })}
+                onEditInbound={() => setDialog({ kind: "managed-edit", node })}
+                onChain={() => setDialog({ kind: "chain", node })}
+                onRelayGroup={() => setDialog({ kind: "relay-group", node })}
+                onCancelWholeOutbound={() => void run("取消整个节点出站", async () => {
+                  if (!window.confirm(`将删除“${node.node_name}”的整个节点路由规则及其专用出站配置，但不会删除节点本身。`)) return;
+                  await deleteNodeWholeOutbound(token, node.id);
+                })}
                 onLanding={() => setDialog({ kind: "landing", node })}
                 onCopy={() => void copyNodeURI(token, node, setNotice)}
                 onTcping={() => void testOne(node)}
                 onEmoji={() => void run("添加地区 Emoji", async () => {
-                  const next = buildRegionNodeName(node, servers);
+                  const next = /^[\u{1F1E6}-\u{1F1FF}]{2}/u.test(node.node_name) ? "" : buildRegionNodeName(node, servers);
                   if (!next || next === node.node_name) {
                     setNotice({ tone: "info", text: "没有可添加的地区 Emoji，或节点名称已包含地区 Emoji" });
                     return;
@@ -555,8 +629,10 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
                   const host = stringValue(parsed.server);
                   if (!host) throw new Error("节点缺少 server 字段");
                   const resp = await resolveDNSHostname(token, host);
-                  const ip = resp.ips?.[0] || "";
-                  if (!ip) throw new Error("DNS 未返回可用 IP");
+                  const ips = [...new Set(resp.ips ?? [])];
+                  if (!ips.length) throw new Error("DNS 未返回可用 IP");
+                  if (ips.length > 1) { setDialog({ kind: "resolve", node, ips }); return; }
+                  const ip = ips[0];
                   if (!window.confirm(`确认把 ${host} 改成 ${ip}？原域名可通过“恢复原始域名”恢复。`)) return;
                   await updateNodeServer(token, node.id, ip);
                 })}
@@ -595,14 +671,19 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
         <NodeEditDialog
           token={token}
           node={nodes.find((item) => item.id === dialog.node.id) ?? dialog.node}
-          nodes={nodes}
           servers={servers}
           busy={busy}
           onClose={() => setDialog(null)}
           onRun={run}
-          onNotice={setNotice}
         />
       )}
+      {dialog?.kind === "managed-edit" && <ManagedNodeEditDialog token={token} node={dialog.node} servers={servers} username={username} onClose={() => setDialog(null)} onSaved={loadNodes} />}
+      {dialog?.kind === "chain" && <ChainProxyDialog token={token} source={dialog.node} nodes={nodes} onChanged={loadNodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
+      {dialog?.kind === "relay-group" && <RelayGroupDialog token={token} source={dialog.node} nodes={nodes} onChanged={loadNodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
+      {dialog?.kind === "resolve" && <NodeIPDialog token={token} node={dialog.node} ips={dialog.ips} busy={busy} onClose={() => setDialog(null)} onRun={run} />}
+      {dialog?.kind === "batch-rename" && <BatchRenameDialog token={token} nodes={selectedNodes} busy={busy} onClose={() => setDialog(null)} onRun={run} onNotice={setNotice} />}
+      {dialog?.kind === "batch-tag" && <BatchTagDialog token={token} nodes={selectedNodes} tags={tags} onChanged={loadNodes} busy={busy} onClose={() => setDialog(null)} onRun={run} onNotice={setNotice} />}
+      {dialog?.kind === "batch-temp" && <BatchTempDialog token={token} nodes={selectedNodes} onClose={() => setDialog(null)} onNotice={setNotice} />}
       {dialog?.kind === "duplicates" && (
         <DuplicateNodesDialog
           token={token}
@@ -636,7 +717,7 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
       {dialog?.kind === "add-managed" && <ManagedNodeCreateDialog servers={servers} token={token} username={username} onClose={() => setDialog(null)} onCreated={loadNodes} />}
       {dialog?.kind === "tunnels" && <TunnelManagerDialog token={token} servers={servers} nodes={nodes} onChanged={loadNodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
       {dialog?.kind === "routed" && <RoutedOutboundDialog token={token} nodes={nodes} onChanged={loadNodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
-      {dialog?.kind === "landing" && <LandingNodeDialog token={token} source={nodes.find((item) => item.id === dialog.node.id) ?? dialog.node} nodes={nodes} onChanged={loadNodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
+      {dialog?.kind === "landing" && <LandingNodeDialog token={token} servers={servers} source={nodes.find((item) => item.id === dialog.node.id) ?? dialog.node} nodes={nodes} onChanged={loadNodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
       {dialog?.kind === "speedtest" && <SpeedTestDialog token={token} nodes={nodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
       {dialog?.kind === "uris" && <URIManagerDialog token={token} onClose={() => setDialog(null)} onNotice={toolNotice} />}
       {dialog?.kind === "external-sync" && <ExternalSyncDialog token={token} initial={externalSyncSession} onSession={setExternalSyncSession} onClose={() => setDialog(null)} onNotice={toolNotice} onChanged={loadNodes} />}
@@ -664,6 +745,10 @@ function NodeCard({
   onDetails,
   onEdit,
   onLanding,
+  onEditInbound,
+  onChain,
+  onRelayGroup,
+  onCancelWholeOutbound,
   onCopy,
   onTcping,
   onEmoji,
@@ -680,6 +765,10 @@ function NodeCard({
   onDetails: () => void;
   onEdit: () => void;
   onLanding: () => void;
+  onEditInbound: () => void;
+  onChain: () => void;
+  onRelayGroup: () => void;
+  onCancelWholeOutbound: () => void;
   onCopy: () => void;
   onTcping: () => void;
   onEmoji: () => void;
@@ -725,7 +814,9 @@ function NodeCard({
       {menuOpen && (
         <div className="node-action-row">
           <button type="button" onClick={onEdit}><Edit3 /> 编辑名称</button>
-          <button type="button" onClick={onEdit}><Link2 /> 链式出站</button>
+          {(node.inbound_tag || node.original_server || node.tag?.startsWith("远程:")) && node.node_type !== "routed" && <button type="button" onClick={onEditInbound}><Edit3 /> 编辑节点</button>}
+          <button type="button" onClick={onChain}><Link2 /> 链式出站</button>
+          <button type="button" onClick={onRelayGroup}><Link2 /> 中转组</button>
           <button type="button" onClick={onEmoji}><Tags /> 地区 emoji</button>
           <button type="button" onClick={onResolve}><Server /> 解析 IP</button>
           <button type="button" onClick={onRestore}><RefreshCw /> 恢复域名</button>
@@ -734,6 +825,7 @@ function NodeCard({
           <button type="button" onClick={onTemp}><Link2 /> 临时订阅</button>
           <button type="button" onClick={onTcping}><Zap /> TCPing</button>
           {node.node_type !== "routed" && <button type="button" onClick={onLanding}><Route /> 新增落地节点</button>}
+          {node.inbound_tag && node.node_type !== "routed" && <button type="button" onClick={onCancelWholeOutbound}><Route /> 取消整个节点出站</button>}
           <button className="danger" type="button" onClick={onDelete}><Trash2 /> 删除</button>
       </div>
       )}
@@ -855,7 +947,7 @@ function DuplicateNodesDialog({
   return (
     <NodeDialog title="重复节点检查" subtitle={`发现 ${groups.length} 组可能重复`} onClose={onClose}>
       {groups.length === 0 ? (
-        <div className="node-empty">当前没有发现同协议、同地址、同端口的重复节点</div>
+        <div className="node-empty">当前没有发现名称和 Clash 配置相同的重复节点</div>
       ) : (
         <div className="node-mini-list">
           {groups.map((group, index) => {
@@ -885,29 +977,21 @@ function DuplicateNodesDialog({
 function NodeEditDialog({
   token,
   node,
-  nodes,
   servers,
   busy,
   onClose,
   onRun,
-  onNotice,
 }: {
   token: string;
   node: XrayNode;
-  nodes: XrayNode[];
   servers: RemoteServer[];
   busy: string;
   onClose: () => void;
   onRun: (label: string, action: () => Promise<void>) => Promise<void>;
-  onNotice: (notice: Notice) => void;
 }) {
   const [name, setName] = useState(node.node_name);
   const [enabled, setEnabled] = useState(node.enabled !== false);
   const [tagsValue, setTagsValue] = useState(nodeTags(node).join(", "));
-  const [inboundTag, setInboundTag] = useState(node.inbound_tag || "");
-  const [chainProxyNodeId, setChainProxyNodeId] = useState(node.chain_proxy_node_id ? String(node.chain_proxy_node_id) : "");
-  const [relayGroupName, setRelayGroupName] = useState(node.relay_group_name || "");
-  const [relayGroupIds, setRelayGroupIds] = useState((node.relay_group_node_ids || []).join(", "));
   const [config, setConfig] = useState(prettyJSON(node.clash_config));
   const [serverAddress, setServerAddress] = useState(stringValue(parseNodeConfig(node).server));
   const [relayServer, setRelayServer] = useState("");
@@ -939,10 +1023,10 @@ function NodeEditDialog({
       enabled,
       tag: tags[0] || "",
       tags,
-      inbound_tag: inboundTag.trim(),
-      chain_proxy_node_id: chainProxyNodeId.trim() ? Number(chainProxyNodeId) : null,
-      relay_group_name: relayGroupName.trim(),
-      relay_group_node_ids: relayGroupIds.trim() ? splitList(relayGroupIds).map(Number).filter((value) => Number.isFinite(value) && value > 0) : null,
+      inbound_tag: node.inbound_tag || "",
+      chain_proxy_node_id: node.chain_proxy_node_id ?? null,
+      relay_group_name: node.relay_group_name || "",
+      relay_group_node_ids: node.relay_group_node_ids ?? null,
     };
     if (!body.node_name) {
       setJsonError("节点名称不能为空");
@@ -986,10 +1070,6 @@ function NodeEditDialog({
         <label><span>节点名称</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
         <label><span>启用状态</span><select value={enabled ? "1" : "0"} onChange={(event) => setEnabled(event.target.value === "1")}><option value="1">启用</option><option value="0">禁用</option></select></label>
         <label><span>标签（逗号分隔）</span><input value={tagsValue} onChange={(event) => setTagsValue(event.target.value)} placeholder="VIP, 香港, 测试" /></label>
-        <label><span>关联入站 Tag</span><input value={inboundTag} onChange={(event) => setInboundTag(event.target.value)} /></label>
-        <label><span>链式代理节点 ID</span><input value={chainProxyNodeId} onChange={(event) => setChainProxyNodeId(event.target.value)} placeholder="留空关闭" /></label>
-        <label><span>中转组名称</span><input value={relayGroupName} onChange={(event) => setRelayGroupName(event.target.value)} /></label>
-        <label className="wide"><span>中转组节点 ID（逗号分隔）</span><input value={relayGroupIds} onChange={(event) => setRelayGroupIds(event.target.value)} /></label>
       </div>
       <div className="node-dialog-actions">
         <button type="button" onClick={() => void saveBasics()} disabled={Boolean(busy)}><CheckCircle2 /> 保存基础信息</button>
@@ -1035,10 +1115,7 @@ function NodeEditDialog({
             }
           }}><FileJson /> 格式化</button>
           <button type="button" onClick={() => void saveConfig()} disabled={Boolean(busy)}><CheckCircle2 /> 保存配置</button>
-          <button type="button" onClick={() => {
-            const related = nodes.filter((item) => item.id !== node.id).slice(0, 8).map((item) => `${item.id}: ${item.node_name}`).join("\n");
-            onNotice({ tone: "info", text: related ? `可用于链式代理的节点：${related}` : "没有其它可用节点" });
-          }}>查看可链式节点</button>
+
         </div>
       </div>
     </NodeDialog>
@@ -1075,8 +1152,8 @@ function ManualNodeDialog({ token, busy, onClose, onRun, onNotice }: { token: st
         parsed_config: JSON.stringify(parsed),
         clash_config: JSON.stringify(parsed),
         enabled,
-        tag: tag.trim(),
-        tags: tag.trim() ? splitList(tag) : [],
+        tag: tag.trim() || "手动输入",
+        tags: tag.trim() ? splitList(tag) : ["手动输入"],
       });
       onClose();
       onNotice({ tone: "success", text: "节点已创建" });
@@ -1108,6 +1185,99 @@ function ManualNodeDialog({ token, busy, onClose, onRun, onNotice }: { token: st
   );
 }
 
+function NodeIPDialog({ token, node, ips, busy, onClose, onRun }: { token: string; node: XrayNode; ips: string[]; busy: string; onClose: () => void; onRun: (label: string, action: () => Promise<void>) => Promise<void> }) {
+  const [ip, setIP] = useState(ips[0]);
+  return <NodeDialog title="选择IP地址" subtitle={node.node_name} onClose={onClose}>
+    <div className="node-tool-list selectable">{ips.map((value) => <label key={value}><input type="radio" name="resolved-ip" checked={value === ip} onChange={() => setIP(value)} /><span>{value}</span></label>)}</div>
+    <div className="node-dialog-actions"><button type="button" disabled={Boolean(busy)} onClick={() => void onRun("解析 IP", async () => { await updateNodeServer(token, node.id, ip); onClose(); })}>确认修改</button></div>
+  </NodeDialog>;
+}
+
+function BatchRenameDialog({ token, nodes, busy, onClose, onRun, onNotice }: { token: string; nodes: XrayNode[]; busy: string; onClose: () => void; onRun: (label: string, action: () => Promise<void>) => Promise<void>; onNotice: (notice: Notice) => void }) {
+  const [names, setNames] = useState(nodes.map((node) => node.node_name).join("\n"));
+  const [find, setFind] = useState("");
+  const [replace, setReplace] = useState("");
+  const [prefix, setPrefix] = useState("");
+  const [suffix, setSuffix] = useState("");
+  return <NodeDialog title="批量修改节点名称" subtitle={`修改选中的 ${nodes.length} 个节点名称`} onClose={onClose}>
+    <div className="node-form-grid">
+      <label><span>查找内容</span><input value={find} onChange={(event) => setFind(event.target.value)} placeholder="输入要查找的文本" /></label>
+      <label><span>替换为</span><input value={replace} onChange={(event) => setReplace(event.target.value)} placeholder="输入替换后的文本" /></label>
+    </div>
+    <div className="node-dialog-actions"><button type="button" disabled={!find} onClick={() => setNames(batchRenameTransform(names, { find, replace }))}>替换</button></div>
+    <div className="node-form-grid">
+      <label><span>前缀</span><input value={prefix} onChange={(event) => setPrefix(event.target.value)} placeholder="添加到名称前面" /></label>
+      <label><span>后缀</span><input value={suffix} onChange={(event) => setSuffix(event.target.value)} placeholder="添加到名称后面" /></label>
+    </div>
+    <div className="node-dialog-actions"><button type="button" disabled={!prefix && !suffix} onClick={() => { setNames(batchRenameTransform(names, { prefix, suffix })); setPrefix(""); setSuffix(""); }}>应用</button></div>
+    <label><span>节点名称 (每行一个，共 {names.split("\n").length} 行)</span><textarea className="node-json-editor compact" value={names} onChange={(event) => setNames(event.target.value)} placeholder="每行一个节点名称" /></label>
+    <div className="node-dialog-actions"><button type="button" disabled={Boolean(busy) || !names.trim()} onClick={() => void onRun("批量修改名称", async () => {
+      const next = names.split("\n").map((name) => name.trim()).filter(Boolean);
+      if (next.length !== nodes.length) throw new Error(`名称数量 ${next.length} 与选中节点数 ${nodes.length} 不一致`);
+      const result = await batchRenameNodes(token, nodes.map((node, index) => ({ node_id: node.id, new_name: next[index] })));
+      onClose(); onNotice({ tone: "success", text: `成功修改 ${result.success ?? nodes.length} 个节点名称` });
+    })}>确认修改</button></div>
+  </NodeDialog>;
+}
+
+function editableNodeTags(node: XrayNode) {
+  return node.tags?.length ? node.tags : node.tag && !node.tag.startsWith("远程:") ? [node.tag] : [];
+}
+
+function BatchTagDialog({ token, nodes, tags, busy, onClose, onRun, onNotice, onChanged }: { token: string; nodes: XrayNode[]; tags: string[]; busy: string; onChanged: () => Promise<void>; onClose: () => void; onRun: (label: string, action: () => Promise<void>) => Promise<void>; onNotice: (notice: Notice) => void }) {
+  const [mode, setMode] = useState<"add" | "rename" | "delete">("add");
+  const [name, setName] = useState("");
+  const [oldTag, setOldTag] = useState("");
+  const [removed, setRemoved] = useState<string[]>([]);
+  const existing = [...new Set(nodes.flatMap(editableNodeTags))];
+  const save = async () => {
+    let count = 0;
+    for (const node of nodes) {
+      let next = editableNodeTags(node);
+      if (mode === "add") next = [...next, name.trim()];
+      if (mode === "rename") next = next.map((tag) => tag === oldTag ? name.trim() : tag);
+      if (mode === "delete") next = next.filter((tag) => !removed.includes(tag));
+      next = [...new Set(next.map((tag) => tag.trim()).filter(Boolean))];
+      try { await updateNode(token, node.id, { node_name: node.node_name, enabled: node.enabled, tag: next[0] || "", tags: next }); count += 1; }
+      catch (error) { await onChanged(); throw new Error(`已更新 ${count}/${nodes.length} 个节点：${error instanceof Error ? error.message : "批量更新标签失败"}`); }
+    }
+    onClose(); onNotice({ tone: "success", text: mode === "add" ? `成功为 ${count} 个节点添加标签` : mode === "rename" ? `成功修改 ${count} 个节点的标签` : `成功删除 ${count} 个节点的标签` });
+  };
+  return <NodeDialog title="批量修改标签" subtitle={`将为选中的 ${nodes.length} 个节点修改标签`} onClose={onClose}>
+    <div className="node-dialog-tabs">{(["add", "rename", "delete"] as const).map((value, index) => <button type="button" className={mode === value ? "active" : ""} key={value} onClick={() => setMode(value)}>{["添加标签", "修改标签", "删除标签"][index]}</button>)}</div>
+    {mode !== "add" && <div className="node-subpanel"><h3>选择要操作的标签</h3>{!existing.length ? <p>选中的节点暂无标签</p> : existing.map((tag) => <label className="node-check" key={tag}><input type={mode === "delete" ? "checkbox" : "radio"} name="existing-tag" checked={mode === "delete" ? removed.includes(tag) : oldTag === tag} onChange={() => mode === "delete" ? setRemoved((current) => current.includes(tag) ? current.filter((value) => value !== tag) : [...current, tag]) : setOldTag(tag)} /><span>{tag}</span></label>)}{mode === "delete" && <button type="button" onClick={() => setRemoved(removed.length === existing.length ? [] : existing)}>{removed.length === existing.length ? "清空" : "全选"}</button>}</div>}
+    {mode !== "delete" && <label><span>新标签名称</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="输入标签名称" /></label>}
+    {mode === "add" && tags.length > 0 && <div className="node-subpanel"><h3>快速选择标签</h3><div className="node-dialog-actions">{tags.map((tag) => <button type="button" key={tag} onClick={() => setName(tag)}>{tag}</button>)}</div></div>}
+    <div className="node-dialog-actions"><button type="button" disabled={Boolean(busy) || (mode === "delete" ? !removed.length : !name.trim() || mode === "rename" && (!oldTag || name.trim() === oldTag))} onClick={() => void onRun("批量修改标签", save)}>{mode === "add" ? "添加" : mode === "rename" ? "保存" : "删除"}</button></div>
+  </NodeDialog>;
+}
+
+function BatchTempDialog({ token, nodes, onClose, onNotice }: { token: string; nodes: XrayNode[]; onClose: () => void; onNotice: (notice: Notice) => void }) {
+  const [maxAccess, setMaxAccess] = useState(1);
+  const [expireSeconds, setExpireSeconds] = useState(600);
+  const [url, setURL] = useState("");
+  const [busy, setBusy] = useState(false);
+  const create = async () => {
+    setBusy(true);
+    try {
+      const response = await createNodeTempSubscription(token, { node_ids: nodes.map((node) => node.id) }, maxAccess, expireSeconds);
+      if (!response.url) throw new Error("后端未返回临时订阅地址");
+      const absolute = new URL(response.url, window.location.origin).href;
+      setURL(absolute); await writeClipboard(absolute);
+      onNotice({ tone: "success", text: "临时订阅已生成并复制" });
+    } catch (error) { onNotice({ tone: "error", text: error instanceof Error ? error.message : "生成临时订阅失败" }); }
+    finally { setBusy(false); }
+  };
+  return <NodeDialog title="生成临时订阅" subtitle={`已选 ${nodes.length} 个节点`} onClose={onClose}>
+    <div className="node-form-grid">
+      <label><span>最多访问次数</span><input type="number" min={1} value={maxAccess} onChange={(event) => setMaxAccess(toPositiveInt(event.target.value, 1))} /></label>
+      <label><span>有效秒数</span><input type="number" min={10} value={expireSeconds} onChange={(event) => setExpireSeconds(toPositiveInt(event.target.value, 600))} /></label>
+      {url && <label className="wide"><span>临时订阅</span><input readOnly value={url} onFocus={(event) => event.currentTarget.select()} /></label>}
+    </div>
+    <div className="node-dialog-actions"><button type="button" disabled={busy || maxAccess < 1 || expireSeconds < 10} onClick={() => void create()}><Link2 />生成并复制</button></div>
+  </NodeDialog>;
+}
+
 function BatchNodeDialog({
   token,
   nodes,
@@ -1128,8 +1298,6 @@ function BatchNodeDialog({
   onClearSelection: () => void;
 }) {
   const [names, setNames] = useState(nodes.map((node) => node.node_name).join("\n"));
-  const [tfo, setTfo] = useState(false);
-  const [udpRelay, setUdpRelay] = useState(false);
 
   return (
     <NodeDialog title="批量操作" subtitle={`已选 ${nodes.length} 个节点`} onClose={onClose}>
@@ -1147,14 +1315,6 @@ function BatchNodeDialog({
           onClose();
         }}>批量 TCPing</button>
         <button type="button" onClick={() => void onRun("关闭 skip-cert-verify", async () => { await batchDisableNodeSkipCert(token, nodes.map((node) => node.id)); onClose(); })} disabled={Boolean(busy)}>关闭跳过证书</button>
-      </div>
-      <div className="node-subpanel">
-        <h3>Snell 参数</h3>
-        <label className="node-check"><input type="checkbox" checked={tfo} onChange={(event) => setTfo(event.target.checked)} /><span>开启 TFO</span></label>
-        <label className="node-check"><input type="checkbox" checked={udpRelay} onChange={(event) => setUdpRelay(event.target.checked)} /><span>开启 UDP Relay</span></label>
-        <div className="node-dialog-actions">
-          <button type="button" onClick={() => void onRun("批量修改 Snell", async () => { await batchUpdateSnellOptions(token, nodes.map((node) => node.id), { tfo, udp_relay: udpRelay }); onClose(); })} disabled={Boolean(busy)}>保存 Snell 参数</button>
-        </div>
       </div>
       <div className="node-dialog-actions danger-zone">
         <button className="danger" type="button" onClick={() => void onRun("批量删除", async () => {
@@ -1217,13 +1377,13 @@ async function copyNodeURI(token: string, node: XrayNode, setNotice: (notice: No
   }
 }
 
-function proxyToNodeRequest(proxy: ParsedProxy, tag: string): NodeMutationRequest {
+function proxyToNodeRequest(proxy: ParsedProxy, tag: string, rawURL: string): NodeMutationRequest {
   const name = stringValue(proxy.name) || stringValue(proxy.ps) || "未命名节点";
   const type = normalizeProtocol(stringValue(proxy.type || proxy.protocol));
   const body = JSON.stringify({ ...proxy, name, type });
   const tags = tag ? splitList(tag) : [];
   return {
-    raw_url: "",
+    raw_url: rawURL,
     node_name: name,
     protocol: type,
     parsed_config: body,
@@ -1280,7 +1440,8 @@ function nodeToMutation(node: XrayNode, overrides: Partial<NodeMutationRequest> 
 }
 
 function buildRegionNodeName(node: XrayNode, servers: RemoteServer[]) {
-  const server = servers.find((item) => item.name === node.original_server);
+  const serverName = node.original_server || (node.tag?.startsWith("远程:") ? node.tag.slice(3) : "");
+  const server = servers.find((item) => item.name === serverName);
   const region = server ? serverRegionFromFields(server) : null;
   const flag = region?.flag || "";
   const label = region?.label || "";
@@ -1339,34 +1500,12 @@ function setJSONName(raw: string, name: string) {
 }
 
 function nodeTags(node: XrayNode) {
-  const values = [...(node.tags ?? []), node.tag ?? ""].map((item) => item.trim()).filter(Boolean);
+  const values = (node.tags?.length ? node.tags : [node.tag ?? ""]).map((item) => item.trim()).filter(Boolean);
   return [...new Set(values)];
 }
 
 function deriveTags(nodes: XrayNode[]) {
   return [...new Set(nodes.flatMap(nodeTags))].sort((a, b) => a.localeCompare(b));
-}
-
-function findDuplicateGroups(nodes: XrayNode[]) {
-  const map = new Map<string, XrayNode[]>();
-  nodes.forEach((node) => {
-    const key = duplicateKey(node);
-    if (!key) return;
-    const bucket = map.get(key) ?? [];
-    bucket.push(node);
-    map.set(key, bucket);
-  });
-  return [...map.values()].filter((group) => group.length > 1);
-}
-
-function duplicateKey(node: XrayNode) {
-  const parsed = parseNodeConfig(node);
-  const type = normalizeProtocol(node.protocol || stringValue(parsed.type));
-  const server = stringValue(parsed.server).trim().toLowerCase();
-  const port = stringValue(parsed.port).trim();
-  if (!type || !server || !port) return "";
-  const auth = [parsed.uuid, parsed.id, parsed.password, parsed.username, parsed.cipher].map(stringValue).join("|");
-  return `${type}|${server}|${port}|${auth}`;
 }
 
 function countValues(values: string[]) {

@@ -3422,6 +3422,45 @@ button {
   overflow-wrap: anywhere;
 }
 
+.node-preview-list > label {
+  width: 100%;
+  min-width: 0;
+}
+
+.node-preview-list input {
+  min-width: 0;
+  flex: 1;
+}
+
+.node-tag-filter {
+  display: block;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.node-tag-filter summary {
+  min-height: 40px;
+  cursor: pointer;
+  line-height: 40px;
+}
+
+.node-tag-filter .node-check {
+  display: flex !important;
+}
+
+.node-list-panel > .node-dialog-actions button,
+.node-preview-list input,
+.node-preview-list button,
+.node-tag-filter button {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  padding: 0 11px;
+  font: inherit;
+}
+
 .node-chip-row .ok { color: var(--success); }
 .node-chip-row .bad { color: var(--danger); }
 
