@@ -92,7 +92,7 @@ func TestUserLifecycleTrafficGroupsIsolatedPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
-		`CREATE TABLE users(username text PRIMARY KEY,role text,is_active bigint,email text)`,
+		`CREATE TABLE users(username text PRIMARY KEY,role text,is_active bigint,email text,package_id bigint)`,
 		`CREATE TABLE packages(id bigint PRIMARY KEY,traffic_limit_bytes bigint,nodes text,node_traffic_limits text,traffic_mode text)`,
 		`CREATE TABLE user_package_assignments(id bigint PRIMARY KEY,username text,package_id bigint,package_start_date timestamp,package_end_date timestamp,last_reset_at timestamp,is_reset bigint,reset_day bigint,traffic_limit_override bigint,status text,created_at timestamp)`,
 		`CREATE TABLE remote_servers(id bigint PRIMARY KEY,name text,xray_mode text)`,
@@ -103,8 +103,12 @@ func TestUserLifecycleTrafficGroupsIsolatedPostgres(t *testing.T) {
 		`CREATE TABLE user_subaccounts(username text,routed_node_id bigint,email text,credential_json text,is_active bigint)`,
 		`CREATE TABLE package_assignment_inbound_configs(assignment_id bigint,username text,server_id bigint,inbound_tag text,email text,credential_json text)`,
 		`CREATE TABLE package_assignment_subaccounts(assignment_id bigint,username text,routed_node_id bigint,email text,credential_json text,is_active bigint)`,
+		`CREATE TABLE user_subscriptions(username text,subscription_id bigint)`,
+		`CREATE TABLE subscribe_files(created_by text)`,
+		`CREATE TABLE user_outbounds(username text,server_id bigint,inbound_tag text)`,
+		`CREATE TABLE forward_chain_nodes(node_id bigint,owner_username text,billing_assignment_id bigint)`,
 		`CREATE TABLE server_xray_config_snapshots(id bigint,server_id bigint,config_json text,status text,created_at timestamp)`,
-		`INSERT INTO users VALUES('alice','user',1,'alice-in'),('bob','user',1,'bob-in')`,
+		`INSERT INTO users(username,role,is_active,email) VALUES('alice','user',1,'alice-in'),('bob','user',1,'bob-in')`,
 		`INSERT INTO remote_servers VALUES(1,'managed','external')`,
 		`INSERT INTO packages VALUES(1,10000,'[1]','{}','twoway')`,
 		`INSERT INTO nodes VALUES(1,'shared','managed','shared','bob','physical','shadowsocks','','{}','{"cipher":"2022-blake3-aes-128-gcm","password":"server-key:bob-key"}')`,

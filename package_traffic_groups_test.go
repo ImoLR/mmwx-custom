@@ -287,14 +287,14 @@ func TestTrafficGroupsIsolatedPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
-		`CREATE TABLE users(username text PRIMARY KEY,is_active bigint,email text)`,
+		`CREATE TABLE users(username text PRIMARY KEY,is_active bigint,email text,package_id bigint)`,
 		`CREATE TABLE packages(id bigint PRIMARY KEY,traffic_limit_bytes bigint,nodes text,node_traffic_limits text,traffic_mode text)`,
 		`CREATE TABLE user_package_assignments(id bigint PRIMARY KEY,username text,package_id bigint,package_start_date timestamp,package_end_date timestamp,last_reset_at timestamp,is_reset bigint,reset_day bigint,traffic_limit_override bigint,status text,created_at timestamp)`,
 		`CREATE TABLE remote_servers(id bigint PRIMARY KEY,name text,xray_mode text)`,
 		`CREATE TABLE nodes(id bigint PRIMARY KEY,node_name text,original_server text,inbound_tag text,username text,node_type text)`,
 		`CREATE TABLE traffic_daily_user_nodes(server_id bigint,node_id bigint,username text,date text,weighted_uplink real,weighted_downlink real)`,
 		`CREATE TABLE package_user_node_traffic_baselines(username text,package_id bigint,node_id bigint,baseline real,updated_at timestamp)`,
-		`INSERT INTO users VALUES('alice',1,'alice@example.test')`,
+		`INSERT INTO users(username,is_active,email) VALUES('alice',1,'alice@example.test')`,
 		`INSERT INTO packages VALUES(1,10737418240,'[1,2]','{}','oneway'),(2,10737418240,'[]','{}','twoway')`,
 		`INSERT INTO nodes VALUES(1,'one','','','admin','physical'),(2,'two','','','admin','physical'),(3,'three','','','admin','physical')`,
 		`INSERT INTO user_package_assignments VALUES(1,'alice',1,'2026-10-01',NULL,NULL,0,1,100,'active','2026-10-01')`,
@@ -345,6 +345,10 @@ func TestTrafficGroupsIsolatedPostgres(t *testing.T) {
 		`CREATE TABLE user_subaccounts(username text,routed_node_id bigint,email text,credential_json text,is_active bigint)`,
 		`CREATE TABLE package_assignment_inbound_configs(assignment_id bigint,username text,server_id bigint,inbound_tag text,email text,credential_json text)`,
 		`CREATE TABLE package_assignment_subaccounts(assignment_id bigint,username text,routed_node_id bigint,email text,credential_json text,is_active bigint)`,
+		`CREATE TABLE user_subscriptions(username text,subscription_id bigint)`,
+		`CREATE TABLE subscribe_files(created_by text)`,
+		`CREATE TABLE user_outbounds(username text,server_id bigint,inbound_tag text)`,
+		`CREATE TABLE forward_chain_nodes(node_id bigint,owner_username text,billing_assignment_id bigint)`,
 		`CREATE TABLE server_xray_config_snapshots(id bigint,server_id bigint,config_json text,status text,created_at timestamp)`,
 		`INSERT INTO remote_servers VALUES(1,'managed','external')`,
 		`UPDATE nodes SET original_server='managed',inbound_tag=CASE id WHEN 1 THEN 'one' ELSE 'two' END WHERE id IN(1,2)`,
@@ -369,7 +373,7 @@ func TestTrafficGroupsIsolatedPostgres(t *testing.T) {
 		t.Fatalf("managed group identities not blocked: %+v %+v", a.trafficGroupBlocks, a.trafficGroupUsage[1])
 	}
 	for _, statement := range []string{
-		`INSERT INTO users VALUES('admin',1,'admin@example.test')`,
+		`INSERT INTO users(username,is_active,email) VALUES('admin',1,'admin@example.test')`,
 		`UPDATE nodes SET protocol='shadowsocks',original_server='managed',inbound_tag=CASE id WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'three' END,clash_config=CASE id WHEN 1 THEN '{"cipher":"2022-blake3-aes-128-gcm","password":"server-key:owner-one-key"}' WHEN 2 THEN '{"cipher":"2022-blake3-aes-128-gcm","password":"server-key:owner-two-key"}' ELSE '{"cipher":"2022-blake3-aes-128-gcm","password":"server-key:owner-three-key"}' END`,
 		`UPDATE package_assignment_inbound_configs SET credential_json=CASE inbound_tag WHEN 'one' THEN '{"email":"alice-one","password":"alice-one-key"}' ELSE '{"email":"alice-two","password":"alice-two-key"}' END`,
 		`INSERT INTO package_assignment_inbound_configs VALUES(1,'alice',1,'three','alice-three','{"email":"alice-three","password":"alice-three-key"}')`,

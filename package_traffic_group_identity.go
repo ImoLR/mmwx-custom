@@ -26,6 +26,12 @@ type trafficGroupIdentityBinding struct {
 	NodeIDs      []int64
 }
 
+type trafficGroupNodeEntitlement struct {
+	Username string
+	NodeID   int64
+	Tag      string
+}
+
 type trafficGroupConfiguredIdentity struct {
 	Identity        string
 	Protocol        string
@@ -39,6 +45,7 @@ type trafficGroupIdentityData struct {
 	NodeIdentities      map[int64][]string
 	Refs                []trafficGroupIdentityRef
 	Bindings            []trafficGroupIdentityBinding
+	Entitlements        []trafficGroupNodeEntitlement
 	Ownership           connectionOwnershipData
 	DisabledCredentials []lifecycleCredentialBackup
 }
@@ -93,7 +100,10 @@ func (s *postgresAdminSessionStore) trafficGroupIdentityData(ctx context.Context
 	rows.Close()
 	// Include packages without traffic groups: the same credential may serve
 	// a node in another assignment that must remain available.
-	rows, err = s.db.QueryContext(ctx, `SELECT a.id,a.username,COALESCE(u.email,''),COALESCE(p.nodes,'[]') FROM user_package_assignments a JOIN packages p ON p.id=a.package_id JOIN users u ON u.username=a.username WHERE a.status='active'`)
+	rows, err = s.db.QueryContext(ctx, `
+		SELECT a.id,a.username,COALESCE(u.email,''),COALESCE(p.nodes,'[]') FROM user_package_assignments a JOIN packages p ON p.id=a.package_id JOIN users u ON u.username=a.username WHERE a.status='active'
+		UNION ALL
+		SELECT 0::bigint,u.username,COALESCE(u.email,''),COALESCE(p.nodes,'[]') FROM users u JOIN packages p ON p.id=u.package_id`)
 	if err != nil {
 		return data, err
 	}
@@ -109,6 +119,34 @@ func (s *postgresAdminSessionStore) trafficGroupIdentityData(ctx context.Context
 			return data, err
 		}
 		data.Bindings = append(data.Bindings, binding)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return data, err
+	}
+	rows.Close()
+	// File subscriptions and per-user outbound routes do not expose a proven
+	// node allowlist. NodeID zero keeps the old alias refusal for those relations.
+	rows, err = s.db.QueryContext(ctx, `
+		SELECT username,0::bigint,'' FROM user_subscriptions
+		UNION ALL
+		SELECT created_by,0::bigint,'' FROM subscribe_files WHERE created_by<>''
+		UNION ALL
+		SELECT username,0::bigint,inbound_tag FROM user_outbounds WHERE server_id=$1
+		UNION ALL
+		SELECT owner_username,node_id,'' FROM forward_chain_nodes
+		UNION ALL
+		SELECT a.username,f.node_id,'' FROM forward_chain_nodes f JOIN user_package_assignments a ON a.id=f.billing_assignment_id WHERE a.status='active'`, serverID)
+	if err != nil {
+		return data, err
+	}
+	for rows.Next() {
+		var entitlement trafficGroupNodeEntitlement
+		if err := rows.Scan(&entitlement.Username, &entitlement.NodeID, &entitlement.Tag); err != nil {
+			rows.Close()
+			return data, err
+		}
+		data.Entitlements = append(data.Entitlements, entitlement)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -274,6 +312,28 @@ func trafficGroupContainsNode(ids []int64, id int64) bool {
 	return false
 }
 
+func trafficGroupUserEntitledToNode(data trafficGroupIdentityData, username string, node trafficGroupNode) bool {
+	if node.Owner == username {
+		return true
+	}
+	for _, binding := range data.Bindings {
+		if binding.Username == username && (len(binding.NodeIDs) == 0 || trafficGroupContainsNode(binding.NodeIDs, node.ID)) {
+			return true
+		}
+	}
+	for _, ref := range data.Refs {
+		if ref.Username == username && ref.NodeID == node.ID {
+			return true
+		}
+	}
+	for _, entitlement := range data.Entitlements {
+		if entitlement.Username == username && (entitlement.Tag == "" || entitlement.Tag == node.Tag) && (entitlement.NodeID == 0 || entitlement.NodeID == node.ID) {
+			return true
+		}
+	}
+	return false
+}
+
 func resolveTrafficGroupIdentity(data trafficGroupIdentityData, assignment trafficGroupAssignment, node trafficGroupNode, groupNodeIDs []int64, nodes map[int64]trafficGroupNode) (serverConnectionIdentity, string) {
 	missing := serverConnectionIdentity{}
 	if node.ServerID != data.ServerID || node.Tag == "" || !trafficGroupContainsNode(groupNodeIDs, node.ID) {
@@ -346,8 +406,14 @@ func resolveTrafficGroupIdentity(data trafficGroupIdentityData, assignment traff
 			continue
 		}
 		for _, ref := range data.Refs {
-			if ref.Username == assignment.Username && ref.Tag == other.Tag && ref.AssignmentID == 0 && ((ref.NodeID == 0 && !other.Routed) || ref.NodeID == other.ID) && containsString(data.trafficGroupRefIdentities(ref, configured), identity) {
+			if ref.Username == assignment.Username && ref.Tag == other.Tag && ref.AssignmentID == 0 && ((ref.NodeID == 0 && !other.Routed) || ref.NodeID == other.ID) && containsString(data.trafficGroupRefIdentities(ref, configured), identity) && trafficGroupUserEntitledToNode(data, assignment.Username, other) {
 				return missing, "旧用户凭据同时覆盖共享组以外的节点，已跳过拦截"
+			}
+			if ref.Username == assignment.Username && ref.Tag == other.Tag && ref.NodeID == other.ID {
+				otherIdentities := data.trafficGroupRefIdentities(ref, configured)
+				if len(otherIdentities) != 1 || otherIdentities[0] == identity {
+					return missing, "该身份可能同时影响用户的组外子账号节点，已跳过拦截"
+				}
 			}
 		}
 		if other.Owner == assignment.Username {

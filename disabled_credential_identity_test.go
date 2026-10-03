@@ -63,9 +63,10 @@ func TestTrafficGroupDisabledUserIsolation(t *testing.T) {
 		{name: "shared port owner still refused", change: func(d *trafficGroupIdentityData, _ map[int64]trafficGroupNode) {
 			d.Ownership.Relations = []connectionOwnershipRelation{{InboundTag: "in-a", ManagementUsername: "charlie", Source: connectionSourceOwner}}
 		}},
-		{name: "legacy group external alias still refused", change: func(d *trafficGroupIdentityData, nodes map[int64]trafficGroupNode) {
+		{name: "legacy entitled group external alias still refused", change: func(d *trafficGroupIdentityData, nodes map[int64]trafficGroupNode) {
 			d.Refs[0].AssignmentID = 0
 			nodes[3] = trafficGroupNode{ID: 3, ServerID: 4, Tag: "in-a"}
+			d.Bindings[0].NodeIDs = append(d.Bindings[0].NodeIDs, 3)
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

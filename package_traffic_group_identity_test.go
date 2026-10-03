@@ -99,9 +99,31 @@ func TestTrafficGroupIdentityResolution(t *testing.T) {
 			d.Configured["in-a"] = d.Configured["in-a"][:1]
 			d.Bindings = append(d.Bindings, trafficGroupIdentityBinding{AssignmentID: 8, Username: "bob", NodeIDs: []int64{1}})
 		}},
-		{name: "legacy credential reaches unbound alias", change: func(d *trafficGroupIdentityData, nodes map[int64]trafficGroupNode, _ *[]int64) {
+		{name: "legacy credential with unentitled alias is safe", want: true, change: func(d *trafficGroupIdentityData, nodes map[int64]trafficGroupNode, _ *[]int64) {
 			d.Refs[0].AssignmentID = 0
 			nodes[3] = trafficGroupNode{ID: 3, ServerID: 4, Tag: "in-a"}
+		}},
+		{name: "legacy credential covers another assignment alias", change: func(d *trafficGroupIdentityData, nodes map[int64]trafficGroupNode, _ *[]int64) {
+			d.Refs[0].AssignmentID = 0
+			nodes[3] = trafficGroupNode{ID: 3, ServerID: 4, Tag: "in-a"}
+			d.Bindings = append(d.Bindings, trafficGroupIdentityBinding{AssignmentID: 8, Username: "alice", NodeIDs: []int64{3}})
+		}},
+		{name: "legacy credential covers legacy package alias", change: func(d *trafficGroupIdentityData, nodes map[int64]trafficGroupNode, _ *[]int64) {
+			d.Refs[0].AssignmentID = 0
+			nodes[3] = trafficGroupNode{ID: 3, ServerID: 4, Tag: "in-a"}
+			d.Bindings = append(d.Bindings, trafficGroupIdentityBinding{Username: "alice", NodeIDs: []int64{3}})
+		}},
+		{name: "legacy credential covers owned alias", change: func(d *trafficGroupIdentityData, nodes map[int64]trafficGroupNode, _ *[]int64) {
+			d.Refs[0].AssignmentID = 0
+			nodes[3] = trafficGroupNode{ID: 3, ServerID: 4, Tag: "in-a", Owner: "alice"}
+		}},
+		{name: "legacy credential with another user's distinct alias is safe", want: true, change: func(d *trafficGroupIdentityData, nodes map[int64]trafficGroupNode, _ *[]int64) {
+			d.Refs[0].AssignmentID = 0
+			nodes[3] = trafficGroupNode{ID: 3, ServerID: 4, Tag: "in-a", Owner: "bob"}
+			d.NodeIdentities[3] = []string{"bob-a"}
+			d.Refs = append(d.Refs, trafficGroupIdentityRef{Username: "bob", Tag: "in-a", Credential: `{"email":"bob-a","id":"uuid-bob"}`})
+			d.Bindings = append(d.Bindings, trafficGroupIdentityBinding{AssignmentID: 8, Username: "bob", NodeIDs: []int64{3}})
+			d.Ownership.Relations = []connectionOwnershipRelation{{InboundTag: "in-a", ManagementUsername: "bob", ProtocolIdentity: "bob-a", Source: connectionSourceOwner}}
 		}},
 		{name: "owned alias outside group", change: func(_ *trafficGroupIdentityData, nodes map[int64]trafficGroupNode, _ *[]int64) {
 			nodes[3] = trafficGroupNode{ID: 3, ServerID: 4, Tag: "in-a", Owner: "alice"}
@@ -125,6 +147,32 @@ func TestTrafficGroupIdentityResolution(t *testing.T) {
 				t.Fatalf("identity=%#v reason=%q, want safe=%t", identity, reason, test.want)
 			}
 		})
+	}
+}
+
+func TestTrafficGroupIdentityGroupExternalSubaccount(t *testing.T) {
+	for _, assignmentID := range []int64{0, 8} {
+		for _, test := range []struct {
+			name       string
+			credential string
+			want       bool
+		}{
+			{name: "same identity", credential: `{"email":"alice-a","id":"uuid-alice"}`},
+			{name: "distinct identity", credential: `{"email":"bob-a","id":"uuid-bob"}`, want: true},
+			{name: "unparsable credential", credential: `{`},
+			{name: "unresolved credential", credential: `{}`},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				data, assignment, nodes := trafficGroupIdentityFixture(t)
+				data.Refs[0].AssignmentID = 0
+				nodes[3] = trafficGroupNode{ID: 3, ServerID: 4, Tag: "in-a", Routed: true}
+				data.Refs = append(data.Refs, trafficGroupIdentityRef{AssignmentID: assignmentID, Username: "alice", NodeID: 3, Tag: "in-a", Credential: test.credential})
+				identity, reason := resolveTrafficGroupIdentity(data, assignment, nodes[1], []int64{1}, nodes)
+				if (reason == "") != test.want || (test.want && identity != (serverConnectionIdentity{InboundTag: "in-a", User: "alice-a"})) || (!test.want && identity != (serverConnectionIdentity{})) {
+					t.Fatalf("subaccount assignment=%d identity=%+v reason=%q, want safe=%t", assignmentID, identity, reason, test.want)
+				}
+			})
+		}
 	}
 }
 
