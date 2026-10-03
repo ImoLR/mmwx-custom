@@ -63,6 +63,7 @@ import {
   dispatchCustomAgentAction,
   fetchCustomAgentStatus,
   fetchCoreMode,
+  setCoreMode,
   fetchCustomReleaseInfo,
   fetchGitHubAcceleratorSettings,
   deleteRemoteWebsite,
@@ -108,6 +109,7 @@ import { editableServerRegions, loadingRegion, lookupServerRegion, serverRegionA
 import type {
   AdminTrafficResponse,
   ConnectionMetric,
+  CoreModeSummary,
   AgentVersionInfo,
   HelperInstallTokenResponse,
   HelperUserConnectionsResponse,
@@ -151,6 +153,7 @@ type DashboardState = {
   userSpeeds: Record<string, number>;
   adminTraffic: AdminTrafficResponse | null;
   connectionMetrics: Record<string, ConnectionMetric>;
+  coreModes: Record<string, CoreModeSummary>;
   period: PeriodMeta | null;
 };
 
@@ -179,6 +182,7 @@ const emptyState: DashboardState = {
   userSpeeds: {},
   adminTraffic: null,
   connectionMetrics: {},
+  coreModes: {},
   period: null,
 };
 
@@ -353,6 +357,7 @@ function Dashboard({
         userSpeeds: normalizedUserSpeeds(helperUserConnections),
         adminTraffic,
         connectionMetrics: helperConnections.metrics ?? {},
+        coreModes: helperConnections.core_modes ?? {},
       }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Dashboard 加载失败");
@@ -544,7 +549,7 @@ function Dashboard({
       try {
         const response = await fetchConnectionMetrics(session.token, controller.signal);
         if (!stopped) {
-          setState((current) => ({ ...current, connectionMetrics: response.metrics ?? {} }));
+          setState((current) => ({ ...current, connectionMetrics: response.metrics ?? {}, coreModes: response.core_modes ?? {} }));
         }
       } catch {
         // Keep the last helper snapshot; stale entries render as unavailable on the next response.
@@ -700,6 +705,19 @@ function Dashboard({
   }, [activeServiceGroupId, serviceGroups, state.servers]);
   const visibleServiceTotals = useMemo(() => calculateTotals(visibleServiceServers), [visibleServiceServers]);
 
+  const switchCoreMode = useCallback(async (server: RemoteServer, mode: "external" | "embedded") => {
+    if (!session) return;
+    await setCoreMode(session.token, server.id, mode);
+    // Show the transition immediately; the next Helper report replaces this.
+    setState((current) => ({
+      ...current,
+      coreModes: {
+        ...current.coreModes,
+        [String(server.id)]: { ...(current.coreModes[String(server.id)] ?? { fresh: true, can_switch: true }), configured: true, desired_mode: mode, pending_change: true, formal_change_unconfirmed: false, repair_status: "drift_detected" },
+      },
+    }));
+  }, [session]);
+
   useEffect(() => {
     if (state.servers.length === 0) {
       setSelectedServerId(null);
@@ -846,6 +864,8 @@ function Dashboard({
           serviceGroups={serviceGroups}
           activeServiceGroupId={activeServiceGroupId}
           connectionMetrics={state.connectionMetrics}
+          coreModes={state.coreModes}
+          onSwitchCoreMode={switchCoreMode}
           totals={visibleServiceTotals}
           viewMode={serviceViewMode}
           groupError={serviceGroupError}
@@ -1377,6 +1397,8 @@ function ServiceManagementPage({
   serviceGroups,
   activeServiceGroupId,
   connectionMetrics,
+  coreModes,
+  onSwitchCoreMode,
   totals,
   viewMode,
   groupError,
@@ -1393,6 +1415,8 @@ function ServiceManagementPage({
   serviceGroups: ServiceGroup[];
   activeServiceGroupId: string;
   connectionMetrics: Record<string, ConnectionMetric>;
+  coreModes: Record<string, CoreModeSummary>;
+  onSwitchCoreMode: (server: RemoteServer, mode: "external" | "embedded") => Promise<void>;
   totals: { upload: number; download: number };
   viewMode: "grid" | "list";
   groupError: string;
@@ -1489,6 +1513,8 @@ function ServiceManagementPage({
               key={server.id}
               server={server}
               connectionMetric={connectionMetrics[String(server.id)]}
+              coreMode={coreModes[String(server.id)]}
+              onSwitchCoreMode={(mode) => onSwitchCoreMode(server, mode)}
               viewMode={viewMode}
               onOpenMenu={() => onOpenMenu(server)}
               onOpenDialog={(kind) => onOpenDialog(kind, server)}
@@ -1739,12 +1765,16 @@ function ServiceSummaryItem({ icon, value, tone, label }: { icon: React.ReactNod
 function ServiceServerCard({
   server,
   connectionMetric,
+  coreMode,
+  onSwitchCoreMode,
   viewMode,
   onOpenMenu,
   onOpenDialog,
 }: {
   server: RemoteServer;
   connectionMetric?: ConnectionMetric;
+  coreMode?: CoreModeSummary;
+  onSwitchCoreMode: (mode: "external" | "embedded") => Promise<void>;
   viewMode: "grid" | "list";
   onOpenMenu: () => void;
   onOpenDialog: (kind: "edit" | "xray" | "agent" | "helper" | "connections") => void;
@@ -1769,7 +1799,7 @@ function ServiceServerCard({
         </div>
 
         <div className="service-badges">
-          <span className="service-badge success">{formatXrayMode(server.xray_mode)}</span>
+          <CoreModeBadge server={server} coreMode={coreMode} onSwitch={onSwitchCoreMode} />
           <span className="service-badge success">Agent {agentVersion(server)}</span>
           <button className="service-badge success connection-tag" type="button" onClick={() => onOpenDialog("connections")} aria-label={`查看具体连接数，当前 ${formatConnectionCount(connectionMetric)}`} title="具体连接数">
             <span className="connection-tag-icon" aria-hidden="true">🔌</span>
@@ -1938,14 +1968,15 @@ function CoreControlPanel({ server, sessionToken, compact = false }: { server: R
 
   return (
     <section className={`core-control-panel${compact ? " compact" : ""}`}>
-      <div className="core-control-heading"><div><h4>Core 与生命周期</h4><p>Fork 能力与正式 xray_mode 分离；生命周期始终跟随正式控制器。</p></div><button type="button" onClick={() => void load()} aria-label="刷新核心控制状态"><RefreshCw /></button></div>
-      <label className="agent-field"><span>正式生命周期模式</span><input value={desired === "external" ? "External" : "Embedded"} readOnly /></label>
+      <div className="core-control-heading"><div><h4>Core 与生命周期</h4><p>默认使用 Fork External Core。主控记录的模式代表管理员选择；服务器本机被官方升级等改回 Embedded 时会自动恢复。在服务卡片的模式标签上切换。</p></div><button type="button" onClick={() => void load()} aria-label="刷新核心控制状态"><RefreshCw /></button></div>
+      <label className="agent-field"><span>期望模式</span><input value={desired === "external" ? "External" : "Embedded"} readOnly /></label>
       <div className="core-control-state-grid">
-        <InfoBlock label="跟随模式" value={desired === "external" ? "External" : "Embedded"} />
+        <InfoBlock label="期望模式" value={desired === "external" ? "External" : "Embedded"} />
         <InfoBlock label="主控记录" value={mode?.controller_mode || "--"} />
         <InfoBlock label="当前运行" value={mode?.current_mode || "--"} />
         <InfoBlock label="状态" value={status === "healthy" ? "正常" : status === "repairing" ? "模式漂移，正在自动恢复" : status === "degraded" ? "自动恢复失败" : status === "disabled" ? "尚未配置" : "检测到模式漂移"} />
       </div>
+      {mode?.intent.formal_change_unconfirmed && <div className="agent-notice error">主控记录在 {formatDateTime(mode.intent.formal_changed_at)} 被改为 Embedded，且不是魔改页面操作。如果不是你手动修改的，请在服务卡片上切回 External。</div>}
       {mode?.intent.last_repair_error && <div className="agent-notice error">{mode.intent.last_repair_error}</div>}
       {status !== "healthy" && mode?.configured && <p className="agent-note">尝试次数：{mode.intent.repair_attempts || 0}{mode.intent.next_repair_at ? ` · 下次尝试 ${formatDateTime(mode.intent.next_repair_at)}` : ""}</p>}
       <div className="component-upgrade-grid">
@@ -2865,7 +2896,7 @@ function EditRemoteServerDialog({
       renewal_price: renewalPrice,
       renewal_cycle: form.renewalCycle,
       renewal_currency: form.renewalCurrency,
-      expires_at: form.expiresAt,
+      expires_at: form.renewalCycle === "permanent" ? "" : form.expiresAt,
       xray_mode: form.xrayMode,
       listen_port: listenPort,
       traffic_stats_mode: form.trafficStatsMode,
@@ -2949,7 +2980,7 @@ function EditRemoteServerDialog({
             <label><span>流量额度（GB）</span><input type="number" min={0} step="0.01" value={form.trafficLimitGb} onChange={(event) => update("trafficLimitGb", event.target.value)} placeholder="留空为无限流量" /></label>
             <label><span>已用流量（GB）</span><input type="number" min={0} step="0.01" value={form.trafficUsedGb} onChange={(event) => update("trafficUsedGb", event.target.value)} placeholder={`当前 ${((server.traffic_used ?? 0) / 1024 / 1024 / 1024).toFixed(2)} GB（留空保持不变）`} /></label>
             <label><span>每月重置日</span><input type="number" min={1} max={31} value={form.resetDay} onChange={(event) => update("resetDay", event.target.value)} placeholder="1-31，留空不重置" /></label>
-            <label><span>到期时间</span><input type="date" value={form.expiresAt} onChange={(event) => update("expiresAt", event.target.value)} /></label>
+            <label><span>到期时间</span><input type="date" value={form.renewalCycle === "permanent" ? "" : form.expiresAt} disabled={form.renewalCycle === "permanent"} onChange={(event) => update("expiresAt", event.target.value)} /></label>
             <label><span>探针展示地区</span><select value={form.region} onChange={(event) => update("region", event.target.value)}>
               <option value="">未设置</option>
               {!currentRegionKnown && <option value={form.region}>{form.region}</option>}
@@ -2957,13 +2988,13 @@ function EditRemoteServerDialog({
             </select></label>
             <label><span>续费价格</span><input type="number" min={0} step="0.01" value={form.renewalPrice} onChange={(event) => update("renewalPrice", event.target.value)} placeholder="续费价格" /></label>
             <label><span>续费币种</span><select value={form.renewalCurrency} onChange={(event) => update("renewalCurrency", event.target.value)}>{renewalCurrencies.map((currency) => <option key={currency} value={currency}>{currency}</option>)}</select></label>
-            <label><span>续费周期</span><select value={form.renewalCycle} onChange={(event) => update("renewalCycle", event.target.value)}><option value="month">月付</option><option value="quarter">季付</option><option value="half_year">半年付</option><option value="year">年付</option></select></label>
+            <label><span>续费周期</span><select value={form.renewalCycle} onChange={(event) => update("renewalCycle", event.target.value)}><option value="month">月付</option><option value="quarter">季付</option><option value="half_year">半年付</option><option value="year">年付</option><option value="permanent">永久</option></select></label>
           </div>
         </section>
 
         <section className="add-server-section">
           <h4>运行模式</h4>
-          <RadioGroup label="Xray 模式" value={form.xrayMode} options={[{ value: "external", label: "External Xray" }, { value: "embedded", label: "Embedded Xray", desc: "Agent 内嵌 Xray-core，支持自动限速、设备限制、Snell 与 AnyTLS。" }]} onChange={(value) => update("xrayMode", value as EditRemoteServerFormState["xrayMode"])} />
+          <RadioGroup label="Xray 模式（请在服务卡片的模式标签上切换）" value={form.xrayMode} disabled options={[{ value: "external", label: "External Xray" }, { value: "embedded", label: "Embedded Xray" }]} onChange={() => undefined} />
           <RadioGroup label="流量统计规则" value={form.trafficStatsMode} options={[{ value: "both", label: "上行 + 下行" }, { value: "upload", label: "仅上行" }, { value: "download", label: "仅下行" }, { value: "max", label: "取最大（上/下行）" }]} onChange={(value) => update("trafficStatsMode", value as EditRemoteServerFormState["trafficStatsMode"])} />
           <RadioGroup label="服务器流量数据源" value={form.trafficSource} options={[{ value: "xray", label: "Xray 协议流量" }, { value: "system", label: "系统网卡流量", desc: "物理网卡 RX+TX，包含 SSH、软件更新和监控等非 Xray 流量；切换时后端保持显示值连续。" }]} onChange={(value) => update("trafficSource", value as EditRemoteServerFormState["trafficSource"])} />
           <ToggleLine title="启用 IPv6" desc="关闭后不再展示该服务器 IPv6，添加节点时也不可选择 IPv6。" checked={form.ipv6Enabled} onChange={(checked) => update("ipv6Enabled", checked)} />
@@ -3971,6 +4002,85 @@ function displayServerAddress(server?: RemoteServer) {
 function formatConnectionMode(mode?: string) {
   if (!mode) return "--";
   return mode === "ws" ? "WebSocket" : mode === "pull" ? "Pull" : mode === "push" ? "Push" : mode;
+}
+
+type CoreModeBadgeState = {
+  tone: "success" | "muted" | "warning" | "danger";
+  label: string;
+  detail: string;
+  switchable: boolean;
+};
+
+function coreModeBadgeState(server: RemoteServer, coreMode?: CoreModeSummary): CoreModeBadgeState {
+  const mode = coreMode?.desired_mode || server.xray_mode || "";
+  const name = mode === "embedded" ? "Embedded" : mode === "external" ? "External" : "--";
+  if (!coreMode?.configured) {
+    return mode === "embedded"
+      ? { tone: "muted", label: "Embedded Xray", detail: "官方内嵌 Core，未安装 Helper。", switchable: false }
+      : { tone: "warning", label: `${name} · 未接管`, detail: "未安装 Helper：无法确认是否运行 Fork Core，连接数等管控可能不生效。", switchable: false };
+  }
+  if (!coreMode.fresh) return { tone: "warning", label: `${name} · Helper 离线`, detail: "Helper 暂无最新上报，无法检测或切换 Core。", switchable: false };
+  if (coreMode.pending_change) return { tone: "warning", label: `切换到 ${name}…`, detail: "切换任务已下发，等待 Helper 完成。", switchable: false };
+  if (coreMode.formal_change_unconfirmed) {
+    return { tone: "warning", label: "Embedded · 待确认", detail: `主控记录在 ${formatDateTime(coreMode.formal_changed_at)} 被改为 Embedded，且不是魔改页面操作。如果不是你手动修改的，请切回 External。`, switchable: true };
+  }
+  if (coreMode.repair_status === "degraded") return { tone: "danger", label: `${name} · 恢复失败`, detail: coreMode.last_repair_error || "自动恢复失败，请检查 Helper。", switchable: true };
+  if (coreMode.repair_status === "repairing" || coreMode.repair_status === "drift_detected") {
+    return { tone: "warning", label: `${name} · 恢复中`, detail: "检测到服务器实际运行模式与主控记录不一致，正在自动恢复。", switchable: false };
+  }
+  return mode === "embedded"
+    ? { tone: "muted", label: "Embedded Xray", detail: "官方内嵌 Core（手动选择）。连接数等管控需要 External。", switchable: true }
+    : { tone: "success", label: "External Xray", detail: "Fork External Core 运行正常。", switchable: true };
+}
+
+function CoreModeBadge({ server, coreMode, onSwitch }: { server: RemoteServer; coreMode?: CoreModeSummary; onSwitch: (mode: "external" | "embedded") => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const state = coreModeBadgeState(server, coreMode);
+  const current = coreMode?.desired_mode || server.xray_mode;
+  const canSwitch = state.switchable && Boolean(coreMode?.can_switch);
+  const unconfirmed = Boolean(coreMode?.formal_change_unconfirmed);
+  const target = unconfirmed || current !== "external" ? "external" : "embedded";
+
+  async function apply(mode: "external" | "embedded") {
+    setBusy(true);
+    setError("");
+    try {
+      await onSwitch(mode);
+      setOpen(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "切换失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!canSwitch) return <span className={`service-badge ${state.tone}`} title={state.detail}>{state.label}</span>;
+  return (
+    <>
+      <button className={`service-badge core-mode-badge ${state.tone}`} type="button" title={`${state.detail} 点击切换。`} onClick={() => setOpen(true)}>{state.label}</button>
+      {open && (
+        <div className="package-dialog-layer" role="presentation" onMouseDown={() => !busy && setOpen(false)}>
+          <section className="package-confirm-dialog core-mode-dialog" role="alertdialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+            <AlertTriangle />
+            <h2>{unconfirmed ? "确认 Core 模式" : `切换到 ${target === "external" ? "External" : "Embedded"}`}</h2>
+            <p>{unconfirmed
+              ? `${server.name} 的主控记录被改为 Embedded，且不是魔改页面操作。切回 External 会恢复 Fork Core；保持 Embedded 则清除此提示。`
+              : target === "external"
+                ? `${server.name} 将切换到 Fork External Core，期间 Xray 会短暂重启。`
+                : `${server.name} 将切换到官方 Embedded Core，连接数、IP 等 Fork 管控将不再生效，期间 Xray 会短暂重启。`}</p>
+            {error && <p className="core-mode-error">{error}</p>}
+            <div>
+              <button type="button" disabled={busy} onClick={() => setOpen(false)}>取消</button>
+              {unconfirmed && <button type="button" disabled={busy} onClick={() => void apply("embedded")}>保持 Embedded</button>}
+              <button className={target === "embedded" ? "danger" : "primary"} type="button" disabled={busy} onClick={() => void apply(target)}>{busy ? "处理中..." : target === "external" ? (unconfirmed ? "切回 External" : "切换到 External") : "切换到 Embedded"}</button>
+            </div>
+          </section>
+        </div>
+      )}
+    </>
+  );
 }
 
 function formatXrayMode(mode?: string) {

@@ -67,6 +67,16 @@ BEGIN
                  )', TG_TABLE_SCHEMA, TG_TABLE_SCHEMA) USING OLD.username;
     END IF;
 
+    -- Traffic carry rows are keyed by assignment id only, so remove them while
+    -- the user's assignment rows still identify them.
+    IF to_regclass(format('%I.%I', TG_TABLE_SCHEMA, 'package_assignment_traffic_carry')) IS NOT NULL
+       AND to_regclass(format('%I.%I', TG_TABLE_SCHEMA, 'user_package_assignments')) IS NOT NULL THEN
+        EXECUTE format('DELETE FROM %I.package_assignment_traffic_carry
+                 WHERE assignment_id IN (
+                    SELECT id FROM %I.user_package_assignments WHERE username = $1
+                 )', TG_TABLE_SCHEMA, TG_TABLE_SCHEMA) USING OLD.username;
+    END IF;
+
     -- A targeted, unused bind invite is private to the deleted account. Codes
     -- merely created by that account are retained as administrative records.
     IF to_regclass(format('%I.%I', TG_TABLE_SCHEMA, 'invite_codes')) IS NOT NULL THEN
@@ -75,7 +85,11 @@ BEGIN
 
     FOREACH relation_spec IN ARRAY ARRAY[
         'user_subscriptions:username',
+        'user_merged_subscriptions:username',
         'sessions:username',
+        'webauthn_credentials:username',
+        'firewall_tokens:username',
+        'firewall_whitelist:username',
         'user_api_tokens:username',
         'user_subaccounts:username',
         'user_inbound_configs:username',
@@ -103,6 +117,9 @@ BEGIN
         'traffic_daily_user_emails:attributed_username',
         'user_email_traffic:attributed_username',
         'user_traffic:username',
+        'user_speed_peaks:username',
+        'user_conn_ip_history:username',
+        'auto_limit_events:username',
         'mmwxc_connection_assignments:management_username',
         'mmwxc_routing_rule_presets:username',
         'mmwxc_ui_preferences:username',
@@ -167,9 +184,12 @@ var managedUserPreviewRelations = []previewRelation{
 	{"user_package_assignments", "user_package_assignments", "username", "package_bindings"},
 	{"user_subscriptions", "user_subscriptions", "username", "subscriptions"},
 	{"external_subscriptions", "external_subscriptions", "username", "subscriptions"},
+	{"user_merged_subscriptions", "user_merged_subscriptions", "username", "subscriptions"},
 	{"user_tokens", "user_tokens", "username", "sessions_and_tokens"},
 	{"user_api_tokens", "user_api_tokens", "username", "sessions_and_tokens"},
 	{"sessions", "sessions", "username", "sessions_and_tokens"},
+	{"webauthn_credentials", "webauthn_credentials", "username", "sessions_and_tokens"},
+	{"firewall_tokens", "firewall_tokens", "username", "sessions_and_tokens"},
 	{"user_subaccounts", "user_subaccounts", "username", "subaccounts"},
 	{"package_assignment_subaccounts", "package_assignment_subaccounts", "username", "subaccounts"},
 	{"user_inbound_configs", "user_inbound_configs", "username", "inbound_bindings"},
@@ -188,6 +208,9 @@ var managedUserPreviewRelations = []previewRelation{
 	{"traffic_daily_user_nodes", "traffic_daily_user_nodes", "username", "traffic_records"},
 	{"user_email_traffic", "user_email_traffic", "attributed_username", "traffic_records"},
 	{"traffic_daily_user_emails", "traffic_daily_user_emails", "attributed_username", "traffic_records"},
+	{"user_speed_peaks", "user_speed_peaks", "username", "traffic_records"},
+	{"user_conn_ip_history", "user_conn_ip_history", "username", "traffic_records"},
+	{"auto_limit_events", "auto_limit_events", "username", "traffic_records"},
 	{"user_settings", "user_settings", "username", "other_private"},
 	{"routing_rule_presets", "routing_rule_presets", "username", "other_private"},
 	{"override_scripts", "override_scripts", "username", "other_private"},
@@ -199,6 +222,7 @@ var managedUserPreviewRelations = []previewRelation{
 	{"proxy_provider_configs", "proxy_provider_configs", "username", "other_private"},
 	{"mmwxc_ui_preferences", "mmwxc_ui_preferences", "username", "other_private"},
 	{"wg_leases", "wg_leases", "username", "other_private"},
+	{"firewall_whitelist", "firewall_whitelist", "username", "other_private"},
 }
 
 func (s *postgresAdminSessionStore) ManagedUserDeletionPreview(ctx context.Context, username string) (managedUserDeletionPreview, error) {

@@ -212,6 +212,7 @@ func (a *app) listConnectionMetrics(w http.ResponseWriter, r *http.Request) {
 		"success":               true,
 		"stale_timeout_seconds": int(helperStaleTimeout.Seconds()),
 		"metrics":               metrics,
+		"core_modes":            a.helperState.coreModeSummaries(),
 	})
 }
 

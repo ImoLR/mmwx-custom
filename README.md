@@ -109,6 +109,14 @@ mode. A fresh Helper report with ownership inconsistent with the selected
 lifecycle queues one signed transactional repair. Failures use 1, 5, 15, and
 30 minute backoff intervals instead of repeatedly starting or stopping Xray.
 
+The Fork External Core is the default. The recorded `xray_mode` represents the
+administrator's choice, so local drift from it, such as an Agent upgrade that
+restores the embedded Core, is repaired automatically. A recorded change to
+Embedded that the Custom UI did not request is kept, because it may be a manual
+edit in the official UI, but the service card flags it as unconfirmed until an
+administrator switches back to External or keeps Embedded. The mode badge on
+each service card is the Custom switch for both directions.
+
 For an external single-Core deployment, the optional ownership mode keeps the
 official Agent's `/usr/local/etc/xray/config.json` and `xray.service` lifecycle,
 while a systemd drop-in pins `ExecStart` to `/opt/mmwxc/core/xray`. The Helper

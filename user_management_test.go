@@ -216,7 +216,15 @@ func TestUserManagementCascadeCoversPrivateRelationsOnly(t *testing.T) {
 		"mmwxc_ui_preferences:username",
 		"wg_leases:username",
 		"nodes:username",
+		"user_merged_subscriptions:username",
+		"webauthn_credentials:username",
+		"firewall_tokens:username",
+		"firewall_whitelist:username",
+		"user_speed_peaks:username",
+		"user_conn_ip_history:username",
+		"auto_limit_events:username",
 		"user_email_traffic_snapshots",
+		"package_assignment_traffic_carry",
 		"invite_codes WHERE bind_username",
 	} {
 		if !strings.Contains(userManagementCascadeSchema, relation) {
@@ -238,6 +246,13 @@ func TestUserDeletionPreviewCoversCurrentProductionRelations(t *testing.T) {
 		"mmwxc_routing_rule_presets":         "routed_relations",
 		"mmwxc_ui_preferences":               "other_private",
 		"wg_leases":                          "other_private",
+		"user_merged_subscriptions":          "subscriptions",
+		"webauthn_credentials":               "sessions_and_tokens",
+		"firewall_tokens":                    "sessions_and_tokens",
+		"firewall_whitelist":                 "other_private",
+		"user_speed_peaks":                   "traffic_records",
+		"user_conn_ip_history":               "traffic_records",
+		"auto_limit_events":                  "traffic_records",
 	}
 	for _, relation := range managedUserPreviewRelations {
 		if category, ok := want[relation.name]; ok {

@@ -4,8 +4,6 @@ import {
   ArrowDown,
   ArrowUp,
   Boxes,
-  Car,
-  Check,
   Edit3,
   LayoutGrid,
   List,
@@ -25,12 +23,9 @@ import {
   fetchPackageTemplates,
   fetchRemoteServers,
   fetchXrayNodes,
-  publishCarpoolPackage,
-  unpublishCarpoolPackage,
   updatePackage,
 } from "./api";
 import type {
-  CarpoolPublishRequest,
   ManagedPackage,
   PackageForwardChain,
   PackagePayload,
@@ -40,7 +35,7 @@ import type {
 } from "./types";
 
 type Notice = { tone: "success" | "error" | "info"; text: string } | null;
-type ConfirmState = { kind: "delete" | "unpublish"; pkg: ManagedPackage } | null;
+type ConfirmState = { kind: "delete"; pkg: ManagedPackage } | null;
 
 const emptyPackage = (): PackagePayload => ({
   name: "",
@@ -68,9 +63,15 @@ const emptyPackage = (): PackagePayload => ({
   surge_template_filename: "",
 });
 
+// Package updates replace the whole record, so fields this form does not edit
+// (for example Loon templates and IP limits) are sent back unchanged.
+const PACKAGE_READ_ONLY_FIELDS = new Set(["nodes_configured", "short_code", "created_at", "updated_at"]);
+
 function packageToForm(pkg: ManagedPackage): PackagePayload {
+  const preserved = Object.fromEntries(Object.entries(pkg).filter(([key]) => !PACKAGE_READ_ONLY_FIELDS.has(key)));
   return {
     ...emptyPackage(),
+    ...preserved,
     id: pkg.id,
     name: pkg.name,
     description: pkg.description ?? "",
@@ -117,7 +118,6 @@ export function PackageManagementPage({ token }: { token: string }) {
   const [notice, setNotice] = useState<Notice>(null);
   const [view, setView] = useState<"cards" | "list">(() => localStorage.getItem("packages-view-mode") === "list" ? "list" : "cards");
   const [editor, setEditor] = useState<{ pkg?: ManagedPackage } | null>(null);
-  const [carpool, setCarpool] = useState<ManagedPackage | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
 
   const load = useCallback(async () => {
@@ -152,15 +152,9 @@ export function PackageManagementPage({ token }: { token: string }) {
     const key = `${confirm.kind}-${confirm.pkg.id}`;
     setBusy(key);
     try {
-      if (confirm.kind === "unpublish") {
-        await unpublishCarpoolPackage(token, confirm.pkg.id);
-        setNotice({ tone: "success", text: `“${confirm.pkg.name}”已从拼车页面下架` });
-      } else {
-        await unpublishCarpoolPackage(token, confirm.pkg.id).catch(() => undefined);
-        await deletePackage(token, confirm.pkg.id);
-        setNotice({ tone: "success", text: `套餐“${confirm.pkg.name}”已删除` });
-        await load();
-      }
+      await deletePackage(token, confirm.pkg.id);
+      setNotice({ tone: "success", text: `套餐“${confirm.pkg.name}”已删除` });
+      await load();
       setConfirm(null);
     } catch (error) {
       setNotice({ tone: "error", text: messageOf(error, "操作失败") });
@@ -174,7 +168,7 @@ export function PackageManagementPage({ token }: { token: string }) {
       <section className="package-hero">
         <div>
           <h1>套餐管理</h1>
-          <p>管理套餐额度、周期、模板、节点覆盖与拼车发布。</p>
+          <p>管理套餐额度、周期、模板、节点覆盖与转发权限。</p>
         </div>
         <div className="package-head-actions">
           <button type="button" onClick={() => void load()} aria-label="刷新套餐" title="刷新套餐"><RefreshCw /></button>
@@ -230,8 +224,6 @@ export function PackageManagementPage({ token }: { token: string }) {
                 </div>
                 {pkg.forward_rule_limit > 0 && <div className="package-forward-summary"><Share2 />转发：{pkg.forward_rule_limit} 条规则 · {pkg.forward_port_limit || "不限"} 端口 · {(pkg.forward_chains ?? []).length} 条链</div>}
                 <footer>
-                  <button type="button" onClick={() => setCarpool(pkg)}><Car />发布拼车</button>
-                  <button type="button" onClick={() => setConfirm({ kind: "unpublish", pkg })}>下架拼车</button>
                   <button type="button" onClick={() => setEditor({ pkg })}><Edit3 />编辑</button>
                   <button className="danger" type="button" onClick={() => setConfirm({ kind: "delete", pkg })}><Trash2 />删除</button>
                 </footer>
@@ -253,13 +245,12 @@ export function PackageManagementPage({ token }: { token: string }) {
           onSaved={async (text) => { setEditor(null); setNotice({ tone: "success", text }); await load(); }}
         />
       )}
-      {carpool && <CarpoolDialog token={token} pkg={carpool} onClose={() => setCarpool(null)} onPublished={(text) => { setCarpool(null); setNotice({ tone: "success", text }); }} />}
       {confirm && (
         <div className="package-dialog-layer" role="presentation" onMouseDown={() => setConfirm(null)}>
           <section className="package-confirm-dialog" role="alertdialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
             <AlertTriangle />
-            <h2>{confirm.kind === "delete" ? "删除套餐" : "下架拼车"}</h2>
-            <p>{confirm.kind === "delete" ? `确定删除“${confirm.pkg.name}”？已绑定用户会被解绑，这项操作不可撤销。` : `确定将“${confirm.pkg.name}”从拼车页面下架？`}</p>
+            <h2>删除套餐</h2>
+            <p>{`确定删除“${confirm.pkg.name}”？已绑定用户会被解绑，这项操作不可撤销。`}</p>
             <div><button type="button" onClick={() => setConfirm(null)}>取消</button><button className="danger" type="button" disabled={Boolean(busy)} onClick={() => void handleConfirm()}>{busy ? "处理中..." : "确认"}</button></div>
           </section>
         </div>
@@ -451,25 +442,6 @@ function NumberField({ label, value, min, max, step, hint, onChange }: { label: 
   return <label><span>{label}</span><input type="number" value={Number.isFinite(value) ? value : 0} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value))} />{hint && <small>{hint}</small>}</label>;
 }
 
-function CarpoolDialog({ token, pkg, onClose, onPublished }: { token: string; pkg: ManagedPackage; onClose: () => void; onPublished: (message: string) => void }) {
-  const [form, setForm] = useState({ price: "", currency: "CNY" as "CNY" | "USDT", billing_period: "monthly" as CarpoolPublishRequest["billing_period"], slots_total: "1", slots_available: "1", description: pkg.description ?? "" });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  async function publish() {
-    const price = Number(form.price);
-    const total = Number(form.slots_total);
-    const available = Number(form.slots_available);
-    if (!(price > 0)) { setError("价格必须大于 0"); return; }
-    if (!(total >= 1) || available < 0 || available > total) { setError("请检查总车位与剩余车位"); return; }
-    setSaving(true);
-    try {
-      await publishCarpoolPackage(token, { package_id: pkg.id, price_minor: Math.round(price * 100), currency: form.currency, billing_period: form.billing_period, slots_total: total, slots_available: available, description: form.description });
-      onPublished(`“${pkg.name}”已发布到拼车页面`);
-    } catch (reason) { setError(messageOf(reason, "发布拼车失败")); }
-    finally { setSaving(false); }
-  }
-  return <div className="package-dialog-layer" role="presentation" onMouseDown={onClose}><section className="package-carpool-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>发布到拼车页面</h2><p>{pkg.name}</p></div><button type="button" onClick={onClose} aria-label="关闭"><X /></button></header><div className="package-carpool-body">{error && <div className="package-notice error"><span>{error}</span></div>}<p className="package-section-note">发布者必须已在许可证服务绑定公开的 Telegram 用户名。</p><div className="package-form-grid"><label><span>价格</span><input type="number" min="0.01" step="0.01" value={form.price} placeholder="例如 25.00" onChange={(event) => setForm({ ...form, price: event.target.value })} /></label><label><span>币种</span><select value={form.currency} onChange={(event) => setForm({ ...form, currency: event.target.value as "CNY" | "USDT" })}><option value="CNY">CNY</option><option value="USDT">USDT</option></select></label><label className="wide"><span>计费周期</span><select value={form.billing_period} onChange={(event) => setForm({ ...form, billing_period: event.target.value as CarpoolPublishRequest["billing_period"] })}><option value="monthly">月付</option><option value="quarterly">季付</option><option value="yearly">年付</option><option value="one_time">一次性</option><option value="custom">自定义</option></select></label><label><span>总车位</span><input type="number" min="1" step="1" value={form.slots_total} onChange={(event) => setForm({ ...form, slots_total: event.target.value })} /></label><label><span>剩余车位</span><input type="number" min="0" step="1" value={form.slots_available} onChange={(event) => setForm({ ...form, slots_available: event.target.value })} /></label><label className="wide"><span>说明</span><textarea rows={4} value={form.description} placeholder="付款方式、使用约定等" onChange={(event) => setForm({ ...form, description: event.target.value })} /></label></div></div><footer><button type="button" onClick={onClose}>取消</button><button className="primary" type="button" disabled={saving || !form.price} onClick={() => void publish()}><Check />{saving ? "发布中..." : "确认发布"}</button></footer></section></div>;
-}
 
 function templateName(templates: PackageTemplate[], filename?: string) {
   if (!filename) return "系统默认";

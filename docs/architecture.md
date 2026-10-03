@@ -35,6 +35,12 @@ ownership, single-Core state, and Core readiness. Ownership inconsistent with
 the formal lifecycle queues one signed transactional repair with bounded
 exponential backoff.
 
+External with the Fork Core is the default lifecycle. A change of the recorded
+`xray_mode` that did not come from a pending Custom transition is recorded with
+its previous mode and time; a change to Embedded is respected but marked
+`formal_change_unconfirmed` and surfaced on the service card until an
+administrator confirms Embedded or switches back to External.
+
 Core does not contain database, public HTTP, UI, or Linux firewall management.
 Its bridge is opt-in through `MMWXC_CORE_CONTROL_SOCKET` and listens only on an
 owner-only Unix socket. The Helper uses `MMWXC_HELPER_CORE_SOCKET` to reach it.

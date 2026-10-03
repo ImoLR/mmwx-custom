@@ -1570,6 +1570,45 @@ button {
   color: #d48806;
 }
 
+.service-badge.muted {
+  color: var(--muted);
+}
+
+.service-badge.danger {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.core-mode-badge {
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.core-mode-badge:hover {
+  text-decoration: underline;
+}
+
+.core-mode-dialog button {
+  white-space: nowrap;
+}
+
+.core-mode-dialog .core-mode-error {
+  color: var(--danger);
+}
+
+.core-mode-dialog button.primary {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--card);
+}
+
+.core-mode-dialog button.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
+}
+
 .service-v3-metrics {
   display: grid;
   margin: 16px -16px 0;
@@ -4424,7 +4463,6 @@ button {
 .package-hero h1,
 .package-card h2,
 .package-editor h2,
-.package-carpool-dialog h2,
 .package-confirm-dialog h2 {
   margin: 0;
   font-size: var(--package-font-heading);
@@ -4434,8 +4472,7 @@ button {
 
 .package-hero p,
 .package-card header p,
-.package-editor header p,
-.package-carpool-dialog header p {
+.package-editor header p {
   margin: 4px 0 0;
   color: var(--muted);
   font-size: var(--package-font-secondary);
@@ -4447,7 +4484,6 @@ button {
 .package-toolbar > div,
 .package-card footer,
 .package-editor > footer,
-.package-carpool-dialog > footer,
 .package-confirm-dialog > div {
   display: flex;
   flex-wrap: wrap;
@@ -4456,7 +4492,6 @@ button {
 
 .package-manager button,
 .package-editor button,
-.package-carpool-dialog button,
 .package-confirm-dialog button,
 .package-form-grid input,
 .package-form-grid select,
@@ -4475,7 +4510,6 @@ button {
 
 .package-manager button,
 .package-editor button,
-.package-carpool-dialog button,
 .package-confirm-dialog button {
   display: inline-flex;
   align-items: center;
@@ -4484,23 +4518,20 @@ button {
 }
 
 .package-manager button.primary,
-.package-editor button.primary,
-.package-carpool-dialog button.primary {
+.package-editor button.primary {
   border-color: var(--text);
   background: var(--text);
   color: var(--card);
 }
 
 .package-manager button:disabled,
-.package-editor button:disabled,
-.package-carpool-dialog button:disabled {
+.package-editor button:disabled {
   opacity: .45;
   cursor: wait;
 }
 
 .package-manager svg,
 .package-editor svg,
-.package-carpool-dialog svg,
 .package-confirm-dialog svg {
   width: 18px;
   height: 18px;
@@ -4638,7 +4669,6 @@ button {
 }
 
 .package-editor,
-.package-carpool-dialog,
 .package-confirm-dialog {
   width: 100%;
   max-width: 100%;
@@ -4654,8 +4684,7 @@ button {
   font-size: var(--package-font-body, 16px);
 }
 
-.package-editor > header,
-.package-carpool-dialog > header {
+.package-editor > header {
   flex: 0 0 auto;
   display: flex;
   align-items: flex-start;
@@ -4664,13 +4693,10 @@ button {
   border-bottom: 1px solid var(--line);
 }
 
-.package-editor > header > div,
-.package-carpool-dialog > header > div { min-width: 0; flex: 1; }
-.package-editor > header > button,
-.package-carpool-dialog > header > button { width: 42px; flex: 0 0 42px; padding: 0; }
+.package-editor > header > div { min-width: 0; flex: 1; }
+.package-editor > header > button { width: 42px; flex: 0 0 42px; padding: 0; }
 
-.package-editor-body,
-.package-carpool-body {
+.package-editor-body {
   min-width: 0;
   flex: 1;
   overflow-x: hidden;
@@ -4681,16 +4707,14 @@ button {
   padding: 14px;
 }
 
-.package-editor > footer,
-.package-carpool-dialog > footer {
+.package-editor > footer {
   flex: 0 0 auto;
   justify-content: flex-end;
   border-top: 1px solid var(--line);
   padding: 11px 14px max(11px, env(safe-area-inset-bottom));
 }
 
-.package-editor > footer button,
-.package-carpool-dialog > footer button { flex: 1 1 120px; }
+.package-editor > footer button { flex: 1 1 120px; }
 
 .package-form-section {
   min-width: 0;
@@ -4835,7 +4859,6 @@ button {
 
 .package-node-overrides { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; }
 
-.package-carpool-dialog { max-height: 90dvh; }
 .package-confirm-dialog { width: min(440px, calc(100vw - 24px)); margin: 0 auto 16px; border-radius: 12px; padding: 20px; align-items: flex-start; }
 .package-confirm-dialog > svg { width: 28px; height: 28px; color: var(--danger); }
 .package-confirm-dialog p { margin: 0; color: var(--muted); font-size: var(--package-font-secondary); overflow-wrap: anywhere; }
@@ -4849,7 +4872,6 @@ button {
   .package-list.list .package-card > header { grid-row: span 2; }
   .package-list.list .package-card footer { grid-column: 1 / -1; }
   .package-editor { width: min(1040px, calc(100vw - 32px)); margin: 0 auto 16px; border-radius: 12px; }
-  .package-carpool-dialog { width: min(580px, calc(100vw - 32px)); margin: 0 auto 16px; border-radius: 12px; }
   .package-form-grid,
   .package-node-overrides { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .package-form-grid .wide { grid-column: 1 / -1; }

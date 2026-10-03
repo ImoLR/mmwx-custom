@@ -217,10 +217,25 @@ export type ConnectionMetric = {
   available: boolean;
 };
 
+export type CoreModeSummary = {
+  configured: boolean;
+  desired_mode?: string;
+  current_mode?: string;
+  repair_status?: string;
+  pending_change?: boolean;
+  last_repair_error?: string;
+  formal_changed_from?: string;
+  formal_changed_at?: string;
+  formal_change_unconfirmed?: boolean;
+  fresh: boolean;
+  can_switch: boolean;
+};
+
 export type ConnectionMetricsResponse = {
   success: boolean;
   stale_timeout_seconds?: number;
   metrics?: Record<string, ConnectionMetric>;
+  core_modes?: Record<string, CoreModeSummary>;
 };
 
 export type ConnectionIdentity = {
@@ -572,6 +587,9 @@ export type CoreModeResponse = {
     last_repair_reason?: string;
     last_repair_error?: string;
     next_repair_at?: string;
+    formal_changed_from?: string;
+    formal_changed_at?: string;
+    formal_change_unconfirmed?: boolean;
   };
   agent_status?: CustomAgentStatusResponse["status"];
 };
@@ -921,6 +939,8 @@ export type ManagedUser = {
   device_limit?: number;
   speed_limit_override?: number | null;
   device_limit_override?: number | null;
+  ip_limit_override?: number | null;
+  ip_over_limit_action_override?: string | null;
   traffic_limit_override_gb?: number | null;
   node_speed_limit_overrides?: Record<number, number> | null;
   node_device_limit_overrides?: Record<number, number> | null;
@@ -1170,16 +1190,6 @@ export type PackageMutationResponse = {
   id?: number;
   success?: boolean;
   message?: string;
-};
-
-export type CarpoolPublishRequest = {
-  package_id: number;
-  price_minor: number;
-  currency: "CNY" | "USDT";
-  billing_period: "monthly" | "quarterly" | "yearly" | "one_time" | "custom";
-  slots_total: number;
-  slots_available: number;
-  description: string;
 };
 
 export type NodeMutationRequest = {

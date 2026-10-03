@@ -316,3 +316,93 @@ func TestMachineRebindMovesOwnershipIntentToNewServerID(t *testing.T) {
 		t.Fatalf("rebound intent=%#v configured=%v", intent, ok)
 	}
 }
+
+func TestUnrequestedFormalEmbeddedChangeIsKeptButFlagged(t *testing.T) {
+	state := newCoreModeTestState(t)
+	if _, err := state.setCoreModeIntent("12", "external"); err != nil {
+		t.Fatal(err)
+	}
+	external := remoteServerRuntime{XrayMode: "external", Status: "connected"}
+	if _, err := state.reconcileCoreMode("12", healthyExternalStatus(), external, nil); err != nil {
+		t.Fatal(err)
+	}
+	command, err := state.reconcileCoreMode("12", healthyExternalStatus(), remoteServerRuntime{XrayMode: "embedded", Status: "connected"}, nil)
+	if err != nil || command == nil {
+		t.Fatalf("manual embedded change command=%#v err=%v", command, err)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(command.Payload, &payload); err != nil || payload["desired_mode"] != "embedded" {
+		t.Fatalf("manual embedded change must be respected, payload=%s err=%v", command.Payload, err)
+	}
+	intent, _ := state.coreModeIntent("12")
+	if !intent.FormalChangeUnconfirmed || intent.FormalChangedFrom != "external" || intent.FormalChangedAt.IsZero() {
+		t.Fatalf("unrequested embedded change was not flagged: %#v", intent)
+	}
+	summary := state.coreModeSummaries()["12"]
+	if !summary.FormalChangeUnconfirmed || summary.DesiredMode != "embedded" || !summary.Configured {
+		t.Fatalf("card summary=%#v", summary)
+	}
+}
+
+func TestExplicitEmbeddedChoiceConfirmsFlaggedChange(t *testing.T) {
+	state := newCoreModeTestState(t)
+	state.mu.Lock()
+	intent := newCoreModeIntent("embedded", time.Now())
+	intent.LastObservedMode = "embedded"
+	intent.FormalChangeUnconfirmed = true
+	state.data.CoreModeIntents["12"] = intent
+	state.mu.Unlock()
+	confirmed, err := state.setCoreModeIntent("12", "embedded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confirmed.FormalChangeUnconfirmed || confirmed.LastObservedMode != "embedded" {
+		t.Fatalf("explicit embedded choice=%#v", confirmed)
+	}
+}
+
+func TestCustomRequestedSwitchIsNotFlagged(t *testing.T) {
+	state := newCoreModeTestState(t)
+	if _, err := state.setCoreModeIntent("12", "embedded"); err != nil {
+		t.Fatal(err)
+	}
+	embedded := agentStatus{CoreMode: "embedded", ReportedAt: time.Now().UTC(), Capabilities: []string{"core.mode.apply"}}
+	if _, err := state.reconcileCoreMode("12", embedded, remoteServerRuntime{XrayMode: "embedded", Status: "connected"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.setCoreModeIntent("12", "external"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.reconcileCoreMode("12", healthyExternalStatus(), remoteServerRuntime{XrayMode: "external", Status: "connected"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	intent, _ := state.coreModeIntent("12")
+	if intent.FormalChangeUnconfirmed || intent.FormalChangedFrom != "" || intent.RepairStatus != "healthy" {
+		t.Fatalf("custom-requested switch intent=%#v", intent)
+	}
+}
+
+func TestLocalEmbeddedDriftIsRepairedToRecordedExternal(t *testing.T) {
+	state := newCoreModeTestState(t)
+	if _, err := state.setCoreModeIntent("12", "external"); err != nil {
+		t.Fatal(err)
+	}
+	external := remoteServerRuntime{XrayMode: "external", Status: "connected"}
+	if _, err := state.reconcileCoreMode("12", healthyExternalStatus(), external, nil); err != nil {
+		t.Fatal(err)
+	}
+	// An Agent upgrade restored the embedded Core locally; the record is unchanged.
+	drifted := agentStatus{CoreMode: "embedded", ReportedAt: time.Now().UTC(), Capabilities: []string{"core.mode.apply"}}
+	command, err := state.reconcileCoreMode("12", drifted, external, nil)
+	if err != nil || command == nil {
+		t.Fatalf("local drift command=%#v err=%v", command, err)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(command.Payload, &payload); err != nil || payload["desired_mode"] != "external" {
+		t.Fatalf("local drift repair payload=%s err=%v", command.Payload, err)
+	}
+	intent, _ := state.coreModeIntent("12")
+	if intent.FormalChangeUnconfirmed || intent.RepairStatus != "repairing" {
+		t.Fatalf("local drift intent=%#v", intent)
+	}
+}

@@ -52,7 +52,6 @@ import type {
   ManagedUserLifecycleResponse,
   ManagedUserPackageAssignmentsResponse,
   UserSubaccountsResponse,
-  CarpoolPublishRequest,
   PackageForwardChainsResponse,
   PackageMutationResponse,
   PackagePayload,
@@ -104,7 +103,7 @@ const MMWX_SECURE_AUDIENCE = normalizeBaseUrl(import.meta.env.VITE_MMWX_SECURE_A
 const SECURE_CHANNEL_VERSION = "v1";
 const SECURE_CHANNEL_PROTO = "v2";
 const SECURE_ENVELOPE_VERSION = 0x01;
-const SECURE_CHANNEL_WASM_URL = "/assets/securechan-Sq8A49oB.wasm";
+const SECURE_CHANNEL_WASM_URL = "/assets/securechan-DYm3iWHV.wasm";
 const SECURE_CHANNEL_BUFFER_LIMIT = 1024 * 1024;
 
 function normalizeBaseUrl(value: string) {
@@ -174,7 +173,7 @@ type SecureChannel = {
   recvBitmap: bigint;
 };
 
-// v0.5.3 keeps key generation, derivation and AEAD inside the official secure-channel module.
+// v0.5.5 keeps key generation, derivation and AEAD inside the official secure-channel module.
 type SecureChannelWasm = {
   memory: WebAssembly.Memory;
   a: () => number;
@@ -432,11 +431,12 @@ function requestOperation<T>(
   payload: unknown = null,
   options?: { params?: unknown[]; query?: string; scope?: "admin" | "user" },
 ) {
-  const body: { op: string; payload: unknown; p?: unknown[]; q?: string } = {
+  const body: { op: string; payload: unknown; p?: string[]; q?: string } = {
     op: operation,
     payload,
   };
-  if (options?.params?.length) body.p = options.params;
+  // v0.5.5 rejects non-string path parameters with "sc/v2: 信封格式错误".
+  if (options?.params?.length) body.p = options.params.map(String);
   if (options?.query) body.q = options.query;
   const endpoint = options?.scope === "user" ? "/api/v3u" : "/api/v3";
   return request<T>(joinUrl(MMWX_API_BASE_URL, endpoint), token, {
@@ -458,58 +458,58 @@ export async function login(username: string, password: string, rememberMe: bool
 }
 
 export function fetchPackages(token: string) {
-  return requestOperation<PackagesResponse>(token, "bdb4693bd68f25d0");
+  return requestOperation<PackagesResponse>(token, "088e20ddf2bfcab2");
 }
 
 export function createPackage(token: string, body: PackagePayload) {
-  return requestOperation<PackageMutationResponse>(token, "5ea37a1cef5c4570", body);
+  return requestOperation<PackageMutationResponse>(token, "9186047b1bf5ba88", body);
 }
 
 export function updatePackage(token: string, body: PackagePayload & { id: number }) {
-  return requestOperation<PackageMutationResponse>(token, "ab365331f64137fa", body);
+  return requestOperation<PackageMutationResponse>(token, "f9bed75c75a38c5f", body);
 }
 
 export function deletePackage(token: string, packageId: number) {
   return requestOperation<PackageMutationResponse>(
     token,
-    "82e8b5f7d1dbf2e1",
+    "3398a1ee75247290",
     { id: packageId },
     { params: [packageId] },
   );
 }
 
 export function fetchPackageTemplates(token: string) {
-  return requestOperation<PackageTemplatesResponse>(token, "7d3a248cdedff6bb");
+  return requestOperation<PackageTemplatesResponse>(token, "a121f6567062f1a8");
 }
 
 export function fetchPackageForwardChains(token: string) {
-  return requestOperation<PackageForwardChainsResponse>(token, "215fb8eb8d3bea3e");
+  return requestOperation<PackageForwardChainsResponse>(token, "e252f32ba95311fe");
 }
 
 export function fetchForwardChains(token: string) {
-  return requestOperation<ForwardChainsResponse>(token, "215fb8eb8d3bea3e");
+  return requestOperation<ForwardChainsResponse>(token, "e252f32ba95311fe");
 }
 
 export function fetchForwardGroups(token: string) {
-  return requestOperation<ForwardGroupsResponse>(token, "3db12dd8add50189");
+  return requestOperation<ForwardGroupsResponse>(token, "03f00a299391232e");
 }
 
 export async function fetchForwardServers(token: string) {
-  const result = await requestOperation<ForwardServersResponse | RemoteServer[]>(token, "bc48d95b4c587a37");
+  const result = await requestOperation<ForwardServersResponse | RemoteServer[]>(token, "034e094d05aa3f83");
   return Array.isArray(result) ? { success: true, servers: result } : result;
 }
 
 export function fetchForwardCertificates(token: string) {
-  return requestOperation<ForwardCertificatesResponse>(token, "98f7b2c4971978c7");
+  return requestOperation<ForwardCertificatesResponse>(token, "038f87b64c0729e7");
 }
 
 export async function fetchForwardNodes(token: string) {
-  const result = await requestOperation<ForwardNodesResponse | XrayNode[]>(token, "ba429330247847b1");
+  const result = await requestOperation<ForwardNodesResponse | XrayNode[]>(token, "c87c168b92b5f22d");
   return Array.isArray(result) ? { success: true, nodes: result } : result;
 }
 
 export function probeForwardServers(token: string, fromServerId: number, toServerId: number) {
-  return requestOperation<ForwardProbeResponse>(token, "14d58e4131edd49a", {
+  return requestOperation<ForwardProbeResponse>(token, "6f66b993add6f899", {
     from_server_id: fromServerId,
     to_server_id: toServerId,
     timeout_ms: 3000,
@@ -517,7 +517,7 @@ export function probeForwardServers(token: string, fromServerId: number, toServe
 }
 
 export function probeForwardTargets(token: string, serverId: number, targets: string[]) {
-  return requestOperation<ForwardProbeResponse>(token, "9153879d3f5cfee1", {
+  return requestOperation<ForwardProbeResponse>(token, "5fd21c6873b074b4", {
     server_id: serverId,
     targets,
     timeout_ms: 3000,
@@ -525,11 +525,11 @@ export function probeForwardTargets(token: string, serverId: number, targets: st
 }
 
 export function createForwardGroup(token: string, body: Omit<ForwardGroup, "id">) {
-  return requestOperation<ForwardMutationResponse>(token, "263193c90fa473f9", body);
+  return requestOperation<ForwardMutationResponse>(token, "14e50466f4610ab5", body);
 }
 
 export function updateForwardGroup(token: string, groupId: number, body: Omit<ForwardGroup, "id">) {
-  return requestOperation<ForwardMutationResponse>(token, "43187bfe27f048b0", body, { params: [groupId] });
+  return requestOperation<ForwardMutationResponse>(token, "f7c0e7cac4816f02", body, { params: [groupId] });
 }
 
 export function createForwardChain(token: string, body: {
@@ -541,7 +541,7 @@ export function createForwardChain(token: string, body: {
   dns_domain_v6: string;
   dns_provider_id: number;
 }) {
-  return requestOperation<ForwardMutationResponse>(token, "28e33fc55b38f0dd", body);
+  return requestOperation<ForwardMutationResponse>(token, "81484947da0cf075", body);
 }
 
 export function updateForwardChain(token: string, chainId: number, body: {
@@ -551,11 +551,11 @@ export function updateForwardChain(token: string, chainId: number, body: {
   dns_domain_v6: string;
   dns_provider_id: number;
 }) {
-  return requestOperation<ForwardMutationResponse>(token, "34ccfee82b704d26", body, { params: [chainId] });
+  return requestOperation<ForwardMutationResponse>(token, "94bae0e42f10db6c", body, { params: [chainId] });
 }
 
 export function updateForwardChainGroups(token: string, chainId: number, groupIds: number[]) {
-  return requestOperation<ForwardMutationResponse>(token, "80599ab3cc6cecb3", {
+  return requestOperation<ForwardMutationResponse>(token, "a8da54dde317756a", {
     group_ids: groupIds,
   }, { params: [chainId] });
 }
@@ -570,19 +570,11 @@ export function createForwardChainNode(token: string, chainId: number, body: {
   port: number;
   relay_protocol: "tcp";
 }) {
-  return requestOperation<ForwardMutationResponse>(token, "030986c9fea8f20c", body, { params: [chainId] });
+  return requestOperation<ForwardMutationResponse>(token, "62d9094069930dfc", body, { params: [chainId] });
 }
 
 export function deleteForwardChain(token: string, chainId: number) {
-  return requestOperation<ForwardMutationResponse>(token, "a4d46c1d3a10da87", null, { params: [chainId] });
-}
-
-export function publishCarpoolPackage(token: string, body: CarpoolPublishRequest) {
-  return requestOperation<PackageMutationResponse>(token, "c64027490b94ceb2", body);
-}
-
-export function unpublishCarpoolPackage(token: string, packageId: number) {
-  return requestOperation<PackageMutationResponse>(token, "04f5f41f16ef5743", { package_id: packageId });
+  return requestOperation<ForwardMutationResponse>(token, "3f0f274e09b1bb7b", null, { params: [chainId] });
 }
 
 export function fetchTrafficSummary(token: string) {
@@ -590,7 +582,7 @@ export function fetchTrafficSummary(token: string) {
 }
 
 export async function fetchRemoteServers(token: string) {
-  const result = await requestOperation<RemoteServersResponse | RemoteServer[]>(token, "bc48d95b4c587a37");
+  const result = await requestOperation<RemoteServersResponse | RemoteServer[]>(token, "034e094d05aa3f83");
   return Array.isArray(result) ? { success: true, servers: result } : result;
 }
 
@@ -602,11 +594,11 @@ export function createRemoteServer(token: string, body: RemoteServerCreateReques
 }
 
 export function updateRemoteServer(token: string, body: RemoteServerUpdateRequest) {
-  return requestOperation<RemoteServerMutationResponse>(token, "d58b17e8273c27d8", body);
+  return requestOperation<RemoteServerMutationResponse>(token, "2146f0b13a7196cb", body);
 }
 
 export function switchRemoteServerDeployMode(token: string, serverId: number, stealMode: "tunnel" | "fallback" | "default") {
-  return requestOperation<RemoteServerMutationResponse>(token, "3dfc94bc2c92113b", { steal_mode: stealMode }, {
+  return requestOperation<RemoteServerMutationResponse>(token, "d43eec9cc764595d", { steal_mode: stealMode }, {
     query: `server_id=${encodeURIComponent(String(serverId))}`,
   });
 }
@@ -977,7 +969,7 @@ export function fetchXrayInbounds(token: string, serverId: number) {
 }
 
 export function fetchXrayNodes(token: string) {
-  return requestOperation<XrayNodesResponse>(token, "ba429330247847b1");
+  return requestOperation<XrayNodesResponse>(token, "c87c168b92b5f22d");
 }
 
 export function fetchNodeTags(token: string) {
@@ -1234,15 +1226,15 @@ export function deleteRoutedOutbound(token: string, id: number) {
 }
 
 export function fetchXrayUsers(token: string) {
-  return requestOperation<Array<Record<string, unknown>> | { users?: Array<Record<string, unknown>> }>(token, "0a1198b61f66f49e");
+  return requestOperation<Array<Record<string, unknown>> | { users?: Array<Record<string, unknown>> }>(token, "ac1c61a9bca33068");
 }
 
 export function fetchManagedUsers(token: string) {
-  return requestOperation<ManagedUsersResponse>(token, "0a1198b61f66f49e");
+  return requestOperation<ManagedUsersResponse>(token, "ac1c61a9bca33068");
 }
 
 export function fetchManagedUserPackageAssignments(token: string, username: string) {
-  return requestOperation<ManagedUserPackageAssignmentsResponse>(token, "f9a17c030173ed26", null, {
+  return requestOperation<ManagedUserPackageAssignmentsResponse>(token, "3ce51fdef44f9502", null, {
     query: `username=${encodeURIComponent(username)}`,
   });
 }
@@ -1266,11 +1258,11 @@ export function fetchManagedUserLifecycles(token: string) {
 }
 
 export function createManagedUser(token: string, body: { username: string; email: string; nickname: string; password: string; remark: string }) {
-  return requestOperation<{ username: string; email?: string; nickname?: string; role: string; password: string }>(token, "53ea879ad620318e", body);
+  return requestOperation<{ username: string; email?: string; nickname?: string; role: string; password: string }>(token, "1e98343aac1ebc18", body);
 }
 
 export function setManagedUserStatus(token: string, username: string, isActive: boolean) {
-  return requestOperation<{ status?: string }>(token, "5c378d4ac426a79f", { username, is_active: isActive });
+  return requestOperation<{ status?: string }>(token, "4b18ad3836973389", { username, is_active: isActive });
 }
 
 async function startManagedUserStatusTask(token: string, username: string, isActive: boolean) {
@@ -1281,7 +1273,7 @@ async function startManagedUserStatusTask(token: string, username: string, isAct
   );
   return requestWithSecureChannel<ManagedUserStatusTaskResponse>(path, token, {
     method: "POST",
-    body: JSON.stringify({ op: "5c378d4ac426a79f", payload: { username, is_active: isActive } }),
+    body: JSON.stringify({ op: "4b18ad3836973389", payload: { username, is_active: isActive } }),
   }, channel, false);
 }
 
@@ -1311,11 +1303,11 @@ export async function setManagedUserStatusTask(token: string, username: string, 
 }
 
 export function resetManagedUserPassword(token: string, username: string, newPassword: string) {
-  return requestOperation<{ username: string; password: string }>(token, "5d13fc0f731d9432", { username, new_password: newPassword });
+  return requestOperation<{ username: string; password: string }>(token, "954e8a9d3b9bf562", { username, new_password: newPassword });
 }
 
 export function resetManagedUserTraffic(token: string, username: string) {
-  return requestOperation<{ success?: boolean; message?: string }>(token, "6b5f5e5d4ac39140", null, { params: [encodeURIComponent(username)] });
+  return requestOperation<{ success?: boolean; message?: string }>(token, "4328ba256425b334", null, { params: [encodeURIComponent(username)] });
 }
 
 export function deleteManagedUser(token: string, username: string) {
@@ -1334,51 +1326,51 @@ export function setManagedUserLifecycleAccess(token: string, username: string, e
 }
 
 export function updateManagedUserRemark(token: string, username: string, remark: string) {
-  return requestOperation<{ status?: string }>(token, "d1cad3220ef9cfcd", { username, remark });
+  return requestOperation<{ status?: string }>(token, "02b38a9bba0702fa", { username, remark });
 }
 
 export function updateManagedUserShortCode(token: string, username: string, shortCode: string) {
-  return requestOperation<{ status?: string }>(token, "f0a8b3c74e77bab4", { username, short_code: shortCode });
+  return requestOperation<{ status?: string }>(token, "5b0a2c194b3903a6", { username, short_code: shortCode });
 }
 
 export function extendManagedUserPackage(token: string, username: string, days: number) {
-  return requestOperation<{ success?: boolean; end_date?: string; warnings?: string[] }>(token, "4ca616399dea78bc", { username, days });
+  return requestOperation<{ success?: boolean; end_date?: string; warnings?: string[] }>(token, "aa38511ef347e5c4", { username, days });
 }
 
 export function assignManagedUserPackage(token: string, body: { username: string; package_id: number; start_date: string; expire_date: string; is_reset?: boolean; reset_day?: number }) {
-  return requestOperation<{ success?: boolean; warnings?: string[]; message?: string }>(token, "01d59bc43d06fba6", body);
+  return requestOperation<{ success?: boolean; warnings?: string[]; message?: string }>(token, "4f61a1544c43c7c6", body);
 }
 
 export function unassignManagedUserPackage(token: string, username: string) {
-  return requestOperation<{ message?: string }>(token, "c5c13215ea3e79cc", { username });
+  return requestOperation<{ message?: string }>(token, "8705af3cb27b208b", { username });
 }
 
-export function updateManagedUserLimits(token: string, body: { username: string; speed_limit_override: number | null; device_limit_override: number | null }) {
-  return requestOperation<{ success?: boolean; message?: string }>(token, "a22f4fc5efb8db55", body);
+export function updateManagedUserLimits(token: string, body: { username: string; speed_limit_override: number | null; device_limit_override: number | null; ip_limit_override: number | null; ip_over_limit_action_override: string | null }) {
+  return requestOperation<{ success?: boolean; message?: string }>(token, "06172be9ae18a289", body);
 }
 
 export function updateManagedUserNodeLimits(token: string, body: { username: string; node_speed_overrides: Record<number, number>; node_device_overrides: Record<number, number> }) {
-  return requestOperation<{ success?: boolean; message?: string }>(token, "830e341095d48ad4", body);
+  return requestOperation<{ success?: boolean; message?: string }>(token, "f604bdd74359b26c", body);
 }
 
 export function fetchManagedUserSubaccounts(token: string, username: string) {
-  return requestOperation<UserSubaccountsResponse>(token, "5b772de3e092aebf", null, { query: `username=${encodeURIComponent(username)}` });
+  return requestOperation<UserSubaccountsResponse>(token, "27880a5bdf786b59", null, { query: `username=${encodeURIComponent(username)}` });
 }
 
 export function fetchManagedUserTelegram(token: string, username: string) {
-  return requestOperation<{ username: string; bound: boolean; telegram_id?: number; telegram_username?: string; bot_url?: string }>(token, "6de127a998b33765", null, { query: `username=${encodeURIComponent(username)}`, scope: "user" });
+  return requestOperation<{ username: string; bound: boolean; telegram_id?: number; telegram_username?: string; bot_url?: string }>(token, "05bcee4d21e786ec", null, { query: `username=${encodeURIComponent(username)}`, scope: "user" });
 }
 
 export function createManagedUserTelegramInvite(token: string, username: string) {
-  return requestOperation<{ success?: boolean; code: string; command: string; expires_at: string; bot_url?: string }>(token, "0c70d3bbd3851ae2", null, { query: `username=${encodeURIComponent(username)}`, scope: "user" });
+  return requestOperation<{ success?: boolean; code: string; command: string; expires_at: string; bot_url?: string }>(token, "12a71aefd6ad02eb", null, { query: `username=${encodeURIComponent(username)}`, scope: "user" });
 }
 
 export function unbindManagedUserTelegram(token: string, username: string) {
-  return requestOperation<{ success?: boolean }>(token, "3bd891fb1f0b6a7e", null, { query: `username=${encodeURIComponent(username)}`, scope: "user" });
+  return requestOperation<{ success?: boolean }>(token, "9c9483bec301acb4", null, { query: `username=${encodeURIComponent(username)}`, scope: "user" });
 }
 
 export function fetchManagedUserNodes(token: string) {
-  return requestOperation<XrayNodesResponse>(token, "ba429330247847b1", null, { query: "include_private=1" });
+  return requestOperation<XrayNodesResponse>(token, "c87c168b92b5f22d", null, { query: "include_private=1" });
 }
 
 export function managedSubscriptionUrl(packageCode: string, userCode: string, client: string) {

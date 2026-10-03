@@ -26,7 +26,13 @@ type coreModeIntent struct {
 	LastRepairError  string    `json:"last_repair_error,omitempty"`
 	NextRepairAt     time.Time `json:"next_repair_at,omitempty"`
 	LastObservedMode string    `json:"last_observed_mode,omitempty"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	// A recorded xray_mode change that the Custom UI did not request. A switch
+	// to Embedded is kept (it may be a manual edit in the official UI) but is
+	// flagged until an administrator confirms or reverts it.
+	FormalChangedFrom       string    `json:"formal_changed_from,omitempty"`
+	FormalChangedAt         time.Time `json:"formal_changed_at,omitempty"`
+	FormalChangeUnconfirmed bool      `json:"formal_change_unconfirmed,omitempty"`
+	UpdatedAt               time.Time `json:"updated_at"`
 }
 
 type coreModeView struct {
@@ -60,6 +66,7 @@ func (s *helperState) setCoreModeIntent(serverID, mode string) (coreModeIntent, 
 	intent.PendingChange = true
 	intent.LifecycleSource = "custom-explicit"
 	intent.MachineID = identity.CustomServerUUID
+	intent.LastObservedMode = s.data.CoreModeIntents[serverID].LastObservedMode
 	s.data.CoreModeIntents[serverID] = intent
 	if err := s.saveLocked(); err != nil {
 		return coreModeIntent{}, err
@@ -116,11 +123,21 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		return nil, nil
 	}
 	now := time.Now().UTC()
-	// The formal controller owns the lifecycle choice. A completed Custom
-	// transition must never turn into a permanent policy that pulls an
-	// explicitly changed formal xray_mode back again. Legacy intents did not
-	// carry PendingChange, so they safely adopt the currently recorded formal
-	// mode on their first observation.
+	formalKnown := runtime.XrayMode == "embedded" || runtime.XrayMode == "external"
+	if formalKnown && intent.LastObservedMode != "" && intent.LastObservedMode != runtime.XrayMode {
+		if intent.PendingChange && intent.LifecycleSource == "custom-explicit" && intent.DesiredMode == runtime.XrayMode {
+			intent.FormalChangeUnconfirmed = false
+		} else {
+			intent.FormalChangedFrom = intent.LastObservedMode
+			intent.FormalChangedAt = now
+			intent.FormalChangeUnconfirmed = runtime.XrayMode == "embedded"
+		}
+	}
+	// The recorded xray_mode is changed only by an administrator (official UI
+	// or the Custom core-mode switch), so it is the desired lifecycle mode.
+	// Local drift from it, such as an Agent upgrade restoring the embedded
+	// Core, is repaired below. Legacy intents did not carry PendingChange, so
+	// they safely adopt the currently recorded mode on their first observation.
 	if !intent.PendingChange && (runtime.XrayMode == "embedded" || runtime.XrayMode == "external") && intent.DesiredMode != runtime.XrayMode {
 		intent.DesiredMode = runtime.XrayMode
 		intent.CustomCoreOwned = true
@@ -130,7 +147,9 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		intent.NextRepairAt = time.Time{}
 		intent.LastRepairReason = "formal lifecycle mode observed"
 	}
-	intent.LastObservedMode = runtime.XrayMode
+	if formalKnown {
+		intent.LastObservedMode = runtime.XrayMode
+	}
 	if status.MachineID != "" {
 		intent.MachineID = status.MachineID
 	}
@@ -205,6 +224,39 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		return nil, err
 	}
 	return &command, nil
+}
+
+// coreModeSummary is the per-server lifecycle state shown on service cards.
+type coreModeSummary struct {
+	Configured              bool      `json:"configured"`
+	DesiredMode             string    `json:"desired_mode,omitempty"`
+	CurrentMode             string    `json:"current_mode,omitempty"`
+	RepairStatus            string    `json:"repair_status,omitempty"`
+	PendingChange           bool      `json:"pending_change,omitempty"`
+	LastRepairError         string    `json:"last_repair_error,omitempty"`
+	FormalChangedFrom       string    `json:"formal_changed_from,omitempty"`
+	FormalChangedAt         time.Time `json:"formal_changed_at,omitempty"`
+	FormalChangeUnconfirmed bool      `json:"formal_change_unconfirmed,omitempty"`
+	Fresh                   bool      `json:"fresh"`
+	CanSwitch               bool      `json:"can_switch"`
+}
+
+func (s *helperState) coreModeSummaries() map[string]coreModeSummary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]coreModeSummary, len(s.data.Servers))
+	for serverID := range s.data.Servers {
+		status := s.data.AgentStatuses[serverID]
+		intent, configured := s.data.CoreModeIntents[serverID]
+		out[serverID] = coreModeSummary{
+			Configured: configured, DesiredMode: intent.DesiredMode, CurrentMode: status.CoreMode,
+			RepairStatus: intent.RepairStatus, PendingChange: intent.PendingChange, LastRepairError: intent.LastRepairError,
+			FormalChangedFrom: intent.FormalChangedFrom, FormalChangedAt: intent.FormalChangedAt, FormalChangeUnconfirmed: intent.FormalChangeUnconfirmed,
+			Fresh:     !status.ReportedAt.IsZero() && time.Since(status.ReportedAt) <= helperStaleTimeout,
+			CanSwitch: hasCapability(status, "core.mode.apply"),
+		}
+	}
+	return out
 }
 
 func sanitizeCoreModeMessage(value string) string {
