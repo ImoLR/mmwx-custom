@@ -127,13 +127,22 @@ func (s *postgresAdminSessionStore) ConnectionOwnership(ctx context.Context, ser
 	}
 
 	coreCredentials := map[string][]protocolCredential{}
+	configured := map[string][]trafficGroupConfiguredIdentity{}
 	var currentConfig string
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT config_json FROM server_xray_config_snapshots
 		WHERE server_id = $1 AND status = 'current'
 		ORDER BY created_at DESC LIMIT 1`, parsed).Scan(&currentConfig); err == nil {
 		coreCredentials = extractCoreInboundCredentials(currentConfig)
+		configured, err = trafficGroupConfiguredIdentities(currentConfig)
+		if err != nil {
+			return connectionOwnershipData{}, err
+		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
+		return connectionOwnershipData{}, err
+	}
+	disabledCredentials, err := s.serverDisabledCredentials(ctx, parsed)
+	if err != nil {
 		return connectionOwnershipData{}, err
 	}
 
@@ -153,6 +162,9 @@ func (s *postgresAdminSessionStore) ConnectionOwnership(ctx context.Context, ser
 			return connectionOwnershipData{}, err
 		}
 		identities := matchNodeProtocolIdentities([]string{rawURL, parsedConfig, clashConfig}, coreCredentials[tag])
+		for _, identity := range matchDisabledNodeProtocolIdentities(parsed, username, tag, []string{rawURL, parsedConfig, clashConfig}, configured[tag], disabledCredentials) {
+			identities = appendUniqueString(identities, identity)
+		}
 		if len(identities) == 0 {
 			identities = []string{""}
 		}
@@ -307,16 +319,7 @@ func extractCoreInboundCredentials(raw string) map[string][]protocolCredential {
 		if tag == "" {
 			continue
 		}
-		serverKey := ""
-		protocol, _ := inbound["protocol"].(string)
-		settings, _ := inbound["settings"].(map[string]any)
-		method, _ := settings["method"].(string)
-		if protocol == "shadowsocks" || protocol == "ss" {
-			switch method {
-			case "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305":
-				serverKey, _ = settings["password"].(string)
-			}
-		}
+		serverKey := lifecycleInboundSS2022ServerKey(inbound)
 		var walk func(any)
 		walk = func(current any) {
 			switch typed := current.(type) {

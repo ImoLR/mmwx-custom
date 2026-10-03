@@ -358,6 +358,9 @@ func TestTrafficGroupsIsolatedPostgres(t *testing.T) {
 	if err := store.EnsureConnectionOwnershipSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.EnsureUserLifecycleSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
 	a.detailedConnections["1"] = serverDetailedConnectionRecord{HelperVersion: "v0.6.8", UpdatedAt: time.Now(), Snapshot: serverDetailedConnectionSnapshot{Core: serverCoreConnectionStatus{Version: 7, Available: true, TrafficBlockSupported: true}}}
 	if err := a.refreshTrafficGroupsLocked(ctx, store); err != nil {
 		t.Fatal("managed identity database load:", err)

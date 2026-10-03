@@ -176,7 +176,7 @@ func TestTrafficGroupConfiguredIdentitiesIgnoreSingleSecretAndNestedEmails(t *te
 	if len(configured["single"]) != 0 || len(configured["nested"]) != 1 || configured["nested"][0].Identity != "" || len(configured["clients"]) != 1 {
 		t.Fatalf("unsafe config identities included: %#v", configured)
 	}
-	if identities := trafficGroupRefIdentities(trafficGroupIdentityRef{Credential: `{"id":"uuid"}`}, configured["nested"]); len(identities) != 0 {
+	if identities := (trafficGroupIdentityData{}).trafficGroupRefIdentities(trafficGroupIdentityRef{Credential: `{"id":"uuid"}`}, configured["nested"]); len(identities) != 0 {
 		t.Fatal("anonymous credential must not resolve to a blocking identity")
 	}
 }

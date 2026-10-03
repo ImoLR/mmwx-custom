@@ -27,18 +27,20 @@ type trafficGroupIdentityBinding struct {
 }
 
 type trafficGroupConfiguredIdentity struct {
-	Identity   string
-	Protocol   string
-	Credential map[string]any
+	Identity        string
+	Protocol        string
+	Credential      map[string]any
+	SS2022ServerKey string
 }
 
 type trafficGroupIdentityData struct {
-	ServerID       int64
-	Configured     map[string][]trafficGroupConfiguredIdentity
-	NodeIdentities map[int64][]string
-	Refs           []trafficGroupIdentityRef
-	Bindings       []trafficGroupIdentityBinding
-	Ownership      connectionOwnershipData
+	ServerID            int64
+	Configured          map[string][]trafficGroupConfiguredIdentity
+	NodeIdentities      map[int64][]string
+	Refs                []trafficGroupIdentityRef
+	Bindings            []trafficGroupIdentityBinding
+	Ownership           connectionOwnershipData
+	DisabledCredentials []lifecycleCredentialBackup
 }
 
 func (s *postgresAdminSessionStore) trafficGroupIdentityData(ctx context.Context, serverID int64) (trafficGroupIdentityData, error) {
@@ -57,6 +59,10 @@ func (s *postgresAdminSessionStore) trafficGroupIdentityData(ctx context.Context
 		return data, err
 	}
 	data.Configured, err = trafficGroupConfiguredIdentities(raw)
+	if err != nil {
+		return data, err
+	}
+	data.DisabledCredentials, err = s.serverDisabledCredentials(ctx, serverID)
 	if err != nil {
 		return data, err
 	}
@@ -109,18 +115,21 @@ func (s *postgresAdminSessionStore) trafficGroupIdentityData(ctx context.Context
 		return data, err
 	}
 	rows.Close()
-	rows, err = s.db.QueryContext(ctx, `SELECT n.id,COALESCE(n.inbound_tag,''),COALESCE(n.raw_url,''),COALESCE(n.parsed_config,''),COALESCE(n.clash_config,'') FROM nodes n JOIN remote_servers s ON s.name=n.original_server WHERE s.id=$1`, serverID)
+	rows, err = s.db.QueryContext(ctx, `SELECT n.id,COALESCE(n.username,''),COALESCE(n.inbound_tag,''),COALESCE(n.raw_url,''),COALESCE(n.parsed_config,''),COALESCE(n.clash_config,'') FROM nodes n JOIN remote_servers s ON s.name=n.original_server WHERE s.id=$1`, serverID)
 	if err != nil {
 		return data, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id int64
-		var tag, rawURL, parsed, clash string
-		if err := rows.Scan(&id, &tag, &rawURL, &parsed, &clash); err != nil {
+		var username, tag, rawURL, parsed, clash string
+		if err := rows.Scan(&id, &username, &tag, &rawURL, &parsed, &clash); err != nil {
 			return data, err
 		}
 		data.NodeIdentities[id] = matchNodeProtocolIdentities([]string{rawURL, parsed, clash}, coreCredentials[tag])
+		for _, identity := range matchDisabledNodeProtocolIdentities(serverID, username, tag, []string{rawURL, parsed, clash}, data.Configured[tag], data.DisabledCredentials) {
+			data.NodeIdentities[id] = appendUniqueString(data.NodeIdentities[id], identity)
+		}
 	}
 	return data, rows.Err()
 }
@@ -144,7 +153,7 @@ func trafficGroupConfiguredIdentities(raw string) (map[string][]trafficGroupConf
 			identity, _ := entry["email"].(string)
 			key := trafficGroupAuthenticationKey(protocol)
 			if identity = strings.TrimSpace(identity); key != "" && nonEmptyCredentialValue(entry, key) {
-				result[tag] = append(result[tag], trafficGroupConfiguredIdentity{Identity: identity, Protocol: protocol, Credential: entry})
+				result[tag] = append(result[tag], trafficGroupConfiguredIdentity{Identity: identity, Protocol: protocol, Credential: entry, SS2022ServerKey: lifecycleInboundSS2022ServerKey(inbound)})
 			}
 		}
 	}
@@ -171,7 +180,7 @@ func trafficGroupSameAuthentication(a, b trafficGroupConfiguredIdentity) bool {
 	return left == right
 }
 
-func trafficGroupRefIdentities(ref trafficGroupIdentityRef, configured []trafficGroupConfiguredIdentity) []string {
+func (data trafficGroupIdentityData) trafficGroupRefIdentities(ref trafficGroupIdentityRef, configured []trafficGroupConfiguredIdentity) []string {
 	var credential map[string]any
 	if ref.Credential != "" && json.Unmarshal([]byte(ref.Credential), &credential) != nil {
 		return nil
@@ -189,7 +198,15 @@ func trafficGroupRefIdentities(ref trafficGroupIdentityRef, configured []traffic
 			continue
 		}
 		if len(credential) > 0 {
-			if !credentialsMatch(candidate.Credential, credential, candidate.Protocol) {
+			matched := credentialsMatch(candidate.Credential, credential, candidate.Protocol)
+			if !matched {
+				for _, original := range disabledIdentityOriginals(data.ServerID, ref.Username, ref.Tag, candidate, data.DisabledCredentials) {
+					if credentialsMatch(original, credential, candidate.Protocol) {
+						matched = true
+					}
+				}
+			}
+			if !matched {
 				continue
 			}
 		} else if identity == "" {
@@ -211,7 +228,7 @@ func trafficGroupNodeIdentities(data trafficGroupIdentityData, assignmentID int6
 			continue
 		}
 		hasRef = true
-		identities := trafficGroupRefIdentities(ref, data.Configured[node.Tag])
+		identities := data.trafficGroupRefIdentities(ref, data.Configured[node.Tag])
 		if len(identities) != 1 {
 			return nil
 		}
@@ -296,7 +313,7 @@ func resolveTrafficGroupIdentity(data trafficGroupIdentityData, assignment traff
 	}
 	for _, ref := range data.Refs {
 		if ref.Tag == node.Tag && ref.Username != assignment.Username {
-			otherIdentities := trafficGroupRefIdentities(ref, configured)
+			otherIdentities := data.trafficGroupRefIdentities(ref, configured)
 			if len(otherIdentities) != 1 || otherIdentities[0] == identity {
 				return missing, "该身份与其他用户共享或归属不明确，无法安全拦截"
 			}
@@ -329,7 +346,7 @@ func resolveTrafficGroupIdentity(data trafficGroupIdentityData, assignment traff
 			continue
 		}
 		for _, ref := range data.Refs {
-			if ref.Username == assignment.Username && ref.Tag == other.Tag && ref.AssignmentID == 0 && ((ref.NodeID == 0 && !other.Routed) || ref.NodeID == other.ID) && containsString(trafficGroupRefIdentities(ref, configured), identity) {
+			if ref.Username == assignment.Username && ref.Tag == other.Tag && ref.AssignmentID == 0 && ((ref.NodeID == 0 && !other.Routed) || ref.NodeID == other.ID) && containsString(data.trafficGroupRefIdentities(ref, configured), identity) {
 				return missing, "旧用户凭据同时覆盖共享组以外的节点，已跳过拦截"
 			}
 		}
