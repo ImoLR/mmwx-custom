@@ -9,7 +9,13 @@ export function speedTestState(result?: SpeedTestResult, now = Date.now()): "idl
     const started = result.created_at ? new Date(result.created_at).getTime() : 0;
     return started && now - started > SPEED_TEST_TIMEOUT ? "timeout" : "running";
   }
-  return result.status === "failed" ? "failed" : "ok";
+  return result.status === "failed" || (result.status === "ok" && typeof result.latency_ms === "number" && result.latency_ms < 0 && !(Number(result.down_mbps) > 0)) ? "failed" : "ok";
+}
+
+export function speedTestLatency(result?: SpeedTestResult) {
+  if (result?.status === "failed") return "失败";
+  if (result?.status !== "ok" || typeof result.latency_ms !== "number") return "—";
+  return result.latency_ms < 0 ? "失败" : `${result.latency_ms} ms`;
 }
 
 export function speedTestError(error: unknown) {

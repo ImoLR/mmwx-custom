@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Copy, Gauge, History, Loader2, Play, RefreshCw, Trash2, X } from "lucide-react";
 import { createSpeedTester, fetchSpeedTesterUpdateInfo, fetchSpeedTesters, fetchSpeedTestResults, revokeSpeedTester, rotateSpeedTesterToken, runSpeedTest, updateAllSpeedTesters } from "./api";
 import type { SpeedTester, SpeedTesterUpdate, SpeedTestResult, XrayNode } from "./types";
-import { filterSpeedTestNodes, sortSpeedTestResults, SPEED_TEST_PRO_REQUIRED, speedTestError, speedTestLatest, speedTestNodeTags, speedTestState, speedTesterCommands, toggleVisibleSpeedTestNodes } from "./node-speedtest-logic";
+import { filterSpeedTestNodes, sortSpeedTestResults, SPEED_TEST_PRO_REQUIRED, speedTestError, speedTestLatest, speedTestLatency, speedTestNodeTags, speedTestState, speedTesterCommands, toggleVisibleSpeedTestNodes } from "./node-speedtest-logic";
 
 type Notice = (tone: "success" | "error" | "info", text: string) => void;
 type TestOptions = { tester_id?: number; threads?: number; buf_size?: number };
@@ -104,7 +104,7 @@ function SpeedResult({ result, now }: { result?: SpeedTestResult; now: number })
   const state = speedTestState(result, now);
   if (state === "running") return <span><Loader2 className="spin" /> 测速中</span>;
   if (state === "timeout") return <span title="15 秒未返回结果,点击重测">超时</span>;
-  if (state === "failed") return <span title={result?.error}>失败</span>;
+  if (state === "failed") return <span title={result?.error || "连接延迟测试失败"}>失败</span>;
   return <span>{state === "ok" ? `↓ ${Number(result?.down_mbps || 0).toFixed(1)} Mbps` : "—"}</span>;
 }
 
@@ -112,8 +112,8 @@ export function NodeSpeedTestActions({ node, controller, onHistory, options }: {
   const result = controller.latest.get(node.id);
   const state = speedTestState(result, controller.now);
   const busy = state === "running";
-  const title = state === "timeout" ? "15 秒未返回结果,点击重测" : state === "failed" ? result?.error : "点击重新测速";
-  const latency = state === "ok" && typeof result?.latency_ms === "number" && result.latency_ms >= 0 ? `${result.latency_ms} ms` : state === "timeout" ? "超时" : state === "failed" ? "失败" : "测延迟";
+  const title = state === "timeout" ? "15 秒未返回结果,点击重测" : state === "failed" ? result?.error || "连接延迟测试失败" : "点击重新测速";
+  const latency = state === "timeout" ? "超时" : state === "running" || state === "idle" ? "测延迟" : speedTestLatency(result);
   return <div className="node-action-row" onClick={(event) => event.stopPropagation()}>
     <button type="button" disabled={busy} title={title} onClick={() => void controller.start([node], false, options)}><Gauge />{state === "idle" ? "测速" : <SpeedResult result={result} now={controller.now} />}</button>
     <button type="button" disabled={busy} title={state === "timeout" ? title : "只测真连接延迟(Cloudflare 204 多采样)"} onClick={() => void controller.start([node], true, options)}>{busy ? <Loader2 className="spin" /> : <Play />}{latency}</button>
@@ -148,7 +148,7 @@ export function SpeedTestHistoryDialog({ token, nodes, node, onClose }: { token:
   const names = useMemo(() => new Map(nodes.map((item) => [item.id, item.node_name])), [nodes]);
   return <SpeedDialog title={node ? `测速历史 · ${node.node_name}` : "测速结果"} subtitle="结果保存在服务端,刷新或切页后仍可查看;测速进行中会自动刷新。" onClose={onClose}>
     <div className="node-dialog-actions"><select aria-label="测速历史排序" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="time">按时间</option><option value="speed">按速度</option><option value="latency">按延迟</option></select><button type="button" disabled={loading} onClick={() => void load()}><RefreshCw className={loading ? "spin" : ""} />刷新</button></div>
-    {error ? <p role="alert">{error}</p> : !results.length ? <div className="node-empty">{loading ? "正在读取" : "暂无测速记录"}</div> : <div style={{ overflowX: "auto" }}><table className="node-speedtest-table"><thead><tr>{!node && <th>节点</th>}<th>下行速度</th><th>延迟</th><th>出口 IP</th><th>来源</th><th>时间</th></tr></thead><tbody>{sorted.map((result, index) => <tr key={result.id ?? index}>{!node && <td>{result.node_name || names.get(result.node_id || 0) || `#${result.node_id}`}</td>}<td><SpeedResult result={result} now={now} /></td><td>{result.status === "ok" && result.latency_ms != null ? `${result.latency_ms} ms` : "—"}</td><td>{result.egress_ip || "—"}</td><td>{result.source === "home_tester" ? "家用" : "主控"}</td><td>{result.created_at ? new Date(result.created_at).toLocaleString() : "—"}</td></tr>)}</tbody></table></div>}
+    {error ? <p role="alert">{error}</p> : !results.length ? <div className="node-empty">{loading ? "正在读取" : "暂无测速记录"}</div> : <div style={{ overflowX: "auto" }}><table className="node-speedtest-table"><thead><tr>{!node && <th>节点</th>}<th>下行速度</th><th>延迟</th><th>出口 IP</th><th>来源</th><th>时间</th></tr></thead><tbody>{sorted.map((result, index) => <tr key={result.id ?? index}>{!node && <td>{result.node_name || names.get(result.node_id || 0) || `#${result.node_id}`}</td>}<td><SpeedResult result={result} now={now} /></td><td>{speedTestLatency(result)}</td><td>{result.egress_ip || "—"}</td><td>{result.source === "home_tester" ? "家用" : "主控"}</td><td>{result.created_at ? new Date(result.created_at).toLocaleString() : "—"}</td></tr>)}</tbody></table></div>}
   </SpeedDialog>;
 }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { filterSpeedTestNodes, sortSpeedTestResults, speedTestError, speedTestLatest, speedTestState, speedTesterCommands, toggleVisibleSpeedTestNodes } from "../../frontend/src/node-speedtest-logic.ts";
+import { filterSpeedTestNodes, sortSpeedTestResults, speedTestError, speedTestLatest, speedTestLatency, speedTestState, speedTesterCommands, toggleVisibleSpeedTestNodes } from "../../frontend/src/node-speedtest-logic.ts";
 
 const started = "2026-10-03T12:00:00Z";
 const now = new Date(started).getTime();
@@ -44,4 +44,18 @@ test("PRO gate uses official text and install commands quote user supplied names
   assert.ok(commands[0].command.includes("'a'\\''b'"));
   assert.ok(commands[1].command.includes("'a''b'"));
   assert.ok(commands[2].command.includes("'MMWX_SPEEDTEST_NAME=name with $(unsafe)'"));
+});
+
+// The official latency-only handler can finish with status ok and latency -1.
+test("completed latency failures do not appear as zero throughput or negative milliseconds", () => {
+  const failedLatency = { status: "ok", latency_ms: -1, down_mbps: 0 };
+  assert.equal(speedTestState(failedLatency), "failed");
+  assert.equal(speedTestLatency(failedLatency), "失败");
+  assert.equal(speedTestState({ ...failedLatency, down_mbps: 12 }), "ok");
+  assert.equal(speedTestLatency({ ...failedLatency, down_mbps: 12 }), "失败");
+  assert.equal(speedTestState({ ...failedLatency, latency_ms: 0 }), "ok");
+  assert.equal(speedTestLatency({ ...failedLatency, latency_ms: 0 }), "0 ms");
+  assert.equal(speedTestLatency({ status: "running", latency_ms: 0 }), "—");
+  assert.equal(speedTestLatency({ status: "failed", latency_ms: -1 }), "失败");
+  assert.equal(speedTestLatency(), "—");
 });
