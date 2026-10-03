@@ -58,6 +58,7 @@ import {
 } from "./api";
 import type { CoreModeResponse, RemoteServer, RoutingRulePreset, XrayNode, XrayObject, XrayServerNIC, XraySystemConfig, XrayWarpStatus } from "./types";
 import { supportsCustomCoreFeatures } from "./xray-capabilities";
+import { defaultNodeIPVersion } from "./node-manager-logic";
 
 type Tab = "config" | "inbounds" | "outbounds" | "routing";
 type Notice = { kind: "success" | "error"; text: string } | null;
@@ -308,8 +309,10 @@ function defaultInboundForUser(protocol: string, username: string) {
   return { ...inbound, settings: { ...settings, clients: [{ id: crypto.randomUUID(), email, level: 0, ...(protocol === "vless" ? { flow: "xtls-rprx-vision" } : {}) }] } };
 }
 
-function sanitizeInbound(item: XrayObject) {
+function sanitizeInbound(item: XrayObject, original?: XrayObject) {
   const inbound = { ...item };
+  const sameProtocol = original?.protocol === item.protocol;
+  const sameSnellOptions = sameProtocol && ["_wizard_snell_version", "_wizard_snell_obfs_mode", "_wizard_snell_obfs_host", "_wizard_snell_mode"].every((key) => item[key] === original?.[key]);
   delete inbound._runtime_status;
   delete inbound._source;
   delete inbound._wizard_security;
@@ -320,7 +323,7 @@ function sanitizeInbound(item: XrayObject) {
   delete inbound._wizard_management_assignments;
   if (["socks", "http"].includes(asString(inbound.protocol))) {
     const settings = { ...asObject(inbound.settings) };
-    if (Array.isArray(settings.accounts)) settings.accounts = (settings.accounts as XrayObject[]).map((account) => ({ user: account.user, pass: account.pass }));
+    if (Array.isArray(settings.accounts)) settings.accounts = (settings.accounts as XrayObject[]).map((account) => sameProtocol ? { ...account } : { user: account.user, pass: account.pass });
     inbound.settings = settings;
   }
   if (asString(inbound.protocol) === "snell") {
@@ -328,6 +331,7 @@ function sanitizeInbound(item: XrayObject) {
     const version = asNumber(inbound._wizard_snell_version) || 4;
     const users = Array.isArray(settings.users) ? settings.users as XrayObject[] : [];
     settings.users = users.map((user) => {
+      if (sameSnellOptions && user.version !== undefined) return { ...user };
       const next: XrayObject = { ...user, version };
       if (version === 6) {
         next.v6Mode = asString(inbound._wizard_snell_mode) || "default";
@@ -354,6 +358,7 @@ function sanitizeInbound(item: XrayObject) {
   delete inbound._wizard_snell_obfs_mode;
   delete inbound._wizard_snell_obfs_host;
   delete inbound._wizard_snell_mode;
+  if (sameProtocol && sameSnellOptions && JSON.stringify(item.settings) === JSON.stringify(original?.settings)) inbound.settings = item.settings;
   return inbound;
 }
 
@@ -467,7 +472,7 @@ function nodeOutboundStream(clash: XrayObject) {
   return stream;
 }
 
-function nodeToOutbound(node: XrayNode): XrayObject {
+export function nodeToOutbound(node: XrayNode): XrayObject {
   const clash = parseObject(node.clash_config || "{}", "节点配置");
   const rawProtocol = asString(clash.type || node.protocol).toLowerCase();
   const protocol = ({ ss: "shadowsocks", socks5: "socks", hy2: "hysteria", hysteria2: "hysteria" } as Record<string, string>)[rawProtocol] || rawProtocol;
@@ -475,7 +480,7 @@ function nodeToOutbound(node: XrayNode): XrayObject {
   const port = asNumber(clash.port);
   const tag = asString(clash.name || node.node_name).trim();
   if (!rawProtocol || !address || !port || !tag) throw new Error("节点缺少 protocol、server、port 或 name");
-  if (!["vless", "vmess", "trojan", "shadowsocks", "socks", "http", "snell", "hysteria", "anytls"].includes(protocol)) throw new Error(`正式版暂不支持从 ${rawProtocol} 节点生成出站`);
+  if (!["vless", "vmess", "trojan", "shadowsocks", "socks", "http", "snell", "hysteria", "anytls"].includes(protocol)) throw new Error(`${rawProtocol} 节点不能转成 xray 出站(不支持该协议)`);
   if (protocol === "hysteria") {
     const serverName = asString(clash.sni || clash.servername || clash.server);
     return { tag, protocol: "hysteria", settings: { version: 2, address, port }, streamSettings: { network: "hysteria", security: "tls", tlsSettings: { serverName, ...(clash.alpn ? { alpn: Array.isArray(clash.alpn) ? clash.alpn : [asString(clash.alpn)] } : {}) }, hysteriaSettings: { version: 2, auth: asString(clash.password || clash.auth) } } };
@@ -929,7 +934,11 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
 }
 
 export function ManagedNodeCreateDialog({ servers, token, username, onClose, onCreated }: { servers: RemoteServer[]; token: string; username: string; onClose: () => void; onCreated: () => Promise<void> }) {
-  const [serverIds, setServerIds] = useState<Set<number>>(() => new Set(servers[0] ? [servers[0].id] : []));
+  const connectedServers = servers.filter((value) => value.status === "connected");
+  const [serverIds, setServerIds] = useState<Set<number>>(() => new Set(connectedServers[0] ? [connectedServers[0].id] : []));
+  const [ipSelections, setIPSelections] = useState<Record<number, { v4: boolean; v6: boolean }>>({});
+  const [running, setRunning] = useState<Record<number, boolean>>({});
+  const [scanning, setScanning] = useState<number | null>(null);
   const [server, setServer] = useState<RemoteServer | null>(null);
   const [item, setItem] = useState<XrayObject | null>(null);
   const [nodes, setNodes] = useState<XrayNode[]>([]);
@@ -937,16 +946,49 @@ export function ManagedNodeCreateDialog({ servers, token, username, onClose, onC
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
+  const selectedServers = connectedServers.filter((value) => serverIds.has(value.id));
+  const ipSelection = (value: RemoteServer) => ipSelections[value.id] || {
+    v4: defaultNodeIPVersion(value) === "v4" && Boolean(value.ip_address),
+    v6: defaultNodeIPVersion(value) === "v6" && value.ipv6_enabled !== false && Boolean(value.ip_address_v6),
+  };
+
+  const refreshStatus = async (value: RemoteServer) => {
+    setScanning(value.id);
+    let ready = false;
+    try {
+      const response = await fetchXrayServiceStatus(token, value.id);
+      ready = Boolean(response.xray?.running);
+    } catch {
+      ready = false;
+    } finally {
+      setRunning((current) => ({ ...current, [value.id]: ready }));
+      setScanning(null);
+    }
+    return ready;
+  };
+
+  const checkServers = async () => {
+    if (!selectedServers.length) throw new Error("请至少选择一台远程服务器");
+    const missingIPs = selectedServers.filter((value) => { const ip = ipSelection(value); return !ip.v4 && !ip.v6; });
+    if (missingIPs.length) throw new Error(`请至少选择一个 IP（${missingIPs.map((value) => value.name).join("、")}）`);
+    const notReady: string[] = [];
+    for (const value of selectedServers) {
+      if (!(running[value.id] ?? value.xray_running) && !await refreshStatus(value)) notReady.push(value.name);
+    }
+    if (notReady.length) throw new Error(`该服务器 Xray 未就绪，请先安装并启动 Xray（${notReady.join("、")}）`);
+  };
+
   const begin = async () => {
-    const selected = servers.find((value) => serverIds.has(value.id));
+    const selected = selectedServers[0];
     if (!selected) return;
     setBusy(true);
     setError("");
     try {
+      await checkServers();
       const [nodeResp, inboundResp] = await Promise.all([fetchXrayNodes(token), fetchXrayInbounds(token, selected.id)]);
       setNodes(nodeResp.nodes || []);
       setUsedPorts((inboundResp.inbounds || []).map((value) => asNumber(value.port)).filter(Boolean));
-      setServer(selected);
+      setServer(selectedServers.some((value) => value.xray_mode === "external") ? { ...selected, xray_mode: "external" } : selected);
       setItem(defaultInboundForUser("vless", username));
     } catch (reason) {
       setError(getError(reason, "读取服务器入站信息失败"));
@@ -964,18 +1006,26 @@ export function ManagedNodeCreateDialog({ servers, token, username, onClose, onC
       const tag = asString(next.tag).trim();
       const nodeName = asString(next._wizard_node_name).trim();
       if (!tag || !asString(next.protocol)) throw new Error("入站标识和协议不能为空");
-      const targets = servers.filter((value) => serverIds.has(value.id));
-      if (!targets.length) throw new Error("请至少选择一台远程服务器");
+      const targets = selectedServers;
+      await checkServers();
+      if (["snell", "mieru", "anytls"].includes(asString(inbound.protocol)) && targets.some((value) => value.xray_mode === "external")) throw new Error("Snell / Mieru / AnyTLS 需要内置 Xray");
       const assignments = managementAssignments(next);
-      const results = await Promise.allSettled(targets.map(async (target) => {
-        await mutateXrayInbound(token, target.id, { action: "add", inbound, ...(nodeName ? { node_name: nodeName } : {}) });
-        await Promise.all(assignments.map((assignment) => assignConnectionPort(token, target.id, {
-          inbound_tag: tag,
-          management_username: assignment.username,
-          protocol_identity: assignment.identity,
-        })));
-      }));
-      const failures = results.map((result, index) => result.status === "rejected" ? targets[index].name : "").filter(Boolean);
+      const failures: string[] = [];
+      for (const target of targets) {
+        try {
+          const ip = ipSelection(target);
+          const ipVersion = ip.v4 && ip.v6 ? "both" : ip.v6 ? "v6" : "v4";
+          const response = await mutateXrayInbound(token, target.id, { action: "add", inbound, ip_version: ipVersion, ...(nodeName ? { node_name: nodeName } : {}) });
+          if (response.success === false) throw new Error(response.message || "添加节点失败");
+          for (const assignment of assignments) await assignConnectionPort(token, target.id, {
+            inbound_tag: tag,
+            management_username: assignment.username,
+            protocol_identity: assignment.identity,
+          });
+        } catch {
+          failures.push(target.name);
+        }
+      }
       if (failures.length) {
         await onCreated();
         throw new Error(`已创建 ${targets.length - failures.length} 台，失败：${failures.join("、")}。请先关闭并检查，不要直接重复提交。`);
@@ -998,12 +1048,106 @@ export function ManagedNodeCreateDialog({ servers, token, username, onClose, onC
     <section className="node-dialog" role="dialog" aria-modal="true" aria-label="添加节点" onClick={(event) => event.stopPropagation()}>
       <header><div><h2>添加节点</h2><p>选择远程服务器，然后使用与 Xray 入站管理相同的完整向导创建节点</p></div><button type="button" onClick={onClose} aria-label="关闭"><X /></button></header>
       <div className="node-dialog-body">
-        <div className="node-subpanel"><h3>远程服务器</h3><p className="node-help">可选择一台或多台服务器；下一步使用第一台服务器加载证书、域名和端口信息。</p><div className="node-check-grid">{servers.map((value) => <label className="node-check" key={value.id}><input type="checkbox" checked={serverIds.has(value.id)} onChange={() => setServerIds((current) => { const next = new Set(current); next.has(value.id) ? next.delete(value.id) : next.add(value.id); return next; })} /><span>{value.name}</span></label>)}</div></div>
+        <div className="node-subpanel"><h3>远程服务器</h3><p className="node-help">可选择一台或多台服务器；下一步使用第一台服务器加载证书、域名和端口信息。</p><div className="node-check-grid">{connectedServers.map((value) => {
+          const ip = ipSelection(value);
+          return <div key={value.id} className="node-subpanel">
+            <label className="node-check"><input type="checkbox" disabled={busy || scanning !== null} checked={serverIds.has(value.id)} onChange={() => setServerIds((current) => { const next = new Set(current); next.has(value.id) ? next.delete(value.id) : next.add(value.id); return next; })} /><span>{value.name}</span></label>
+            <p className="node-help">{(running[value.id] ?? value.xray_running) ? "Xray 就绪" : "Xray 未就绪"} <button type="button" disabled={busy || scanning !== null} title="扫描 Xray 状态" onClick={() => void refreshStatus(value)}><RefreshCw />{scanning === value.id ? "扫描中..." : "扫描 Xray 状态"}</button></p>
+            {serverIds.has(value.id) && <>
+              {value.ip_address && <label className="node-check"><input type="checkbox" disabled={busy} checked={ip.v4} onChange={(event) => setIPSelections((current) => ({ ...current, [value.id]: { ...ip, v4: event.target.checked } }))} /><span>IPv4 · {value.ip_address}</span></label>}
+              {value.ipv6_enabled !== false && value.ip_address_v6 && <label className="node-check"><input type="checkbox" disabled={busy} checked={ip.v6} onChange={(event) => setIPSelections((current) => ({ ...current, [value.id]: { ...ip, v6: event.target.checked } }))} /><span>IPv6 · {value.ip_address_v6}</span></label>}
+              {ip.v6 && <p className="node-help">IPv6 节点将直连 IPv6 地址,不经过域名</p>}
+            </>}
+          </div>;
+        })}</div>{!connectedServers.length && <p className="node-help">无远程服务器</p>}</div>
         {error && <p className="node-error">{error}</p>}
-        <div className="node-dialog-actions"><button type="button" onClick={onClose}>取消</button><button className="primary" type="button" disabled={busy || !serverIds.size} onClick={() => void begin()}><Plus />{busy ? "读取中" : `继续（${serverIds.size} 台）`}</button></div>
+        <div className="node-dialog-actions"><button type="button" onClick={onClose}>取消</button><button className="primary" type="button" disabled={busy || scanning !== null || !selectedServers.length} onClick={() => void begin()}><Plus />{busy ? "读取中" : `继续（${selectedServers.length} 台）`}</button></div>
       </div>
     </section>
   </div>;
+}
+
+export function ManagedNodeEditDialog({ node, servers, token, username, onClose, onSaved }: { node: XrayNode; servers: RemoteServer[]; token: string; username: string; onClose: () => void; onSaved: () => Promise<void> }) {
+  const serverName = node.original_server?.trim() || (node.tag?.startsWith("远程:") ? node.tag.slice(3).trim() : "");
+  const matchedServer = servers.find((value) => value.name === serverName);
+  const [state, setState] = useState<{ server: RemoteServer; item: XrayObject; originalTag: string; inbounds: XrayObject[]; nodes: XrayNode[] } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setState(null);
+    setError("");
+    const load = async () => {
+      try {
+        const inboundTag = node.inbound_tag?.trim() || "";
+        let port = 0;
+        for (const config of [node.clash_config, node.parsed_config]) {
+          try { port = asNumber(parseObject(config || "{}").port); } catch { /* Try the other stored config. */ }
+          if (port > 0) break;
+        }
+        if (!serverName || !inboundTag && !port) throw new Error("该节点没有可修改的入站");
+        const server = matchedServer;
+        if (!server) throw new Error("未找到该节点所属服务器");
+        const [inboundResponse, nodeResponse] = await Promise.all([fetchXrayInbounds(token, server.id), fetchXrayNodes(token)]);
+        const inbounds = inboundResponse.inbounds || [];
+        let inbound = inboundTag ? inbounds.find((value) => value.tag === inboundTag) : undefined;
+        if (!inbound && port) {
+          const protocol = node.protocol?.toLowerCase() || "";
+          inbound = inbounds.find((value) => asNumber(value.port) === port && (!protocol || asString(value.protocol).toLowerCase() === protocol)) || inbounds.find((value) => asNumber(value.port) === port);
+        }
+        if (!inbound) throw new Error("在服务器上未找到该入站,可能已被删除");
+        const originalTag = asString(inbound.tag || inboundTag).trim();
+        const item: XrayObject = { ...inbound, _wizard_node_name: node.node_name };
+        if (inbound.protocol === "snell") {
+          const settings = asObject(inbound.settings);
+          const user = asObject(Array.isArray(settings.users) ? settings.users[0] : {});
+          item._wizard_snell_version = asNumber(user.version) || 4;
+          item._wizard_snell_obfs_mode = asString(user.obfsMode) || "none";
+          item._wizard_snell_obfs_host = asString(user.obfsHost);
+          item._wizard_snell_mode = asString(user.v6Mode) || "default";
+        }
+        if (active) setState({ server, item, originalTag, inbounds, nodes: nodeResponse.nodes || [] });
+      } catch (reason) {
+        if (active) setError(getError(reason, "获取入站配置失败"));
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [node, serverName, matchedServer?.id, matchedServer?.name, matchedServer?.xray_mode, token]);
+
+  const save = async (next: XrayObject) => {
+    if (!state) return;
+    setBusy(true);
+    setError("");
+    try {
+      const inbound = sanitizeInbound({ ...next, tag: state.originalTag }, state.item);
+      if (["snell", "mieru", "anytls"].includes(asString(inbound.protocol)) && state.server.xray_mode === "external") throw new Error("Snell / Mieru / AnyTLS 需要内置 Xray");
+      const response = await mutateXrayInbound(token, state.server.id, { action: "update", tag: state.originalTag, inbound, node_name: asString(next._wizard_node_name).trim() || node.node_name });
+      if (response.success === false) throw new Error(response.message || "修改失败");
+      for (const assignment of managementAssignments(next)) await assignConnectionPort(token, state.server.id, {
+        inbound_tag: state.originalTag,
+        management_username: assignment.username,
+        protocol_identity: assignment.identity,
+      });
+      await onSaved();
+      onClose();
+    } catch (reason) {
+      setError(getError(reason, "修改失败"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (state) return <>
+    {error && <div className="xray-global-error" role="alert">{error}</div>}
+    <ObjectEditor editor={{ kind: "inbound", item: state.item, originalTag: state.originalTag, lockTag: true }} server={state.server} token={token} username={username} nodes={state.nodes} inbounds={state.inbounds} outbounds={[]} balancers={[]} usedPorts={state.inbounds.map((value) => asNumber(value.port)).filter(Boolean)} pending={busy} onCancel={onClose} onSave={(next) => void save(next)} />
+  </>;
+
+  return <div className="node-dialog-layer" role="presentation" onClick={onClose}><section className="node-dialog" role="dialog" aria-modal="true" aria-label="编辑节点" onClick={(event) => event.stopPropagation()}>
+    <header><div><h2>编辑节点</h2><p>{node.node_name}</p></div><button type="button" onClick={onClose} aria-label="关闭"><X /></button></header>
+    <div className="node-dialog-body">{error ? <p className="node-error">{error}</p> : <p className="node-help">正在读取入站配置...</p>}<div className="node-dialog-actions"><button type="button" onClick={onClose}>关闭</button></div></div>
+  </section></div>;
 }
 
 function Switch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
@@ -1069,8 +1213,12 @@ function RoutingMultiPicker({ label, values, choices, onChange }: { label: strin
   </div>;
 }
 
-function ObjectEditor({ editor, server, token, username, nodes, inbounds, outbounds, balancers, usedPorts, pending, onCancel, onSave }: { editor: { kind: "inbound" | "outbound" | "rule" | "balancer" | "view"; item: XrayObject; originalTag?: string }; server: RemoteServer; token: string; username: string; nodes: XrayNode[]; inbounds: XrayObject[]; outbounds: XrayObject[]; balancers: XrayObject[]; usedPorts: number[]; pending: boolean; onCancel: () => void; onSave: (item: XrayObject) => void }) {
+function ObjectEditor({ editor, server, token, username, nodes, inbounds, outbounds, balancers, usedPorts, pending, onCancel, onSave }: { editor: { kind: "inbound" | "outbound" | "rule" | "balancer" | "view"; item: XrayObject; originalTag?: string; lockTag?: boolean }; server: RemoteServer; token: string; username: string; nodes: XrayNode[]; inbounds: XrayObject[]; outbounds: XrayObject[]; balancers: XrayObject[]; usedPorts: number[]; pending: boolean; onCancel: () => void; onSave: (item: XrayObject) => void }) {
   const [item, setItem] = useState<XrayObject>(() => JSON.parse(JSON.stringify(editor.item)) as XrayObject);
+  const setInboundItem = useCallback<React.Dispatch<React.SetStateAction<XrayObject>>>((update) => setItem((current) => {
+    const next = typeof update === "function" ? update(current) : update;
+    return editor.lockTag ? { ...next, tag: editor.originalTag } : next;
+  }), [editor.lockTag, editor.originalTag]);
   const [advanced, setAdvanced] = useState(false);
   const [json, setJson] = useState(() => JSON.stringify(editor.item, null, 2));
   const [error, setError] = useState("");
@@ -1079,7 +1227,8 @@ function ObjectEditor({ editor, server, token, username, nodes, inbounds, outbou
   const set = (key: string, value: unknown) => setItem((current) => ({ ...current, [key]: value }));
   function submit() {
     try {
-      const next = advanced ? parseObject(json) : item;
+      const next = advanced ? parseObject(json) : { ...item };
+      if (editor.lockTag) next.tag = editor.originalTag;
       if (editor.kind === "inbound") {
         validateInbound(next);
         if (asNumber(next.port) !== (editor.originalTag ? asNumber(editor.item.port) : 0) && usedPorts.includes(asNumber(next.port))) throw new Error(`端口 ${asNumber(next.port)} 已被其他入站占用`);
@@ -1092,7 +1241,7 @@ function ObjectEditor({ editor, server, token, username, nodes, inbounds, outbou
   }
   function toggleAdvanced() {
     if (advanced) {
-      try { const parsed = parseObject(json); setItem(parsed); setAdvanced(false); setError(""); } catch (parseError) { setError(getError(parseError, "JSON 格式错误")); }
+      try { const parsed = parseObject(json); setInboundItem(parsed); setAdvanced(false); setError(""); } catch (parseError) { setError(getError(parseError, "JSON 格式错误")); }
     } else { setJson(JSON.stringify(item, null, 2)); setAdvanced(true); setError(""); }
   }
   const stream = asObject(item.streamSettings);
@@ -1102,8 +1251,8 @@ function ObjectEditor({ editor, server, token, username, nodes, inbounds, outbou
     <header><div><h4>{readOnly ? "查看 JSON" : editor.kind === "inbound" ? "入站配置" : editor.kind === "outbound" ? "出站配置" : editor.kind === "rule" ? "路由规则" : "负载均衡"}</h4><p>{readOnly ? "服务器返回的完整对象" : "结构化字段与高级 JSON 会保存为同一个对象"}</p></div><button type="button" onClick={onCancel} aria-label="关闭"><X /></button></header>
     <div className="xray-object-body">
       {readOnly || advanced ? <textarea className="xray-json-editor object" readOnly={readOnly} value={readOnly ? JSON.stringify(item, null, 2) : json} onChange={(event) => setJson(event.target.value)} spellCheck={false} /> : <div className="xray-fields">
-        {(editor.kind === "inbound" || editor.kind === "outbound" || editor.kind === "balancer") && <label><span>标识（Tag）*</span><input value={asString(item.tag)} onChange={(event) => set("tag", event.target.value)} /></label>}
-        {editor.kind === "inbound" && <InboundStructuredEditor server={server} token={token} username={username} nodes={nodes} item={item} onChange={setItem} onError={setError} usedPorts={usedPorts} originalPort={editor.originalTag ? asNumber(editor.item.port) : 0} />}
+        {(editor.kind === "inbound" || editor.kind === "outbound" || editor.kind === "balancer") && <label><span>标识（Tag）*</span><input value={asString(item.tag)} readOnly={editor.lockTag} onChange={(event) => set("tag", event.target.value)} /></label>}
+        {editor.kind === "inbound" && <InboundStructuredEditor lockTag={editor.lockTag} server={server} token={token} username={username} nodes={nodes} item={item} onChange={setInboundItem} onError={setError} usedPorts={usedPorts} originalPort={editor.originalTag ? asNumber(editor.item.port) : 0} />}
         {editor.kind === "outbound" && <>
           <label><span>协议 *</span><select value={asString(item.protocol)} disabled={Boolean(editor.originalTag) || !outboundProtocols.includes(asString(item.protocol))} onChange={(event) => { const protocol = event.target.value; const defaults = defaultOutbound(protocol, outbounds); setItem((current) => ({ ...current, tag: defaults.tag, protocol, settings: defaults.settings })); setError(""); }}>{!outboundProtocols.includes(asString(item.protocol)) && <option value={asString(item.protocol)}>{outboundProtocolLabels[asString(item.protocol)] || asString(item.protocol)}</option>}{outboundProtocols.map((protocol) => <option key={protocol} value={protocol}>{outboundProtocolLabels[protocol]}</option>)}</select><small>{editor.originalTag ? "编辑时协议保持不变；可通过高级 JSON 处理特殊配置。" : "选择协议后显示对应的正式版结构化字段。"}</small></label>
           <OutboundStructuredEditor serverId={server.id} token={token} item={item} onChange={setItem} onError={setError} />
@@ -1125,7 +1274,7 @@ function ObjectEditor({ editor, server, token, username, nodes, inbounds, outbou
         </>}
       </div>}
       {error && <p className="xray-field-error">{error}</p>}
-      {preview && <div className="xray-live-preview"><div><strong>{editor.kind === "outbound" ? "实时出站 JSON" : "实时入站 JSON"}</strong><button type="button" onClick={() => setPreview(false)} aria-label="关闭预览"><X /></button></div><pre>{JSON.stringify(advanced ? (() => { try { const parsed = parseObject(json); return editor.kind === "inbound" ? sanitizeInbound(parsed) : parsed; } catch { return editor.kind === "inbound" ? sanitizeInbound(item) : item; } })() : editor.kind === "inbound" ? sanitizeInbound(item) : item, null, 2)}</pre></div>}
+      {preview && <div className="xray-live-preview"><div><strong>{editor.kind === "outbound" ? "实时出站 JSON" : "实时入站 JSON"}</strong><button type="button" onClick={() => setPreview(false)} aria-label="关闭预览"><X /></button></div><pre>{JSON.stringify(advanced ? (() => { try { const parsed = parseObject(json); return editor.kind === "inbound" ? sanitizeInbound(parsed, editor.lockTag ? editor.item : undefined) : parsed; } catch { return editor.kind === "inbound" ? sanitizeInbound(item, editor.lockTag ? editor.item : undefined) : item; } })() : editor.kind === "inbound" ? sanitizeInbound(item, editor.lockTag ? editor.item : undefined) : item, null, 2)}</pre></div>}
     </div>
     <footer>{!readOnly && (editor.kind === "inbound" || editor.kind === "outbound") && <button type="button" onClick={() => setPreview((value) => !value)}><Eye />预览</button>}{!readOnly && <button type="button" onClick={toggleAdvanced}><Braces />{advanced ? "返回表单" : "高级 JSON"}</button>}<span /><button type="button" onClick={onCancel}>取消</button>{!readOnly && <button type="button" className="primary" disabled={pending || Boolean(error)} onClick={submit}><Save />{pending ? "保存中..." : "保存"}</button>}</footer>
   </section></div>;
@@ -1301,7 +1450,7 @@ function WarpManager({ allowed, server, token, onClose, onChanged }: { allowed: 
   </section></div>;
 }
 
-function InboundStructuredEditor({ server, token, username, nodes, item, onChange, onError, usedPorts, originalPort }: { server: RemoteServer; token: string; username: string; nodes: XrayNode[]; item: XrayObject; onChange: React.Dispatch<React.SetStateAction<XrayObject>>; onError: (message: string) => void; usedPorts: number[]; originalPort: number }) {
+function InboundStructuredEditor({ server, token, username, nodes, item, onChange, onError, usedPorts, originalPort, lockTag }: { lockTag?: boolean; server: RemoteServer; token: string; username: string; nodes: XrayNode[]; item: XrayObject; onChange: React.Dispatch<React.SetStateAction<XrayObject>>; onError: (message: string) => void; usedPorts: number[]; originalPort: number }) {
   const protocol = asString(item.protocol).toLowerCase();
   const protocolMode = inboundProtocolMode(item);
   const [configurationMode, setConfigurationMode] = useState<"simple" | "expert">("simple");
@@ -1393,7 +1542,7 @@ function InboundStructuredEditor({ server, token, username, nodes, item, onChang
   return <div className="xray-inbound-wizard wide">
     <section className="xray-wizard-section"><div className="xray-wizard-title"><div><strong>快速预设</strong><small>与正式向导一致的常用起点</small></div></div><div className="xray-preset-grid"><button type="button" onClick={() => applyPreset("vless-reality")}><strong>VLESS + REALITY</strong><span>XTLS Vision · TCP · 443</span></button><button type="button" onClick={() => applyPreset("ss-2022")}><strong>Shadowsocks 2022</strong><span>轻量 · TCP/UDP · 8388</span></button></div></section>
 
-    <section className="xray-wizard-section"><div className="xray-wizard-title"><div><strong>入站类型</strong><small>协议、传输与安全方式</small></div></div><div className="xray-wizard-grid"><label><span>协议 *</span><select value={protocolMode} onChange={(event) => { onChange(defaultInboundForUser(event.target.value, username)); onError(""); }}>{inboundProtocols.map((value) => { const embeddedOnly = ["anytls", "snell", "mieru"].includes(value.value); return <option key={value.value} value={value.value} disabled={embeddedOnly && server.xray_mode === "external"}>{value.label}{embeddedOnly && server.xray_mode === "external" ? "（需要内置 Xray）" : ""}</option>; })}</select></label><label><span>传输方式</span><select value={transport} onChange={(event) => changeTransport(event.target.value)}>{transportOptions.map((value) => <option key={value} value={value}>{displayInboundTransport(value)}</option>)}</select></label><label><span>安全方式</span><select value={security} onChange={(event) => changeSecurity(event.target.value)}>{securityOptions.map((value) => <option key={value} value={value}>{displayInboundSecurity(value)}</option>)}</select></label><label><span>配置模式</span><div className="xray-mode-switch"><button type="button" className={configurationMode === "simple" ? "active" : ""} onClick={() => setConfigurationMode("simple")}>简易模式</button><button type="button" className={configurationMode === "expert" ? "active" : ""} onClick={() => setConfigurationMode("expert")}>专家模式</button></div></label><label className="wide"><span>节点名称</span><input value={asString(item._wizard_node_name)} onChange={(event) => update((current) => ({ ...current, _wizard_node_name: event.target.value }))} placeholder="自定义订阅中的节点显示名称" /><small>可填写中文；这是节点显示名，不占用 Xray 入站 Tag。</small></label>{configurationMode === "expert" && transport !== "WSS" && <><label><span>监听地址</span><input value={asString(item.listen)} onChange={(event) => update((current) => ({ ...current, listen: event.target.value }))} placeholder="0.0.0.0" /></label><label><span>端口 *</span><div className="xray-input-action"><input type="number" min="1" max="65535" value={asString(item.port)} onChange={(event) => update((current) => ({ ...current, port: Number(event.target.value) }))} /><button type="button" onClick={chooseAvailablePort}>随机</button></div></label><label><span>入站标识（Tag）</span><input value={asString(item.tag)} onChange={(event) => update((current) => ({ ...current, tag: event.target.value }))} /></label><label className="xray-option-toggle"><span><strong>流量探测</strong><small>仅用于路由识别，不改写目标地址</small></span><input type="checkbox" checked={Boolean(sniffing.enabled)} onChange={(event) => update((current) => ({ ...current, sniffing: event.target.checked ? { ...asObject(current.sniffing), enabled: true, destOverride: security.includes("REALITY") ? ["http", "tls", "quic"] : ["http", "tls"], routeOnly: true } : { enabled: false } }))} /></label></>}</div>{transport === "WSS" && <p className="xray-assistant-note">WSS 由 Nginx 反向代理，本地监听端口和随机路径在提交后按正式流程生成。</p>}{configurationMode === "expert" && transport !== "WSS" && portConflict && <p className="xray-inline-warning">端口 {asNumber(item.port)} 已被当前服务器的其他入站占用。</p>}</section>
+    <section className="xray-wizard-section"><div className="xray-wizard-title"><div><strong>入站类型</strong><small>协议、传输与安全方式</small></div></div><div className="xray-wizard-grid"><label><span>协议 *</span><select value={protocolMode} onChange={(event) => { onChange(defaultInboundForUser(event.target.value, username)); onError(""); }}>{inboundProtocols.map((value) => { const embeddedOnly = ["anytls", "snell", "mieru"].includes(value.value); return <option key={value.value} value={value.value} disabled={embeddedOnly && server.xray_mode === "external"}>{value.label}{embeddedOnly && server.xray_mode === "external" ? "（需要内置 Xray）" : ""}</option>; })}</select></label><label><span>传输方式</span><select value={transport} onChange={(event) => changeTransport(event.target.value)}>{transportOptions.map((value) => <option key={value} value={value}>{displayInboundTransport(value)}</option>)}</select></label><label><span>安全方式</span><select value={security} onChange={(event) => changeSecurity(event.target.value)}>{securityOptions.map((value) => <option key={value} value={value}>{displayInboundSecurity(value)}</option>)}</select></label><label><span>配置模式</span><div className="xray-mode-switch"><button type="button" className={configurationMode === "simple" ? "active" : ""} onClick={() => setConfigurationMode("simple")}>简易模式</button><button type="button" className={configurationMode === "expert" ? "active" : ""} onClick={() => setConfigurationMode("expert")}>专家模式</button></div></label><label className="wide"><span>节点名称</span><input value={asString(item._wizard_node_name)} onChange={(event) => update((current) => ({ ...current, _wizard_node_name: event.target.value }))} placeholder="自定义订阅中的节点显示名称" /><small>可填写中文；这是节点显示名，不占用 Xray 入站 Tag。</small></label>{configurationMode === "expert" && transport !== "WSS" && <><label><span>监听地址</span><input value={asString(item.listen)} onChange={(event) => update((current) => ({ ...current, listen: event.target.value }))} placeholder="0.0.0.0" /></label><label><span>端口 *</span><div className="xray-input-action"><input type="number" min="1" max="65535" value={asString(item.port)} onChange={(event) => update((current) => ({ ...current, port: Number(event.target.value) }))} /><button type="button" onClick={chooseAvailablePort}>随机</button></div></label><label><span>入站标识（Tag）</span><input value={asString(item.tag)} readOnly={lockTag} onChange={(event) => update((current) => ({ ...current, tag: event.target.value }))} /></label><label className="xray-option-toggle"><span><strong>流量探测</strong><small>仅用于路由识别，不改写目标地址</small></span><input type="checkbox" checked={Boolean(sniffing.enabled)} onChange={(event) => update((current) => ({ ...current, sniffing: event.target.checked ? { ...asObject(current.sniffing), enabled: true, destOverride: security.includes("REALITY") ? ["http", "tls", "quic"] : ["http", "tls"], routeOnly: true } : { enabled: false } }))} /></label></>}</div>{transport === "WSS" && <p className="xray-assistant-note">WSS 由 Nginx 反向代理，本地监听端口和随机路径在提交后按正式流程生成。</p>}{configurationMode === "expert" && transport !== "WSS" && portConflict && <p className="xray-inline-warning">端口 {asNumber(item.port)} 已被当前服务器的其他入站占用。</p>}</section>
 
     {(configurationMode === "expert" || protocol === "snell") && <ProtocolSettings protocol={protocol} protocolMode={protocolMode} nodes={nodes} item={item} settings={settings} onChange={update} onSettings={updateSettings} />}
 
@@ -1402,7 +1551,7 @@ function InboundStructuredEditor({ server, token, username, nodes, item, onChang
     {configurationMode === "expert" && asString(stream.security) === "tls" && <section className="xray-wizard-section"><div className="xray-wizard-title"><div><strong>TLS / XTLS</strong><small>{security}</small></div></div><div className="xray-wizard-grid">{protocol === "hysteria" && <label className="xray-option-toggle"><span><strong>允许不安全（自签证书）</strong><small>生成节点时启用跳过证书验证</small></span><input type="checkbox" checked={Boolean(item.insecure)} onChange={(event) => update((current) => ({ ...current, insecure: event.target.checked || undefined }))} /></label>}{!security.includes("Vision") && <label><span>服务器名称（SNI）</span><input value={asString(tls.serverName)} onChange={(event) => updateTLS({ serverName: event.target.value })} placeholder="example.com" /></label>}<label><span>证书文件 *</span><input value={asString((Array.isArray(tls.certificates) ? asObject(tls.certificates[0]).certificateFile : ""))} onChange={(event) => updateTLS({ certificates: [{ ...asObject(Array.isArray(tls.certificates) ? tls.certificates[0] : {}), certificateFile: event.target.value }] })} placeholder="/path/to/fullchain.crt" /></label><label><span>私钥文件 *</span><input value={asString((Array.isArray(tls.certificates) ? asObject(tls.certificates[0]).keyFile : ""))} onChange={(event) => updateTLS({ certificates: [{ ...asObject(Array.isArray(tls.certificates) ? tls.certificates[0] : {}), keyFile: event.target.value }] })} placeholder="/path/to/private.key" /></label>{!security.includes("Vision") && <label><span>ALPN</span><input value={Array.isArray(tls.alpn) ? (tls.alpn as unknown[]).join(",") : asString(tls.alpn)} onChange={(event) => updateTLS({ alpn: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} placeholder={protocol === "hysteria" ? "h3" : "h2,http/1.1"} /></label>}<label><span>最低 TLS 版本</span><select value={asString(tls.minVersion) || "1.2"} onChange={(event) => updateTLS({ minVersion: event.target.value })}><option value="1.2">TLS 1.2</option><option value="1.3">TLS 1.3</option></select></label></div></section>}
 
     <InboundClientsEditor item={item} protocol={protocol} protocolMode={protocolMode} security={security} onChange={update} />
-    <InboundAssistant server={server} token={token} item={item} protocolMode={protocolMode} expert={configurationMode === "expert"} onChange={onChange} onError={onError} />
+    <InboundAssistant editing={lockTag} server={server} token={token} item={item} protocolMode={protocolMode} expert={configurationMode === "expert"} onChange={onChange} onError={onError} />
 
     {configurationMode === "expert" && <details className="xray-raw-sections"><summary>原始分区 JSON</summary><div><label><span>基础设置 JSON</span><textarea value={JSON.stringify(settings, null, 2)} onChange={(event) => { try { update((current) => ({ ...current, settings: parseObject(event.target.value, "基础设置") })); } catch (error) { onError(getError(error, "基础设置错误")); } }} /></label><label><span>传输设置 JSON</span><textarea value={JSON.stringify(stream, null, 2)} onChange={(event) => { try { update((current) => ({ ...current, streamSettings: parseObject(event.target.value, "传输设置") })); } catch (error) { onError(getError(error, "传输设置错误")); } }} /></label><label><span>流量探测 JSON</span><textarea value={JSON.stringify(sniffing, null, 2)} onChange={(event) => { try { update((current) => ({ ...current, sniffing: parseObject(event.target.value, "流量探测") })); } catch (error) { onError(getError(error, "流量探测错误")); } }} /></label></div></details>}
   </div>;
@@ -1493,7 +1642,7 @@ function normalizeDomain(value: string) {
   return value.trim().replace(/^https?:\/\//i, "").split("/")[0].split(":")[0].toLowerCase();
 }
 
-function InboundAssistant({ server, token, item, protocolMode, expert, onChange, onError }: { server: RemoteServer; token: string; item: XrayObject; protocolMode: string; expert: boolean; onChange: React.Dispatch<React.SetStateAction<XrayObject>>; onError: (message: string) => void }) {
+function InboundAssistant({ server, token, item, protocolMode, expert, editing, onChange, onError }: { editing?: boolean; server: RemoteServer; token: string; item: XrayObject; protocolMode: string; expert: boolean; onChange: React.Dispatch<React.SetStateAction<XrayObject>>; onError: (message: string) => void }) {
   const [users, setUsers] = useState<Array<Record<string, unknown>>>([]);
   const [certificates, setCertificates] = useState<Array<Record<string, unknown>>>([]);
   const [nginxDomains, setNginxDomains] = useState<Array<Record<string, unknown>>>([]);
@@ -1537,7 +1686,7 @@ function InboundAssistant({ server, token, item, protocolMode, expert, onChange,
         const available = (certResult.value.certificates || []).filter((cert) => asNumber(cert.remote_server_id) === server.id || (asNumber(cert.remote_server_id) === 0 && Boolean(cert.auto_deploy)));
         setCertificates(available);
         const currentTLS = asObject(asObject(item.streamSettings).tlsSettings);
-        if ((isTLS || isWSS) && !item.cert_id && !Array.isArray(currentTLS.certificates) && available[0]) {
+        if (!editing && (isTLS || isWSS) && !item.cert_id && !Array.isArray(currentTLS.certificates) && available[0]) {
           const cert = available.find((entry) => asNumber(entry.remote_server_id) === server.id) || available[0];
           onChange((current) => {
             const currentStream = asObject(current.streamSettings);
@@ -1553,13 +1702,13 @@ function InboundAssistant({ server, token, item, protocolMode, expert, onChange,
   }, [server.id, token]);
 
   useEffect(() => {
-    if (isReality && (!asString(reality.privateKey) || !asString(reality.publicKey))) void generateRealityKeys();
+    if (!editing && isReality && (!asString(reality.privateKey) || !asString(reality.publicKey))) void generateRealityKeys();
     // Key generation is intentionally tied to entering a Reality mode.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isReality]);
 
   useEffect(() => {
-    if ((!isTLS && !isWSS) || item.cert_id || !certificates.length) return;
+    if (editing || (!isTLS && !isWSS) || item.cert_id || !certificates.length) return;
     const cert = certificates.find((entry) => asNumber(entry.remote_server_id) === server.id) || certificates[0];
     const certDomain = asString(cert.domain);
     const concreteDomain = serverDomain || (certDomain.startsWith("*.") ? "" : certDomain);
@@ -1568,7 +1717,7 @@ function InboundAssistant({ server, token, item, protocolMode, expert, onChange,
       const certificate = { certificateFile: asString(cert.cert_path), keyFile: asString(cert.key_path) };
       return { ...current, cert_id: asNumber(cert.id), streamSettings: { ...currentStream, security: isWSS ? "none" : "tls", tlsSettings: { ...asObject(currentStream.tlsSettings), ...(concreteDomain ? { serverName: concreteDomain } : {}), ...(isWSS ? {} : { certificates: [certificate] }) } } };
     });
-  }, [certificates, isTLS, isWSS, item.cert_id, onChange, server.id, serverDomain]);
+  }, [certificates, editing, isTLS, isWSS, item.cert_id, onChange, server.id, serverDomain]);
 
   function updateItem(updater: (current: XrayObject) => XrayObject) {
     onChange((current) => updater(current));
