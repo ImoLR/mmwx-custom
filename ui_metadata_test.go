@@ -128,7 +128,16 @@ func TestUIMetadataFrontendUsesPlainCustomTransport(t *testing.T) {
 	if start < 0 {
 		t.Fatal("Custom UI metadata API functions were not found")
 	}
-	metadataAPI := text[start:]
+	end := strings.Index(text[start:], "export function deleteRoutingRulePreset(")
+	if end < 0 {
+		t.Fatal("Custom UI metadata delete API function was not found")
+	}
+	end += start
+	close := strings.Index(text[end:], "\n}")
+	if close < 0 {
+		t.Fatal("Custom UI metadata delete API function was not closed")
+	}
+	metadataAPI := text[start : end+close+2]
 	if got := strings.Count(metadataAPI, "return requestCustomApi<"); got != 5 {
 		t.Fatalf("Custom UI metadata endpoints using plain Custom transport=%d, want 5", got)
 	}
