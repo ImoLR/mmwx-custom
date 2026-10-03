@@ -449,6 +449,7 @@ func resolveRemainingManualIdentities(result *resolvedRelationIdentities, relati
 		}
 		if len(owners) == 1 {
 			result.ByUser[relation.ManagementUsername] = appendUniqueString(result.ByUser[relation.ManagementUsername], relation.ProtocolIdentity)
+			result.Unassigned = removeString(result.Unassigned, relation.ProtocolIdentity)
 		}
 	}
 	for _, identity := range identities {
@@ -458,6 +459,8 @@ func resolveRemainingManualIdentities(result *resolvedRelationIdentities, relati
 	}
 	if len(result.Unassigned) > 0 && result.Warning == "" {
 		result.Warning = "one or more protocol identities do not have one exact management-user relation"
+	} else if len(result.Unassigned) == 0 && result.Warning == "one or more protocol identities do not have one exact management-user relation" {
+		result.Warning = ""
 	}
 }
 
@@ -472,7 +475,11 @@ func removeAmbiguousIdentities(result *resolvedRelationIdentities, identities []
 		if len(owners) == 1 {
 			continue
 		}
-		result.Warning = "one or more protocol identities do not have one exact management-user relation"
+		if len(owners) > 1 {
+			result.Warning = "one or more protocol identities have conflicting management-user relations"
+		} else if result.Warning == "" {
+			result.Warning = "one or more protocol identities do not have one exact management-user relation"
+		}
 		result.Unassigned = appendUniqueString(result.Unassigned, identity)
 		for _, username := range owners {
 			result.ByUser[username] = removeString(result.ByUser[username], identity)

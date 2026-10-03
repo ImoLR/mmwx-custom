@@ -121,7 +121,7 @@ func TestManualExactIdentityCanAddASecondUserWithoutStealingOfficialIdentity(t *
 		{InboundTag: "shared", ManagementUsername: "observer", ProtocolIdentity: "manual-id", Source: connectionSourceManual},
 	}}
 	view, mappings := buildManagementView(snapshot, defaultServerConnectionSettings(), ownership)
-	if len(view.Users) != 2 || len(mappings) != 2 {
+	if len(view.Users) != 2 || len(mappings) != 2 || len(view.UnassignedPorts) != 0 || len(view.Warnings) != 0 {
 		t.Fatalf("additive exact relation missing: view=%#v mappings=%#v", view, mappings)
 	}
 	if mappings[0].Identity.User != "manual-id" || mappings[0].Group != "observer" || mappings[1].Identity.User != "official-id" || mappings[1].Group != "official" {
@@ -198,6 +198,12 @@ func TestAmbiguousExactIdentityIsNotAssignedToFirstUser(t *testing.T) {
 	view, mappings := buildManagementView(snapshot, defaultServerConnectionSettings(), ownership)
 	if len(mappings) != 0 || len(view.Warnings) == 0 || view.Users[0].Ports[0].Aggregate.OutboundActive != 0 || view.Users[1].Ports[0].Aggregate.OutboundActive != 0 {
 		t.Fatalf("ambiguous exact identity was falsely attributed: view=%#v mappings=%#v", view, mappings)
+	}
+	snapshot = ownershipSnapshot("shared", 443, "same-identity", "manual-identity")
+	ownership.Relations = append(ownership.Relations, connectionOwnershipRelation{InboundTag: "shared", ManagementUsername: "observer", ProtocolIdentity: "manual-identity", Source: connectionSourceManual})
+	view, mappings = buildManagementView(snapshot, defaultServerConnectionSettings(), ownership)
+	if len(mappings) != 1 || mappings[0].Identity.User != "manual-identity" || mappings[0].Group != "observer" || len(view.Warnings) == 0 || len(view.UnassignedPorts) != 1 || len(view.UnassignedPorts[0].ProtocolIdentities) != 1 || view.UnassignedPorts[0].ProtocolIdentities[0] != "same-identity" {
+		t.Fatalf("manual exact mapping hid an independent ownership conflict: view=%#v mappings=%#v", view, mappings)
 	}
 }
 
