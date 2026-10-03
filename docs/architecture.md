@@ -185,6 +185,49 @@ immediately. Mux has no per-logical-stream termination guarantee on a shared
 physical connection; tracked mux carrier connections close with their
 inbound. Unblocking permits reconnection and cannot restore closed sockets.
 
+### User access lifecycle and traffic groups
+
+Custom disable replaces each user's authentication credential in the Xray
+inbound with a random credential and records the original and replacement in
+`mmwxc_user_disabled_credentials`. It preserves the client `email` used by
+traffic blocks and does not change official `users.is_active`. Enable restores
+the original credential; neither operation resets group usage or quota state.
+SS2022 node credentials contain `server_key:user_key`, while multi-user Core
+clients contain only `user_key`. Lifecycle matching therefore also requires
+the inbound's `2022-blake3-*` method and matching `settings.password` server key.
+
+Traffic-group resolution and connection ownership recognise a backed-up
+disabled credential only for its recorded user, server and inbound. The
+current client must match the backup's disabled credential hash or primary
+authentication value, with a consistent identity. The original credential
+can then connect that user's existing refs/node ownership to the same current
+identity. It cannot grant another user that identity. Shared secrets,
+duplicate authentication, ambiguous refs, and group-external node checks still
+refuse unsafe blocks. A disabled user sharing an inbound therefore does not
+prevent an independently identifiable group user from being blocked.
+
+An over-quota user's existing block survives disable/enable because its
+`(inbound_tag, email)` is unchanged. If the quota/cycle changes while the user
+is disabled, the next successful group evaluation removes the block normally;
+enabling the user does not recreate a cleared block. Helper persists the
+desired list and reapplies it to Core on its report loop, including after a
+Core restart caused by an inbound change. Lifecycle replacement and runtime
+block application are separate operations, so application/reconnection timing
+still follows the Helper loop described above.
+
+Traffic blocks use the Core control API `PUT /v1/config`; this is runtime
+connection-control state, not the Xray inbound JSON. Adding or clearing blocks
+does not alter the inbound or credential hashes checked by lifecycle plans.
+Actual edits to an inbound or a saved credential still trigger the existing
+drift refusals.
+
+Deleting a blocked user first removes its runtime credential and then deletes
+the user. User/assignment/group foreign-key cascades remove its Custom block
+rows. The controller's next successful evaluation drops the identity from its
+desired list, and the next Helper response sends the replacement list (explicit
+`[]` when none remain). Helper applies and persists that clear; a failed
+evaluation continues to preserve the previous list until recovery.
+
 ### Usage formula and official v0.5.5 evidence
 
 The official per-node quota counter is **weighted traffic**, already adjusted
