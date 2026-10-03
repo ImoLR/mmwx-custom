@@ -160,6 +160,16 @@ identity, and identities potentially affecting the user's group-external
 nodes are skipped. Unresolved or stale ownership is conservatively reported
 as `no_identity`; a shared single-secret inbound is never blocked as a group.
 
+A legacy user credential sharing an inbound with a group-external alias only
+prevents blocking when that user is entitled to the alias, or entitlement is
+uncertain. Entitlements include every active package assignment, the legacy
+`users.package_id` binding (empty node lists mean all nodes), node ownership,
+active routed subaccounts, and forward-chain node ownership/billing bindings.
+File subscriptions/authorship and same-inbound user outbound relations retain
+the conservative refusal because their node scope is not reliably known.
+Missing entitlement tables/columns or invalid package node lists fail closed;
+another user's alias with a distinct identity does not alone prevent blocking.
+
 Computed identities are merged into the existing
 `POST /api/custom/agent/connections` desired settings response only for
 Helper >= v0.6.8. Admin connection-settings PUT cannot edit this field and it
