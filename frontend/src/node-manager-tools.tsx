@@ -26,6 +26,7 @@ import {
   cancelNodeRelay,
   confirmExternalSync,
   copyNodeWithRelay,
+  createNode,
   createRoutedOutbound,
   deleteRoutedOutbound,
   createTunnelChain,
@@ -41,6 +42,7 @@ import {
   mutateRemoteRouting,
   runSpeedTest,
   setNodeRelay,
+  setNodeWholeOutbound,
   syncExternalSubscriptions,
   updateNode,
   updatePackageNodeTrafficName,
@@ -55,6 +57,8 @@ import type {
   SpeedTester,
   XrayNode,
 } from "./types";
+import { chainNodePayload, chainProxyCandidates, relayGroupCandidates, relayGroupPayload } from "./node-manager-logic";
+import { nodeToOutbound } from "./xray-manager";
 
 type ToolNotice = (tone: "success" | "error" | "info", text: string) => void;
 
@@ -303,23 +307,6 @@ function routedNode(item: Record<string, unknown>): XrayNode {
   };
 }
 
-function nodeMutation(node: XrayNode, overrides: Partial<{ node_name: string; chain_proxy_node_id: number | null }> = {}) {
-  return {
-    raw_url: node.raw_url || "",
-    node_name: overrides.node_name ?? node.node_name,
-    protocol: node.protocol || "",
-    parsed_config: node.parsed_config || "",
-    clash_config: node.clash_config || "",
-    enabled: node.enabled !== false,
-    tag: node.tag || "",
-    tags: node.tags || [],
-    inbound_tag: node.inbound_tag || "",
-    chain_proxy_node_id: overrides.chain_proxy_node_id ?? node.chain_proxy_node_id ?? null,
-    relay_group_name: node.relay_group_name || "",
-    relay_group_node_ids: node.relay_group_node_ids || null,
-  };
-}
-
 function prettyRoutedJSON(value: unknown) {
   if (typeof value !== "string") return JSON.stringify(value ?? {}, null, 2);
   try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value || "{}"; }
@@ -377,31 +364,14 @@ export function RoutedOutboundDialog({ token, nodes, onChanged, onClose, onNotic
   </>;
 }
 
-function parseProxy(node: XrayNode) {
-  for (const raw of [node.clash_config, node.parsed_config]) {
-    try { const parsed = JSON.parse(raw || "") as Record<string, unknown>; if (parsed && typeof parsed === "object") return parsed; } catch { /* Ignore invalid historical data. */ }
-  }
-  return {} as Record<string, unknown>;
-}
-
-function compactObject(value: Record<string, unknown>): Record<string, unknown> {
-  Object.keys(value).forEach((key) => {
-    const current = value[key];
-    if (current === "" || current == null) delete value[key];
-    else if (typeof current === "object" && !Array.isArray(current)) compactObject(current as Record<string, unknown>);
-  });
-  return value;
-}
-
-function targetOutbound(node: XrayNode) {
-  const proxy = parseProxy(node); const type = String(proxy.type || node.protocol || "").toLowerCase().replace("shadowsocks", "ss"); const address = String(proxy.server || ""); const port = Number(proxy.port) || 0;
-  const network = String(proxy.network || ""); const security = proxy["reality-opts"] ? "reality" : proxy.tls ? "tls" : "";
-  const streamSettings = compactObject({ network, security, wsSettings: proxy["ws-opts"], grpcSettings: proxy["grpc-opts"], realitySettings: proxy["reality-opts"], tlsSettings: proxy.sni || proxy.servername || proxy.alpn ? compactObject({ serverName: proxy.sni || proxy.servername, alpn: proxy.alpn }) : undefined });
-  if (type === "ss") return compactObject({ protocol: "shadowsocks", settings: { servers: [compactObject({ address, port, method: proxy.cipher, password: proxy.password })] }, streamSettings });
-  if (type === "trojan") return compactObject({ protocol: "trojan", settings: { servers: [compactObject({ address, port, password: proxy.password })] }, streamSettings });
-  if (type === "vless" || type === "vmess") return compactObject({ protocol: type, settings: { vnext: [{ address, port, users: [compactObject({ id: proxy.uuid || proxy.id, encryption: proxy.encryption || "none", flow: proxy.flow })] }] }, streamSettings });
-  if (type === "socks5" || type === "socks") return compactObject({ protocol: "socks", settings: { servers: [compactObject({ address, port, users: proxy.username || proxy.password ? [{ user: proxy.username || "", pass: proxy.password || "" }] : undefined })] } });
-  return compactObject({ protocol: type || "freedom", settings: { servers: [compactObject({ address, port })] }, streamSettings });
+function landingOutbound(node: XrayNode, domain = "") {
+  let proxy: Record<string, unknown>;
+  try { proxy = JSON.parse(node.clash_config || ""); }
+  catch { throw new Error("落地节点配置解析失败"); }
+  if (domain && domain !== proxy.server) proxy = { ...proxy, server: domain };
+  const outbound = nodeToOutbound({ ...node, clash_config: JSON.stringify(proxy) });
+  delete outbound.tag;
+  return outbound;
 }
 
 function routedLabelFor(node: XrayNode) {
@@ -409,36 +379,112 @@ function routedLabelFor(node: XrayNode) {
   return `rout-${clean || node.id}`.slice(0, 32);
 }
 
-export function LandingNodeDialog({ token, source, nodes, onChanged, onClose, onNotice }: { token: string; source: XrayNode; nodes: XrayNode[]; onChanged: () => Promise<void>; onClose: () => void; onNotice: ToolNotice }) {
+export function LandingNodeDialog({ token, source, nodes, servers, onChanged, onClose, onNotice }: { token: string; source: XrayNode; nodes: XrayNode[]; servers: RemoteServer[]; onChanged: () => Promise<void>; onClose: () => void; onNotice: ToolNotice }) {
   const [scope, setScope] = useState<"all" | "routed">("all");
+  const [tab, setTab] = useState<"nodes" | "balancer">("nodes");
   const [query, setQuery] = useState("");
   const [targetId, setTargetId] = useState(0);
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState(false);
-  const targets = useMemo(() => nodes.filter((node) => node.id !== source.id && node.node_type !== "routed" && !node.chain_proxy_node_id && node.clash_config && `${node.node_name} ${node.protocol || ""} ${(node.tags || []).join(" ")}`.toLowerCase().includes(query.trim().toLowerCase())), [nodes, query, source.id]);
+  const [balancers, setBalancers] = useState<Array<Record<string, unknown>>>([]);
+  const [balancerTag, setBalancerTag] = useState("");
+  const [loadingBalancers, setLoadingBalancers] = useState(false);
+  const [balancerError, setBalancerError] = useState("");
+  const sourceServerName = source.original_server || (source.tag?.startsWith("远程:") ? source.tag.slice(3) : "");
+  const sourceServer = servers.find((server) => server.name === sourceServerName && server.status === "connected");
+  useEffect(() => {
+    if (scope !== "all" || tab !== "balancer") return;
+    setBalancers([]); setBalancerTag(""); setBalancerError(""); setLoadingBalancers(false);
+    if (!sourceServer) { setBalancerError("源节点未关联远程服务器，无法配置出站路由"); return; }
+    let active = true;
+    setLoadingBalancers(true);
+    fetchRemoteRouting(token, sourceServer.id).then((response) => { if (active) setBalancers((response.routing?.balancers || []).filter((item) => typeof item.tag === "string" && item.tag)); }).catch((error) => { if (active) setBalancerError(error instanceof Error ? error.message : "读取负载均衡器失败"); }).finally(() => { if (active) setLoadingBalancers(false); });
+    return () => { active = false; };
+  }, [scope, sourceServer?.id, tab, token]);
+  const targets = useMemo(() => nodes.filter((node) => node.id !== source.id && node.node_type !== "routed" && !node.protocol?.includes("⇋") && node.clash_config && `${node.node_name} ${node.protocol || ""} ${node.tag || ""} ${(node.tags || []).join(" ")}`.toLowerCase().includes(query.trim().toLowerCase())), [nodes, query, source.id]);
   const selected = nodes.find((node) => node.id === targetId);
   const select = (node: XrayNode) => { setTargetId(node.id); if (!label.trim()) setLabel(routedLabelFor(node)); };
   const save = async () => {
-    if (!selected) throw new Error("请选择落地节点");
+    if (!sourceServer) throw new Error("源节点未关联远程服务器，无法配置出站路由");
+    if (!source.inbound_tag) throw new Error("源节点缺少 inbound_tag，无法配置路由");
     setBusy(true);
     try {
-      if (scope === "all") await updateNode(token, source.id, nodeMutation(source, { chain_proxy_node_id: selected.id }));
-      else {
+      if (scope === "all" && tab === "balancer") {
+        if (!balancerTag) throw new Error("请选择负载均衡器");
+        await setNodeWholeOutbound(token, source.id, { balancer_tag: balancerTag });
+      } else if (scope === "all") {
+        if (!selected) throw new Error("请选择落地节点");
+        const domain = selected.original_server ? servers.find((server) => server.name === selected.original_server)?.domain?.trim() || "" : "";
+        await setNodeWholeOutbound(token, source.id, { outbound: landingOutbound(selected, domain), target_node_id: selected.id });
+      } else {
+        if (!selected) throw new Error("请选择落地节点");
         const clean = label.trim();
         if (!/^[a-zA-Z0-9-]{2,32}$/.test(clean)) throw new Error("Label 只能包含字母、数字和短横线，长度 2-32");
-        if (!source.original_server || !source.inbound_tag) throw new Error("源节点缺少服务器或关联入站，不能创建路由出站");
-        await createRoutedOutbound(token, { parent_node_id: source.id, target_node_id: selected.id, label: clean, outbound: targetOutbound(selected), node_name: `${source.node_name}-${clean}` });
+        await createRoutedOutbound(token, { parent_node_id: source.id, target_node_id: selected.id, label: clean, outbound: landingOutbound(selected), node_name: `${source.node_name}-${clean}` });
       }
-      await onChanged(); onNotice("success", scope === "all" ? "整个节点的落地已配置" : "路由出站子节点已创建"); onClose();
+      await onChanged(); onNotice("success", scope === "routed" ? "路由出站子节点已创建" : tab === "balancer" ? "负载均衡器路由已绑定到入站" : "落地节点配置成功（出站+路由已添加）"); onClose();
     } finally { setBusy(false); }
   };
   return <ToolDialog title="新增落地节点" subtitle={`为「${source.node_name}」选择落地节点`} onClose={onClose}>
     <div className="node-subpanel"><h3>作用范围</h3><div className="node-dialog-tabs"><button className={scope === "all" ? "active" : ""} onClick={() => setScope("all")}><strong>整个节点</strong><small>源入站的所有用户共享此落地</small></button><button className={scope === "routed" ? "active" : ""} onClick={() => setScope("routed")}><strong>子节点（路由出站）</strong><small>创建可单独加入套餐的虚拟子节点</small></button></div></div>
-    <div className="node-inline-input"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索节点名称、协议或标签" /></div>
+    {scope === "all" && <div className="node-dialog-tabs"><button className={tab === "nodes" ? "active" : ""} onClick={() => setTab("nodes")}>选择落地节点</button><button className={tab === "balancer" ? "active" : ""} onClick={() => setTab("balancer")}>选择负载均衡器</button></div>}
+    {scope === "all" && tab === "balancer" ? <><p>在源服务器添加一条路由规则:入站 → 负载均衡器(不创建出站,不创建节点)</p>{loadingBalancers ? <ToolLoading /> : balancerError ? <div className="node-empty">{balancerError}</div> : <div className="node-tool-list selectable">{balancers.map((item) => <label key={String(item.tag)}><input type="radio" name="landing-balancer" checked={balancerTag === item.tag} onChange={() => setBalancerTag(String(item.tag))} /><div><strong>{String(item.tag)}</strong><p>{String(typeof item.strategy === "object" && item.strategy ? (item.strategy as Record<string, unknown>).type || "random" : item.strategy || "random")} · {Array.isArray(item.selector) ? item.selector.join(", ") : "—"}</p></div></label>)}{!balancers.length && <div className="node-empty">源服务器未配置负载均衡器,请先在「Xray 管理 → 路由 → 负载均衡器」中创建</div>}</div>}</> : <>
+    <div className="node-inline-input"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索节点名称、协议或标签..." /></div>
+    <p>自动排除链式代理节点和源节点自身</p>
     <div className="node-tool-list selectable node-landing-targets">{targets.map((node) => <label key={node.id} className={targetId === node.id ? "selected" : ""}><input type="radio" name="landing-target" checked={targetId === node.id} onChange={() => select(node)} /><div><strong>{node.node_name}</strong><p>{(node.protocol || "node").toUpperCase()} · {node.original_server || "外部节点"}</p><p>{(node.tags || []).join(" · ")}</p></div></label>)}{!targets.length && <div className="node-empty">没有可用的落地节点</div>}</div>
     {scope === "routed" && <div className="node-form-grid"><label className="wide"><span>Label</span><input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="例如 rout-HK" /><small>仅允许字母、数字和短横线，长度 2-32；选择节点后会自动填写。</small></label></div>}
-    {selected && <div className="node-selected-target"><Check /><span>已选择</span><strong>{selected.node_name}</strong></div>}
-    <div className="node-dialog-actions"><button type="button" onClick={onClose}>取消</button><button className="primary" type="button" disabled={busy || !selected || (scope === "routed" && !/^[a-zA-Z0-9-]{2,32}$/.test(label.trim()))} onClick={() => void save().catch((error) => onNotice("error", error instanceof Error ? error.message : "配置失败"))}><Plus />{scope === "all" ? "保存落地" : "创建路由出站"}</button></div>
+    {selected && <div className="node-selected-target"><Check /><span>已选择</span><strong>{selected.node_name}</strong></div>}</>}
+    <div className="node-dialog-actions"><button type="button" onClick={onClose}>取消</button><button className="primary" type="button" disabled={busy || (scope === "all" && tab === "balancer" ? !balancerTag : !selected) || (scope === "routed" && !/^[a-zA-Z0-9-]{2,32}$/.test(label.trim()))} onClick={() => void save().catch((error) => onNotice("error", error instanceof Error ? error.message : "配置失败"))}><Plus />{scope === "routed" ? "创建路由出站" : tab === "balancer" ? "确认绑定" : "保存落地"}</button></div>
+  </ToolDialog>;
+}
+
+export function ChainProxyDialog({ token, source, nodes, onChanged, onClose, onNotice }: { token: string; source: XrayNode; nodes: XrayNode[]; onChanged: () => Promise<void>; onClose: () => void; onNotice: ToolNotice }) {
+  const [query, setQuery] = useState("");
+  const [targetId, setTargetId] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const candidates = useMemo(() => chainProxyCandidates(nodes, source.id, query), [nodes, query, source.id]);
+  const save = async () => {
+    const target = chainProxyCandidates(nodes, source.id).find((node) => node.id === targetId);
+    if (!target) return;
+    setBusy(true);
+    try { await createNode(token, chainNodePayload(source, target)); await onChanged(); onNotice("success", "链式代理节点创建成功"); onClose(); }
+    catch (error) { onNotice("error", error instanceof Error ? error.message : "创建链式代理节点失败"); }
+    finally { setBusy(false); }
+  };
+  return <ToolDialog title="选择中转节点" subtitle={`选择目标节点与 "${source.node_name}" 创建链式代理`} onClose={onClose}>
+    <div className="node-inline-input"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索节点名称、协议或标签..." /></div>
+    <p>自动排除链式代理节点</p><p className="node-relay-notice">⚠️ 中转节点只能选择外部节点。妙妙屋X 中需在中转节点自行添加出站，链式代理无法计费套餐用户流量。</p>
+    <div className="node-tool-list selectable">{candidates.map((node) => <label key={node.id}><input type="radio" name="chain-target" checked={targetId === node.id} onChange={() => setTargetId(node.id)} /><div><strong>{node.node_name}</strong><p>{node.protocol} · {node.tag || "外部节点"}</p></div></label>)}{!candidates.length && <div className="node-empty">{query.trim() ? "未找到匹配的节点" : "暂无可用的节点"}</div>}</div>
+    <div className="node-dialog-actions"><button type="button" onClick={onClose}>取消</button><button className="primary" type="button" disabled={busy || !targetId} onClick={() => void save()}><Link2 />创建链式出站</button></div>
+  </ToolDialog>;
+}
+
+export function RelayGroupDialog({ token, source, nodes, onChanged, onClose, onNotice }: { token: string; source: XrayNode; nodes: XrayNode[]; onChanged: () => Promise<void>; onClose: () => void; onNotice: ToolNotice }) {
+  const [query, setQuery] = useState("");
+  const [groupName, setGroupName] = useState(source.relay_group_name || "");
+  const [selected, setSelected] = useState<Set<number>>(() => new Set((source.relay_group_node_ids || []).filter((id) => relayGroupCandidates(nodes, source.id).some((node) => node.id === id))));
+  const [busy, setBusy] = useState(false);
+  const candidates = useMemo(() => relayGroupCandidates(nodes, source.id, query), [nodes, query, source.id]);
+  const save = async (remove = false) => {
+    const removing = remove || Boolean(source.inbound_tag && !groupName.trim());
+    const name = removing ? "" : groupName.trim();
+    const ids = removing ? [] : relayGroupCandidates(nodes, source.id).filter((node) => selected.has(node.id)).map((node) => node.id);
+    if ((!name || !ids.length) && !removing) return;
+    setBusy(true);
+    try {
+      const payload = relayGroupPayload(source, name, ids);
+      if (source.inbound_tag) await updateNode(token, source.id, payload);
+      else await createNode(token, payload);
+      await onChanged(); onNotice("success", name ? "中转组节点创建成功" : "解除中转组成功"); onClose();
+    } catch (error) { onNotice("error", error instanceof Error ? error.message : name ? "创建中转组节点失败" : "解除中转组失败"); }
+    finally { setBusy(false); }
+  };
+  return <ToolDialog title="创建中转组" subtitle={`为落地节点 "${source.node_name}" 选择多个中转节点组成 url-test 中转组，该落地节点的 dialer-proxy 将指向此组`} onClose={onClose}>
+    <div className="node-form-grid"><label className="wide"><span>中转组名称</span><input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="中转组名称(如: 香港中转组)" /></label></div>
+    <div className="node-inline-input"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索节点名称、协议或标签..." /></div>
+    <p>已选 {selected.size} 个中转节点</p><p className="node-relay-notice">中转节点支持外部节点和妙妙屋X内部节点；内部落地节点会直接保存中转组配置，不会复制入站。</p>
+    <div className="node-tool-list selectable">{candidates.map((node) => <label key={node.id}><input type="checkbox" checked={selected.has(node.id)} onChange={() => setSelected((current) => { const next = new Set(current); next.has(node.id) ? next.delete(node.id) : next.add(node.id); return next; })} /><div><strong>{node.node_name}</strong><p>{node.protocol} · {node.original_server || node.tag || "外部节点"}</p></div></label>)}{!candidates.length && <div className="node-empty">{query.trim() ? "未找到匹配的节点" : "暂无可用的节点"}</div>}</div>
+    <div className="node-dialog-actions">{source.inbound_tag && source.relay_group_name && <button className="danger" type="button" disabled={busy} onClick={() => void save(true)}><X />解除中转组</button>}<button type="button" onClick={onClose}>取消</button><button className="primary" type="button" disabled={busy || (groupName.trim() ? !selected.size : !source.inbound_tag)} onClick={() => void save()}><Network />{source.inbound_tag && !groupName.trim() ? "解除中转组" : "创建中转组"}</button></div>
   </ToolDialog>;
 }
 
