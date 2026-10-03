@@ -47,7 +47,7 @@ func TestPackageTrafficGroupValidation(t *testing.T) {
 		t.Fatal("empty package selection means all nodes:", err)
 	}
 	pkg.NodeLimits["1"] = .01
-	if err := validatePackageTrafficGroups([]packageTrafficGroup{{Name: "fraction", Limit: int64(math.Round(.01 * (1 << 30))), NodeIDs: []int64{1}}}, pkg, nodes); err != nil {
+	if err := validatePackageTrafficGroups([]packageTrafficGroup{{Name: "fraction", Limit: int64(math.Floor(.01 * (1 << 30))), NodeIDs: []int64{1}}}, pkg, nodes); err != nil {
 		t.Fatal("equal fractional quota:", err)
 	}
 	groups := []packageTrafficGroup{{NodeIDs: []int64{1, 2, 3, 4}}}
@@ -157,6 +157,39 @@ func TestTrafficGroupDesiredSettingsCannotBeOverwritten(t *testing.T) {
 	a.trafficGroupsReady = false
 	if a.trafficBlocksForHelper(settings, "1", "v0.6.8").BlockedIdentities != nil {
 		t.Fatal("startup/error must preserve Helper state until successful refresh")
+	}
+}
+
+func TestTrafficGroupUnbindAndCycleTransitions(t *testing.T) {
+	old := trafficGroupBlock{AssignmentID: 1, GroupID: 2, CycleStart: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}
+	added, removed := trafficGroupBlockTransitions([]trafficGroupBlock{old}, nil)
+	if len(added) != 0 || len(removed) != 1 {
+		t.Fatal("unbinding/deleting must log an unblock even after database cascade")
+	}
+	next := old
+	next.CycleStart = old.CycleStart.AddDate(0, 1, 0)
+	added, removed = trafficGroupBlockTransitions([]trafficGroupBlock{old}, []trafficGroupBlock{next})
+	if len(added) != 1 || len(removed) != 1 {
+		t.Fatal("new cycle should replace old block state")
+	}
+	added, removed = trafficGroupBlockTransitions([]trafficGroupBlock{next}, []trafficGroupBlock{next})
+	if len(added)+len(removed) != 0 {
+		t.Fatal("unchanged blocks should not log repeated transitions")
+	}
+}
+
+func TestTrafficGroupCycleUsesOfficialLocalWallTime(t *testing.T) {
+	zone := time.FixedZone("official", 8*60*60)
+	now := time.Date(2026, 10, 1, 1, 0, 0, 0, zone)
+	assignment := trafficGroupAssignment{Start: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), MonthlyReset: true, ResetDay: 1}
+	start, _ := trafficGroupCycle(assignment, now)
+	if start.Day() != 1 || start.Month() != time.October || start.Location() != zone {
+		t.Fatalf("wrong local reset boundary: %v", start)
+	}
+	baseline := 200.0
+	updated := time.Date(2026, 10, 1, 0, 30, 0, 0, time.UTC)
+	if got := packageNodeTrafficUsage(800, 100, &baseline, updated, start); got != 600 {
+		t.Fatalf("timestamp-without-time-zone baseline misread: %d", got)
 	}
 }
 

@@ -110,6 +110,77 @@ component.
 
 ## Package node traffic groups
 
+Groups live in `mmwxc_package_traffic_groups` (package FK, name, byte quota,
+JSONB member node IDs and timestamps). `mmwxc_package_traffic_group_blocks`
+records each over-quota assignment/group, username, package, cycle start,
+usage when blocked and block time. Package/group/assignment/user deletion
+cascades to the corresponding Custom rows. No official traffic, baseline or
+`package_node_traffic_suspensions` rows are written by Custom.
+
+Authenticated administrators use:
+
+- `GET /api/custom/packages/{id}/traffic-groups`: `{groups: [...]}`; a group
+  has `id`, `package_id`, `name`, `limit_bytes`, `node_ids`, `created_at`,
+  `updated_at`.
+- `PUT` at the same path: `{groups: [{id?, name, limit_bytes, node_ids}]}`
+  fully replaces the groups; `[]` clears them. Existing IDs must belong to
+  the package. Names are required, each group needs a node, each node can be
+  in only one group, and its positive quota cannot exceed the package total.
+  Member per-node quotas cannot exceed the group quota. Empty package node
+  selection means all nodes. Removed/deleted members are filtered on read
+  and ignored by enforcement.
+- `GET /api/custom/packages/{id}/traffic-groups/usage`: `{usage: [...],
+  nodes: [...]}`. Each usage row contains `username`, `assignment_id`,
+  `group_id`, `group_name`, `used_bytes`, `limit_bytes`, `blocked`,
+  `cycle_start`, nullable `cycle_end`, and `nodes`. A node has `node_id`,
+  `node_name`, `server_name`, `status`, and optional `reason`. The top-level
+  nodes describe package capabilities even before a user is bound.
+
+The editor saves the official package first, then replaces its Custom groups.
+These two API writes are not a cross-service transaction; failed group saves
+remain visible and can be retried using the already-created package ID.
+The UI displays GB as `2^30` bytes, truncating fractional bytes on save.
+
+The controller evaluates active assignments on startup and approximately
+every 60 seconds (also after group edits and when reading usage). Reaching
+the sum quota creates a desired block; new cycles, changed quotas/members,
+and unbinding cause reevaluation and removal. Package total and official
+per-node limits continue independently. Block/unblock transitions are logged.
+`blocked` in the usage view means an over-quota group has at least one safe,
+capable node selected for blocking; it does not claim every member is enforced.
+
+Identity resolution uses current Core configuration, existing ownership,
+assignment-specific inbound credentials, and routed-node subaccounts.
+Empty identities, ambiguous/shared authentication, other users sharing the
+identity, and identities potentially affecting the user's group-external
+nodes are skipped. Unresolved or stale ownership is conservatively reported
+as `no_identity`; a shared single-secret inbound is never blocked as a group.
+
+Computed identities are merged into the existing
+`POST /api/custom/agent/connections` desired settings response only for
+Helper >= v0.6.8. Admin connection-settings PUT cannot edit this field and it
+is never saved into administrator settings. Helper persists the last list,
+resends it through Core `PUT /v1/config`, and reports
+`snapshot.core.traffic_block_supported`. Core v7 must accept the complete
+configuration before this capability is true. Older Core retries preserve
+supported settings without blocks and report false. Explicit `[]` removes
+blocks; missing controller data preserves the Helper's previous list. After
+controller restart or a database refresh failure, unblocking waits for a
+successful evaluation rather than silently clearing persisted blocks.
+
+Node statuses are `enforced`, `embedded`, `core_outdated`, `helper_outdated`,
+`external_node`, or `no_identity`. Embedded, unmanaged external nodes, old
+Core/Helper and unresolved identities cannot enforce the quota and are shown
+as warnings in the editor/usage view. Offline or unconfirmed capabilities
+also have explanatory reasons. The official collection interval, controller
+minute loop and Helper report/config application allow an overshoot window.
+
+Core v7 closes authenticated tracked inbound connections and rejects new
+admissions. Existing native UDP/untracked sessions may not terminate
+immediately. Mux has no per-logical-stream termination guarantee on a shared
+physical connection; tracked mux carrier connections close with their
+inbound. Unblocking permits reconnection and cannot restore closed sockets.
+
 ### Usage formula and official v0.5.5 evidence
 
 The official per-node quota counter is **weighted traffic**, already adjusted

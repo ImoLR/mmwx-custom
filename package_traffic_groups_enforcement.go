@@ -124,12 +124,23 @@ func trafficGroupCapability(node trafficGroupNode, record serverDetailedConnecti
 	return status
 }
 
+func trafficGroupPackageNodeStatuses(pkg trafficGroupPackage, nodes map[int64]trafficGroupNode, records map[string]serverDetailedConnectionRecord, now time.Time) []trafficGroupNodeStatus {
+	result := []trafficGroupNodeStatus{}
+	for id, node := range nodes {
+		if len(pkg.NodeIDs) == 0 || trafficGroupContainsNode(pkg.NodeIDs, id) {
+			result = append(result, trafficGroupCapability(node, records[strconv.FormatInt(node.ServerID, 10)], now))
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].NodeID < result[j].NodeID })
+	return result
+}
+
 func (a *app) refreshTrafficGroupsLocked(ctx context.Context, store *postgresAdminSessionStore) error {
 	nodes, err := store.trafficGroupNodes(ctx)
 	if err != nil {
 		return err
 	}
-	rows, err := store.db.QueryContext(ctx, `SELECT id FROM packages ORDER BY id`)
+	rows, err := store.db.QueryContext(ctx, `SELECT DISTINCT package_id FROM mmwxc_package_traffic_groups ORDER BY package_id`)
 	if err != nil {
 		return err
 	}
@@ -164,17 +175,7 @@ func (a *app) refreshTrafficGroupsLocked(ctx context.Context, store *postgresAdm
 			return err
 		}
 		pkg.Groups = filterTrafficGroupNodes(pkg.Groups, pkg, nodes)
-		response := packageTrafficGroupUsageResponse{Usage: []packageTrafficGroupUsage{}, Nodes: []trafficGroupNodeStatus{}}
-		allowed := map[int64]bool{}
-		for _, id := range pkg.NodeIDs {
-			allowed[id] = true
-		}
-		for id, node := range nodes {
-			if len(pkg.NodeIDs) == 0 || allowed[id] {
-				response.Nodes = append(response.Nodes, trafficGroupCapability(node, records[strconv.FormatInt(node.ServerID, 10)], now))
-			}
-		}
-		sort.Slice(response.Nodes, func(i, j int) bool { return response.Nodes[i].NodeID < response.Nodes[j].NodeID })
+		response := packageTrafficGroupUsageResponse{Usage: []packageTrafficGroupUsage{}, Nodes: trafficGroupPackageNodeStatuses(pkg, nodes, records, now)}
 		if len(pkg.Groups) == 0 {
 			responses[packageID] = response
 			continue

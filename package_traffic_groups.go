@@ -103,7 +103,7 @@ func validatePackageTrafficGroups(groups []packageTrafficGroup, pkg trafficGroup
 			if seenNodes[id] {
 				return trafficGroupValidationError{"每个节点只能属于一个共享组，且不能重复选择"}
 			}
-			if math.Round(pkg.NodeLimits[strconv.FormatInt(id, 10)]*float64(1<<30)) > float64(group.Limit) {
+			if math.Floor(pkg.NodeLimits[strconv.FormatInt(id, 10)]*float64(1<<30)) > float64(group.Limit) {
 				return trafficGroupValidationError{"成员节点的单节点额度不能超过所在共享组额度"}
 			}
 			seenNodes[id] = true
@@ -161,16 +161,28 @@ func (a *app) packageTrafficGroupsHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	if len(parts) == 3 {
-		if _, err = store.trafficGroupPackage(ctx, id); err == nil {
+		var pkg trafficGroupPackage
+		if pkg, err = store.trafficGroupPackage(ctx, id); err == nil {
 			err = a.refreshTrafficGroupsLocked(ctx, store)
 			if err != nil {
 				a.trafficGroupsReady = false
 			}
 		}
 		if err == nil {
-			response := a.trafficGroupUsage[id]
-			writeJSON(w, http.StatusOK, response)
-			return
+			response, exists := a.trafficGroupUsage[id]
+			if !exists {
+				var nodes map[int64]trafficGroupNode
+				nodes, err = store.trafficGroupNodes(ctx)
+				if err == nil {
+					a.connectionMu.Lock()
+					response = packageTrafficGroupUsageResponse{Usage: []packageTrafficGroupUsage{}, Nodes: trafficGroupPackageNodeStatuses(pkg, nodes, a.detailedConnections, time.Now())}
+					a.connectionMu.Unlock()
+				}
+			}
+			if err == nil {
+				writeJSON(w, http.StatusOK, response)
+				return
+			}
 		}
 	} else if r.Method == http.MethodPut {
 		var body struct {
