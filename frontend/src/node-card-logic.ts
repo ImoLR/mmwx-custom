@@ -29,7 +29,8 @@ export function nodeTunnels(node: XrayNode, tunnels: NodeTunnel[], servers: Remo
 
 export function nodeTunnelChain(node: XrayNode, chains: NodeTunnelChain[], servers: RemoteServer[]) {
   if (!node.relay_orig_server || !node.relay_orig_port) return null;
-  const matches = chains.filter((chain) => chain.final_target === `${node.relay_orig_server.trim()}:${node.relay_orig_port}`);
+  const target = `${node.relay_orig_server.trim()}:${node.relay_orig_port}`;
+  const matches = chains.filter((chain) => chain.final_target === target);
   if (matches.length <= 1) return matches[0] || null;
   const parsed = nodeCardConfig(node), byPort = matches.filter((chain) => Number(chain.entry_port) === Number(parsed.port));
   if (byPort.length <= 1) return byPort[0] || null;

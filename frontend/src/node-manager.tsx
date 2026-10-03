@@ -58,7 +58,15 @@ import {
   updateUserConfig,
 } from "./api";
 import { serverRegionFromFields } from "./geo";
-import type { ExternalSyncCandidate, NodeMutationRequest, RemoteServer, XrayNode } from "./types";
+import type { ExternalSyncCandidate, NodeMutationRequest, NodeTunnel, RemoteServer, XrayNode } from "./types";
+import { NodeRoutingDialog } from "./node-routing";
+import { NodeCardExtras, NodeRelayActionDialog, useNodeCardExtras } from "./node-card-extras";
+import { nodeManagedServer } from "./node-card-logic";
+import { NodePackageChip, useNodePackages } from "./node-package-chip";
+import { NodeProbeBadge, NodeProbeDialog, useNodeProbe } from "./node-probe";
+import { nodeProbeStatesById } from "./node-auxiliary-logic";
+import { RelayCredentialRepairDialog } from "./node-relay-repair";
+import { NodeSpeedTestActions, SpeedTestHistoryDialog, SpeedTesterManagerDialog, useNodeSpeedTests } from "./node-speedtest";
 import { duplicateNodeKey as duplicateKey, duplicateNodeGroups as findDuplicateGroups, subscriptionDefaultTag, batchRenameTransform, matchesNodeSource, moveSelectedNodes } from "./node-manager-logic";
 import { ManagedNodeCreateDialog, ManagedNodeEditDialog } from "./xray-manager";
 import {
@@ -101,6 +109,12 @@ type Dialog =
   | { kind: "routed" }
   | { kind: "landing"; node: XrayNode }
   | { kind: "speedtest" }
+  | { kind: "speed-history"; node?: XrayNode }
+  | { kind: "speed-testers" }
+  | { kind: "node-routing"; node: XrayNode; server: RemoteServer }
+  | { kind: "node-probe" }
+  | { kind: "relay-repair" }
+  | { kind: "relay-action"; node: XrayNode; tunnel?: NodeTunnel }
   | { kind: "uris" }
   | { kind: "external-sync" }
   | { kind: "skip-cert" }
@@ -375,6 +389,16 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
   );
   const toolNotice = useCallback((tone: "success" | "error" | "info", text: string) => setNotice({ tone, text }), []);
   const trafficName = useNodeTrafficNameSetting(token, toolNotice);
+  const cardExtras = useNodeCardExtras(token, nodes, servers);
+  const packages = useNodePackages(token, toolNotice, nodes.map((node) => node.id).sort((a, b) => a - b).join(","));
+  const probe = useNodeProbe(token);
+  const probeStates = useMemo(() => nodeProbeStatesById(probe.status), [probe.status]);
+  const speedTests = useNodeSpeedTests(token, toolNotice);
+  const refreshExtras = async () => { await loadNodes(); await Promise.all([cardExtras.refresh(), packages.refresh(), probe.refresh()]); };
+  const cancelWholeOutbound = (node: XrayNode) => {
+    if (!window.confirm(`将删除“${node.node_name}”的整个节点路由规则及其专用出站配置，但不会删除节点本身。`)) return;
+    void run("取消整个节点出站", async () => { await deleteNodeWholeOutbound(token, node.id); await cardExtras.refresh(); });
+  };
   const saveOrder = async (next: number[]) => {
     setBusy("保存节点顺序");
     setNodeOrder(next);
@@ -431,11 +455,15 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
             <button role="menuitem" onClick={() => openTool({ kind: "tunnels" })}><Link2 />Tunnel 管理</button>
             <button role="menuitem" onClick={() => openTool({ kind: "routed" })}><FileJson />路由出站</button>
             <button role="menuitem" onClick={() => openTool({ kind: "speedtest" })}><Zap />节点测速</button>
+            <button role="menuitem" onClick={() => openTool({ kind: "speed-history" })}><Zap />测速历史</button>
+            <button role="menuitem" onClick={() => openTool({ kind: "speed-testers" })}><Server />测速端管理</button>
             <button role="menuitem" onClick={() => openTool({ kind: "uris" })}><Link2 />URI 管理</button>
             <button role="menuitem" onClick={() => openTool({ kind: "external-sync" })}><RefreshCw />同步外部订阅</button>
             {externalSyncSession && <button role="menuitem" onClick={() => openTool({ kind: "external-sync" })}><Plus />订阅解析完成，请选择需要保存的节点</button>}
             <button role="menuitem" onClick={() => openTool({ kind: "duplicates" })}><Copy />删除重复</button>
             <span className="node-global-menu-label">辅助功能</span>
+            <button role="menuitem" onClick={() => openTool({ kind: "node-probe" })}><Zap />外部节点探测</button>
+            <button role="menuitem" onClick={() => openTool({ kind: "relay-repair" })}><Settings2 />落地凭据迁移</button>
             <button role="menuitem" onClick={() => openTool({ kind: "skip-cert" })}><AlertTriangle />关闭跳过证书验证</button>
             <button role="menuitem" onClick={() => openTool({ kind: "snell" })}><Settings2 />Snell 选项</button>
             <label className="node-global-menu-toggle"><input type="checkbox" checked={trafficName.enabled} disabled={trafficName.loading} onChange={() => void trafficName.toggle()} /><span>节点名称显示流量</span></label>
@@ -445,6 +473,7 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
       </section>
 
       {notice && <NodeNotice notice={notice} />}
+      {cardExtras.error && <p className="node-form-hint" role="status">{cardExtras.error}</p>}
 
       <section className={`node-import-panel ${importOpen ? "open" : ""}`}>
         <button className="node-collapse-head" type="button" onClick={() => setImportOpen((value) => !value)} aria-expanded={importOpen}>
@@ -609,10 +638,17 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
                 onEditInbound={() => setDialog({ kind: "managed-edit", node })}
                 onChain={() => setDialog({ kind: "chain", node })}
                 onRelayGroup={() => setDialog({ kind: "relay-group", node })}
-                onCancelWholeOutbound={() => void run("取消整个节点出站", async () => {
-                  if (!window.confirm(`将删除“${node.node_name}”的整个节点路由规则及其专用出站配置，但不会删除节点本身。`)) return;
-                  await deleteNodeWholeOutbound(token, node.id);
-                })}
+                onCancelWholeOutbound={() => cancelWholeOutbound(node)}
+                onRouting={node.inbound_tag && nodeManagedServer(node, servers) ? () => setDialog({ kind: "node-routing", node, server: nodeManagedServer(node, servers)! }) : undefined}
+                extras={<><NodeCardExtras node={node} state={cardExtras.cards.get(node.id)} servers={servers}
+                  onTunnel={(tunnel) => setDialog({ kind: "relay-action", node, tunnel })}
+                  onRelay={() => setDialog({ kind: "relay-action", node })}
+                  onRevertChain={(entry) => { if (window.confirm(`切回源服务器地址?\n节点「${node.node_name}」当前经链式隧道入口 ${entry} 连接。切回后将拆除该节点的中转配置,恢复为源服务器地址。`)) void run("切回源服务器地址", async () => { await cancelNodeRelay(token, node.id); await cardExtras.refresh(); }); }}
+                  onSwitchWhole={() => setDialog({ kind: "landing", node })} onCancelWhole={() => cancelWholeOutbound(node)} />
+                  <NodePackageChip token={token} nodeId={node.id} loading={packages.loading} memberships={packages.memberships[String(node.id)] || []} packages={packages.packages} onChanged={packages.refresh} onNotice={toolNotice} />
+                  <NodeProbeBadge node={node} state={probeStates.get(node.id)} onClick={() => setDialog({ kind: "node-probe" })} />
+                </>}
+                speedActions={<NodeSpeedTestActions node={node} controller={speedTests} onHistory={() => setDialog({ kind: "speed-history", node })} />}
                 onLanding={() => setDialog({ kind: "landing", node })}
                 onCopy={() => void copyNodeURI(token, node, setNotice)}
                 onTcping={() => void testOne(node)}
@@ -715,10 +751,16 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
         />
       )}
       {dialog?.kind === "add-managed" && <ManagedNodeCreateDialog servers={servers} token={token} username={username} onClose={() => setDialog(null)} onCreated={loadNodes} />}
-      {dialog?.kind === "tunnels" && <TunnelManagerDialog token={token} servers={servers} nodes={nodes} onChanged={loadNodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
-      {dialog?.kind === "routed" && <RoutedOutboundDialog token={token} nodes={nodes} onChanged={loadNodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
-      {dialog?.kind === "landing" && <LandingNodeDialog token={token} servers={servers} source={nodes.find((item) => item.id === dialog.node.id) ?? dialog.node} nodes={nodes} onChanged={loadNodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
-      {dialog?.kind === "speedtest" && <SpeedTestDialog token={token} nodes={nodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
+      {dialog?.kind === "tunnels" && <TunnelManagerDialog token={token} servers={servers} nodes={nodes} onChanged={refreshExtras} onClose={() => setDialog(null)} onNotice={toolNotice} />}
+      {dialog?.kind === "routed" && <RoutedOutboundDialog token={token} nodes={nodes} onChanged={refreshExtras} onClose={() => setDialog(null)} onNotice={toolNotice} />}
+      {dialog?.kind === "landing" && <LandingNodeDialog token={token} username={username} servers={servers} source={nodes.find((item) => item.id === dialog.node.id) ?? dialog.node} nodes={nodes} onChanged={refreshExtras} onClose={() => setDialog(null)} onNotice={toolNotice} />}
+      {dialog?.kind === "speedtest" && <SpeedTestDialog token={token} nodes={nodes} controller={speedTests} onClose={() => setDialog(null)} onNotice={toolNotice} />}
+      {dialog?.kind === "speed-history" && <SpeedTestHistoryDialog token={token} nodes={nodes} node={dialog.node} onClose={() => setDialog(null)} onNotice={toolNotice} />}
+      {dialog?.kind === "speed-testers" && <SpeedTesterManagerDialog token={token} onClose={() => setDialog(null)} onNotice={toolNotice} />}
+      {dialog?.kind === "node-routing" && <NodeRoutingDialog token={token} node={dialog.node} server={dialog.server} onChanged={cardExtras.refresh} onClose={() => setDialog(null)} onNotice={toolNotice} />}
+      {dialog?.kind === "node-probe" && <NodeProbeDialog token={token} nodes={nodes} status={probe.status} loading={probe.loading} error={probe.error} onRefresh={probe.refresh} onChanged={loadNodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
+      {dialog?.kind === "relay-repair" && <RelayCredentialRepairDialog token={token} onChanged={refreshExtras} onClose={() => setDialog(null)} onNotice={toolNotice} />}
+      {dialog?.kind === "relay-action" && <NodeRelayActionDialog token={token} node={dialog.node} tunnel={dialog.tunnel} servers={servers} onChanged={refreshExtras} onClose={() => setDialog(null)} onNotice={toolNotice} />}
       {dialog?.kind === "uris" && <URIManagerDialog token={token} onClose={() => setDialog(null)} onNotice={toolNotice} />}
       {dialog?.kind === "external-sync" && <ExternalSyncDialog token={token} initial={externalSyncSession} onSession={setExternalSyncSession} onClose={() => setDialog(null)} onNotice={toolNotice} onChanged={loadNodes} />}
       {dialog?.kind === "skip-cert" && <DisableSkipCertDialog token={token} nodes={nodes} onClose={() => setDialog(null)} onNotice={toolNotice} onChanged={loadNodes} />}
@@ -749,6 +791,9 @@ function NodeCard({
   onChain,
   onRelayGroup,
   onCancelWholeOutbound,
+  onRouting,
+  extras,
+  speedActions,
   onCopy,
   onTcping,
   onEmoji,
@@ -769,6 +814,9 @@ function NodeCard({
   onChain: () => void;
   onRelayGroup: () => void;
   onCancelWholeOutbound: () => void;
+  onRouting?: () => void;
+  extras: React.ReactNode;
+  speedActions: React.ReactNode;
   onCopy: () => void;
   onTcping: () => void;
   onEmoji: () => void;
@@ -801,12 +849,13 @@ function NodeCard({
         {node.inbound_tag && <span>入站 {node.inbound_tag}</span>}
         {node.node_type === "routed" && <span>路由出站</span>}
         {node.chain_proxy_node_id && <span>链式 #{node.chain_proxy_node_id}</span>}
-        {node.relay_orig_server && <span>中转 {node.relay_orig_server}:{node.relay_orig_port || ""}</span>}
         {transport && <span>{transport}</span>}
         {tls && <span>{tls}</span>}
         {latency && <span className={latency.ok ? "ok" : "bad"}>{latency.loading ? "测试中" : latency.text}</span>}
       </div>
+      {extras}
       <div className="node-card-footer">
+        {speedActions}
         <button className="node-card-menu-button" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen}>
           <MoreHorizontal /> 操作 <ChevronDown />
         </button>
@@ -815,6 +864,7 @@ function NodeCard({
         <div className="node-action-row">
           <button type="button" onClick={onEdit}><Edit3 /> 编辑名称</button>
           {(node.inbound_tag || node.original_server || node.tag?.startsWith("远程:")) && node.node_type !== "routed" && <button type="button" onClick={onEditInbound}><Edit3 /> 编辑节点</button>}
+          {onRouting && <button type="button" onClick={onRouting}><Route /> 节点路由</button>}
           <button type="button" onClick={onChain}><Link2 /> 链式出站</button>
           <button type="button" onClick={onRelayGroup}><Link2 /> 中转组</button>
           <button type="button" onClick={onEmoji}><Tags /> 地区 emoji</button>

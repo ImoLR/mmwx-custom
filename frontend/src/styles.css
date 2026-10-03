@@ -7235,3 +7235,57 @@ button {
     height: 280px;
   }
 }
+
+.node-package-chip {
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.node-package-chip span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.node-package-chip .all-nodes { border: 1px dashed var(--line); }
+.node-package-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  cursor: pointer;
+}
+.node-package-option > span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.node-package-option small { color: var(--muted); }
+.node-probe-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--fill);
+  padding: 4px 7px;
+  color: var(--muted);
+  font-size: var(--node-font-number);
+}
+.node-probe-badge.bad { color: var(--danger); }
+.node-probe-badge.ok { color: var(--success); }
+.node-probe-samples { display: flex; align-items: flex-end; gap: 1px; height: 24px; }
+.node-probe-samples i { width: 3px; min-width: 1px; background: var(--success); }
+.node-probe-samples i.bad { background: var(--danger); }
+.node-aux-table { width: 100%; border-collapse: collapse; font-size: var(--node-font-secondary); }
+.node-aux-table th, .node-aux-table td { padding: 8px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+
+.node-card-extras { display: grid; gap: 4px; min-width: 0; }
+.node-state-link { display: block; max-width: 100%; border: 0; padding: 2px 0; background: transparent; color: var(--muted); text-align: left; font-size: var(--node-font-secondary); overflow-wrap: anywhere; }
+.node-state-link:hover { text-decoration: underline; }
+.node-whole-outbound { font-size: var(--node-font-secondary); overflow-wrap: anywhere; }
+.node-whole-outbound summary { cursor: pointer; }
+.node-card-footer { flex-wrap: wrap; gap: 6px; }
+.node-card-footer .node-action-row { flex: 1; padding: 0; border: 0; }
+.node-speedtest-table { width: 100%; border-collapse: collapse; }
+.node-speedtest-table th, .node-speedtest-table td { padding: 8px; white-space: nowrap; border-bottom: 1px solid var(--line); text-align: left; }
+.node-speedtest-table td svg { width: 16px; height: 16px; vertical-align: middle; }

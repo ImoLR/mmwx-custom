@@ -145,12 +145,7 @@ export function TunnelManagerDialog({ token, servers, nodes, onChanged, onClose,
   useEffect(() => { void load().catch((error) => onNotice("error", error instanceof Error ? error.message : "读取 Tunnel 失败")); }, [token]);
   const removeTunnel = async (item: NodeTunnel) => {
     if (!window.confirm(`确认删除 Tunnel「${item.tag}」？`)) return;
-    if (item.kind === "inbound") await mutateRemoteInbound(token, item.server_id, { action: "remove", tag: item.tag });
-    else {
-      const routing = await fetchRemoteRouting(token, item.server_id); const rules = routing.routing?.rules ?? [];
-      for (let index = rules.length - 1; index >= 0; index -= 1) if (rules[index]?.outboundTag === item.tag) await mutateRemoteRouting(token, item.server_id, { action: "remove_rule", index });
-      await mutateRemoteOutbound(token, item.server_id, { action: "remove", tag: item.tag });
-    }
+    await removeNodeTunnel(token, item);
     await load(); onNotice("success", "Tunnel 已删除并重新读取");
   };
   const createPort = async () => {
@@ -248,6 +243,15 @@ export function TunnelManagerDialog({ token, servers, nodes, onChanged, onClose,
       {mode === "list" && (loading ? <ToolLoading /> : <div className="node-tool-list">{chains.map((chain) => <article key={`chain-${chain.label}`}><div><strong>{chain.label}</strong><p>{chain.hops.map((hop) => `${hop.server_name}:${hop.listen_port || "--"}`).join(" → ")} → {chain.final_target}</p></div><button className="danger" onClick={() => void (async () => { if (!window.confirm(`确认删除转发链「${chain.label}」？`)) return; for (const hop of chain.hops) await mutateRemoteInbound(token, hop.server_id, { action: "remove", tag: hop.tag }); await load(); onNotice("success", "转发链已删除"); })()}><Trash2 /></button></article>)}{tunnels.map((item) => <article key={`${item.server_id}-${item.tag}`}><div><strong>{item.tag}</strong><p>{item.server_name} · :{item.listen_port || "--"} → {item.target_address || "--"}:{item.target_port || "--"}</p></div><button className="danger" onClick={() => void removeTunnel(item).catch((error) => onNotice("error", error instanceof Error ? error.message : "删除失败"))}><Trash2 /></button></article>)}{!chains.length && !tunnels.length && <div className="node-empty">当前没有 Tunnel 配置</div>}</div>)}
     </>}
   </ToolDialog>;
+}
+
+export async function removeNodeTunnel(token: string, item: NodeTunnel) {
+  if (item.kind === "inbound") await mutateRemoteInbound(token, item.server_id, { action: "remove", tag: item.tag });
+  else {
+    const routing = await fetchRemoteRouting(token, item.server_id); const rules = routing.routing?.rules ?? [];
+    for (let index = rules.length - 1; index >= 0; index -= 1) if (rules[index]?.outboundTag === item.tag) await mutateRemoteRouting(token, item.server_id, { action: "remove_rule", index });
+    await mutateRemoteOutbound(token, item.server_id, { action: "remove", tag: item.tag });
+  }
 }
 
 type RoutedEntry = { node: XrayNode; parent: XrayNode; raw: Record<string, unknown> };

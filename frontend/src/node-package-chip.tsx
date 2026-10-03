@@ -7,7 +7,7 @@ import type { NodePackageMembership, NodePackageMemberships } from "./node-auxil
 
 type ToolNotice = (tone: "success" | "error" | "info", text: string) => void;
 
-export function useNodePackages(token: string, onNotice: ToolNotice) {
+export function useNodePackages(token: string, onNotice: ToolNotice, nodeIds?: string) {
   const [data, setData] = useState<NodePackageMemberships>({});
   const [loading, setLoading] = useState(true);
   const refresh = useCallback(async () => {
@@ -16,7 +16,7 @@ export function useNodePackages(token: string, onNotice: ToolNotice) {
     catch (error) { onNotice("error", error instanceof Error ? error.message : "读取套餐节点失败"); }
     finally { setLoading(false); }
   }, [onNotice, token]);
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { if (nodeIds !== "") void refresh(); }, [refresh, nodeIds]);
   return { memberships: data.memberships ?? {}, packages: data.packages ?? [], loading, refresh };
 }
 
