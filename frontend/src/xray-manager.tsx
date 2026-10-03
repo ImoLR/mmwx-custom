@@ -24,6 +24,7 @@ import {
   assignConnectionPort,
   controlRemoteService,
   deleteRoutingRulePreset,
+  fetchCoreMode,
   fetchRoutingRulePresets,
   fetchXrayConfig,
   fetchXrayInbounds,
@@ -55,7 +56,8 @@ import {
   updateXrayWarpLicense,
   updateRemoteServerDomain,
 } from "./api";
-import type { RemoteServer, RoutingRulePreset, XrayNode, XrayObject, XrayServerNIC, XraySystemConfig, XrayWarpStatus } from "./types";
+import type { CoreModeResponse, RemoteServer, RoutingRulePreset, XrayNode, XrayObject, XrayServerNIC, XraySystemConfig, XrayWarpStatus } from "./types";
+import { supportsCustomCoreFeatures } from "./xray-capabilities";
 
 type Tab = "config" | "inbounds" | "outbounds" | "routing";
 type Notice = { kind: "success" | "error"; text: string } | null;
@@ -496,7 +498,40 @@ function nodeToOutbound(node: XrayNode): XrayObject {
   return { tag, protocol, settings: { servers: [{ address, port, ...(users.length ? { users } : {}) }] }, streamSettings };
 }
 
+function useCoreModes(servers: RemoteServer[], token: string) {
+  const serverIds = servers.filter((server) => server.xray_mode === "external").map((server) => server.id).sort((a, b) => a - b).join(",");
+  const [state, setState] = useState<{ serverIds: string; token: string; modes: Record<string, CoreModeResponse | undefined> }>({ serverIds: "", token: "", modes: {} });
+  useEffect(() => {
+    if (!serverIds) return;
+    let active = true;
+    let pending = false;
+    let controller: AbortController | undefined;
+    const refresh = async () => {
+      // Recheck report age even if a previous request is still waiting.
+      setState((current) => ({ ...current }));
+      if (pending) return;
+      pending = true;
+      const requestController = new AbortController();
+      controller = requestController;
+      const timeout = window.setTimeout(() => requestController.abort(), 10_000);
+      const entries = await Promise.all(serverIds.split(",").map(async (id) => {
+        try { return [id, await fetchCoreMode(token, Number(id), requestController.signal)] as const; }
+        catch { return [id, undefined] as const; }
+      }));
+      window.clearTimeout(timeout);
+      if (active) setState({ serverIds, token, modes: Object.fromEntries(entries) });
+      pending = false;
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5000);
+    return () => { active = false; controller?.abort(); window.clearInterval(timer); };
+  }, [serverIds, token]);
+  return state.serverIds === serverIds && state.token === token ? state.modes : {};
+}
+
 export function XrayManager({ server, token, username }: { server: RemoteServer; token: string; username: string }) {
+  const coreModes = useCoreModes([server], token);
+  const warpAllowed = () => supportsCustomCoreFeatures(server, coreModes[String(server.id)]);
   const [tab, setTab] = useState<Tab>("config");
   const [notice, setNotice] = useState<Notice>(null);
   const [loading, setLoading] = useState(true);
@@ -852,7 +887,7 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
       {!loading && tab === "outbounds" && <section className="xray-list-section">
         <ListHeader title={`出站 (${visibleOutbounds.length})`} action="添加出站" onAdd={() => setEditor({ kind: "outbound", item: defaultOutbound("freedom", outbounds) })} extra={<label className="xray-check"><input type="checkbox" checked={hideDefaults} onChange={(event) => setHideDefaults(event.target.checked)} />隐藏默认</label>} />
         <div className="xray-node-import"><select value={selectedNodeId} onChange={(event) => setSelectedNodeId(event.target.value)}><option value="">从节点创建出站...</option>{nodes.map((node) => <option key={node.id} value={node.id}>{node.node_name} ({node.protocol})</option>)}</select><button type="button" disabled={!selectedNodeId} onClick={() => { try { const node = nodes.find((value) => String(value.id) === selectedNodeId); if (!node) return; setEditor({ kind: "outbound", item: nodeToOutbound(node) }); setNotice(null); } catch (error) { setNotice({ kind: "error", text: getError(error, "节点转换失败") }); } }}><Plus />导入</button></div>
-        <div className="xray-quick-row">{["freedom", "blackhole", "dns", "http", "loopback"].map((protocol) => <button type="button" key={protocol} onClick={() => setEditor({ kind: "outbound", item: defaultOutbound(protocol, outbounds) })}>{outboundProtocolLabels[protocol]}</button>)}{server.xray_mode !== "external" && <button type="button" onClick={() => setWarpOpen(true)}><Cloud />Cloudflare WARP</button>}</div>
+        <div className="xray-quick-row">{["freedom", "blackhole", "dns", "http", "loopback"].map((protocol) => <button type="button" key={protocol} onClick={() => setEditor({ kind: "outbound", item: defaultOutbound(protocol, outbounds) })}>{outboundProtocolLabels[protocol]}</button>)}<button type="button" disabled={!warpAllowed()} onClick={() => setWarpOpen(true)}><Cloud />Cloudflare WARP{!warpAllowed() ? "（需要 Custom Core）" : ""}</button></div>
         {visibleOutbounds.length === 0 ? <Empty text="当前服务器没有可显示的出站" /> : visibleOutbounds.map((item) => {
           const index = outbounds.indexOf(item); const detail = describeOutbound(item); const managed = managedTags.has(asString(item.tag)); const portForward = asString(item.tag).startsWith("tunnel-"); const protectedDelete = ["freedom", "blackhole"].includes(asString(item.protocol)) || managed || portForward;
           return <article className="xray-item" key={`${asString(item.tag)}-${index}`}>
@@ -888,7 +923,7 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
       </section>}
 
       {editor && <ObjectEditor editor={editor} server={server} token={token} username={username} nodes={nodes} inbounds={inbounds} outbounds={outbounds} balancers={balancers} usedPorts={inbounds.map((item) => asNumber(item.port)).filter(Boolean)} pending={busy.startsWith("save-")} onCancel={() => setEditor(null)} onSave={(item) => void saveEditor(item)} />}
-      {warpOpen && <WarpManager server={server} token={token} onClose={() => setWarpOpen(false)} onChanged={() => void refreshOutbounds()} />}
+      {warpOpen && <WarpManager allowed={warpAllowed} server={server} token={token} onClose={() => setWarpOpen(false)} onChanged={() => void refreshOutbounds()} />}
     </div>
   );
 }
@@ -1225,7 +1260,7 @@ function OutboundStructuredEditor({ serverId, token, item, onChange, onError }: 
   </div>;
 }
 
-function WarpManager({ server, token, onClose, onChanged }: { server: RemoteServer; token: string; onClose: () => void; onChanged: () => void }) {
+function WarpManager({ allowed, server, token, onClose, onChanged }: { allowed: () => boolean; server: RemoteServer; token: string; onClose: () => void; onChanged: () => void }) {
   const [status, setStatus] = useState<XrayWarpStatus | null>(null);
   const [license, setLicense] = useState("");
   const [busy, setBusy] = useState("");
@@ -1246,6 +1281,7 @@ function WarpManager({ server, token, onClose, onChanged }: { server: RemoteServ
     if (action === "remove" && !window.confirm("确认移除 Cloudflare WARP，并删除 warp-v4 / warp-v6 出站？")) return;
     setBusy(action); setMessage(null);
     try {
+      if (!allowed()) throw new Error("Cloudflare WARP 需要正在运行的 Custom Core，且状态上报必须有效");
       if (action === "install") await installXrayWarp(token, server.id);
       if (action === "license") await updateXrayWarpLicense(token, server.id, license.trim());
       if (action === "remove") await removeXrayWarp(token, server.id);

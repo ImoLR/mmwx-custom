@@ -710,9 +710,10 @@ export function fetchCustomAgentStatus(token: string, serverId: number) {
   });
 }
 
-export function fetchCoreMode(token: string, serverId: number) {
+export function fetchCoreMode(token: string, serverId: number, signal?: AbortSignal) {
   return requestCustomApi<CoreModeResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/core-mode`), {
     headers: { "MM-Authorization": token },
+    signal,
   });
 }
 
