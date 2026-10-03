@@ -403,15 +403,17 @@ func resolveRelationIdentities(relations []connectionOwnershipRelation, identiti
 
 func resolveAuthoritativeRelations(result *resolvedRelationIdentities, relations []connectionOwnershipRelation, identities []string, identitySet map[string]struct{}) {
 	users := make(map[string]struct{})
+	hasPortRelation := false
 	for _, relation := range relations {
 		users[relation.ManagementUsername] = struct{}{}
+		hasPortRelation = hasPortRelation || relation.ProtocolIdentity == ""
 		if relation.ProtocolIdentity != "" {
 			if _, exists := identitySet[relation.ProtocolIdentity]; exists {
 				result.ByUser[relation.ManagementUsername] = appendUniqueString(result.ByUser[relation.ManagementUsername], relation.ProtocolIdentity)
 			}
 		}
 	}
-	if len(users) == 1 {
+	if len(users) == 1 && hasPortRelation {
 		var username string
 		for value := range users {
 			username = value
@@ -504,18 +506,25 @@ func removeString(values []string, unwanted string) []string {
 
 func effectiveOwnershipRelations(relations []connectionOwnershipRelation) []connectionOwnershipRelation {
 	priority := 0
+	identityPriority := make(map[string]int)
 	for _, relation := range relations {
 		if relation.Source != connectionSourceManual {
-			if value := sourcePriority(relation.Source); value > priority {
-				priority = value
-			}
+			value := sourcePriority(relation.Source)
+			priority = max(priority, value)
+			identityPriority[relation.ProtocolIdentity] = max(identityPriority[relation.ProtocolIdentity], value)
 		}
 	}
 	result := make([]connectionOwnershipRelation, 0, len(relations))
 	seen := make(map[string]struct{})
 	for _, relation := range relations {
-		if relation.Source != connectionSourceManual && sourcePriority(relation.Source) != priority {
-			continue
+		if relation.Source != connectionSourceManual {
+			wanted := priority
+			if relation.ProtocolIdentity != "" {
+				wanted = identityPriority[relation.ProtocolIdentity]
+			}
+			if sourcePriority(relation.Source) != wanted {
+				continue
+			}
 		}
 		key := relation.ManagementUsername + "\x00" + relation.ProtocolIdentity
 		if _, exists := seen[key]; exists {

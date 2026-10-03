@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -46,6 +48,15 @@ func TestPackageTrafficGroupValidation(t *testing.T) {
 	if err := validatePackageTrafficGroups([]packageTrafficGroup{{Name: "all", Limit: 3 << 30, NodeIDs: []int64{3}}}, pkg, nodes); err != nil {
 		t.Fatal("empty package selection means all nodes:", err)
 	}
+	pkg.Limit = 0
+	if err := validatePackageTrafficGroups([]packageTrafficGroup{valid}, pkg, nodes); err != nil {
+		t.Fatal("unlimited package should allow a positive group quota:", err)
+	}
+	pkg.Limit = -1
+	if err := validatePackageTrafficGroups([]packageTrafficGroup{valid}, pkg, nodes); err == nil {
+		t.Fatal("negative package quota must not be treated as unlimited")
+	}
+	pkg.Limit = 10 << 30
 	pkg.NodeLimits["1"] = .01
 	if err := validatePackageTrafficGroups([]packageTrafficGroup{{Name: "fraction", Limit: int64(math.Floor(.01 * (1 << 30))), NodeIDs: []int64{1}}}, pkg, nodes); err != nil {
 		t.Fatal("equal fractional quota:", err)
@@ -164,7 +175,7 @@ func TestTrafficGroupUnbindAndCycleTransitions(t *testing.T) {
 	old := trafficGroupBlock{AssignmentID: 1, GroupID: 2, CycleStart: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}
 	added, removed := trafficGroupBlockTransitions([]trafficGroupBlock{old}, nil)
 	if len(added) != 0 || len(removed) != 1 {
-		t.Fatal("unbinding/deleting must log an unblock even after database cascade")
+		t.Fatal("unbinding/deleting must log cleared over-quota state even after database cascade")
 	}
 	next := old
 	next.CycleStart = old.CycleStart.AddDate(0, 1, 0)
@@ -175,6 +186,33 @@ func TestTrafficGroupUnbindAndCycleTransitions(t *testing.T) {
 	added, removed = trafficGroupBlockTransitions([]trafficGroupBlock{next}, []trafficGroupBlock{next})
 	if len(added)+len(removed) != 0 {
 		t.Fatal("unchanged blocks should not log repeated transitions")
+	}
+}
+
+func TestTrafficGroupLogsDistinguishQuotaFromDesiredBlocks(t *testing.T) {
+	var output bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previousOutput)
+	block := trafficGroupBlock{AssignmentID: 1, GroupID: 2, Username: "alice"}
+	logTrafficGroupTransitions([]trafficGroupBlock{block}, nil, nil, nil)
+	if !strings.Contains(output.String(), "traffic group over-quota user=alice") || strings.Contains(output.String(), "traffic group desired") || strings.Contains(output.String(), "traffic group block") {
+		t.Fatalf("unresolved identity was logged as a runtime block: %s", &output)
+	}
+	output.Reset()
+	blocks := map[string][]serverConnectionIdentity{"4": {{InboundTag: "in-a", User: "alice-a"}}}
+	logTrafficGroupTransitions(nil, nil, nil, blocks)
+	if !strings.Contains(output.String(), "traffic group desired block server=4 inbound=in-a identity=alice-a") || !strings.Contains(output.String(), "pending Helper/Core application") {
+		t.Fatalf("desired block should not claim applied enforcement: %s", &output)
+	}
+	output.Reset()
+	logTrafficGroupTransitions(nil, nil, blocks, blocks)
+	if output.Len() != 0 {
+		t.Fatalf("unchanged desired state logged repeatedly: %s", &output)
+	}
+	logTrafficGroupTransitions(nil, []trafficGroupBlock{block}, blocks, nil)
+	if !strings.Contains(output.String(), "traffic group over-quota cleared") || !strings.Contains(output.String(), "traffic group desired unblock") || strings.Contains(output.String(), "traffic group unblock") {
+		t.Fatalf("clearing quota should be separate from desired unblocking: %s", &output)
 	}
 }
 
@@ -326,6 +364,33 @@ func TestTrafficGroupsIsolatedPostgres(t *testing.T) {
 	}
 	if len(a.trafficGroupBlocks["1"]) != 2 || !a.trafficGroupUsage[1].Usage[0].Blocked {
 		t.Fatalf("managed group identities not blocked: %+v %+v", a.trafficGroupBlocks, a.trafficGroupUsage[1])
+	}
+	for _, statement := range []string{
+		`INSERT INTO users VALUES('admin',1,'admin@example.test')`,
+		`UPDATE nodes SET protocol='shadowsocks',original_server='managed',inbound_tag=CASE id WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'three' END,clash_config=CASE id WHEN 1 THEN '{"cipher":"2022-blake3-aes-128-gcm","password":"server-key:owner-one-key"}' WHEN 2 THEN '{"cipher":"2022-blake3-aes-128-gcm","password":"server-key:owner-two-key"}' ELSE '{"cipher":"2022-blake3-aes-128-gcm","password":"server-key:owner-three-key"}' END`,
+		`UPDATE package_assignment_inbound_configs SET credential_json=CASE inbound_tag WHEN 'one' THEN '{"email":"alice-one","password":"alice-one-key"}' ELSE '{"email":"alice-two","password":"alice-two-key"}' END`,
+		`INSERT INTO package_assignment_inbound_configs VALUES(1,'alice',1,'three','alice-three','{"email":"alice-three","password":"alice-three-key"}')`,
+		`INSERT INTO user_inbound_configs SELECT username,server_id,inbound_tag,credential_json FROM package_assignment_inbound_configs`,
+		`UPDATE server_xray_config_snapshots SET config_json='{"inbounds":[{"tag":"one","protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"server-key","clients":[{"email":"owner-one","password":"owner-one-key"},{"email":"alice-one","password":"alice-one-key"}]}},{"tag":"two","protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"server-key","clients":[{"email":"owner-two","password":"owner-two-key"},{"email":"alice-two","password":"alice-two-key"}]}},{"tag":"three","protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"server-key","clients":[{"email":"owner-three","password":"owner-three-key"},{"email":"alice-three","password":"alice-three-key"}]}}]}'`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("SS2022 fixture: %v\n%s", err, statement)
+		}
+	}
+	if err := a.refreshTrafficGroupsLocked(ctx, store); err != nil {
+		t.Fatal("SS2022 identity database load:", err)
+	}
+	desired := a.trafficGroupBlocks["1"]
+	if len(desired) != 2 || desired[0] != (serverConnectionIdentity{InboundTag: "one", User: "alice-one"}) || desired[1] != (serverConnectionIdentity{InboundTag: "two", User: "alice-two"}) || !a.trafficGroupUsage[1].Usage[0].Blocked {
+		t.Fatalf("SS2022 group should block only the two group identities: %+v %+v", desired, a.trafficGroupUsage[1])
+	}
+	ownership, err := store.ConnectionOwnership(ctx, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mappings := buildManagementView(ownershipSnapshot("one", 443, "owner-one", "alice-one"), defaultServerConnectionSettings(), ownership)
+	if len(mappings) != 2 || mappings[0].Identity.User != "alice-one" || mappings[0].Group != "alice" || mappings[1].Identity.User != "owner-one" || mappings[1].Group != "admin" {
+		t.Fatalf("SS2022 binding stole the existing owner's mapping: %+v", mappings)
 	}
 	groups[0].Limit = 1000
 	if _, err := store.replaceTrafficGroups(ctx, 1, groups); err != nil {

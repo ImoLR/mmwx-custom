@@ -192,3 +192,56 @@ func TestTrafficGroupIdentityAnonymousCredentialCollision(t *testing.T) {
 		t.Fatal("anonymous duplicate auth credential can share the blocked identity")
 	}
 }
+
+func TestTrafficGroupSS2022OwnershipAndIsolation(t *testing.T) {
+	config := `{"inbounds":[{"tag":"in-a","protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"server-key","clients":[{"email":"admin-a","password":"owner-key"},{"email":"alice-a","password":"alice-key"},{"email":"bob-a","password":"bob-key"}]}}]}`
+	for _, test := range []struct {
+		name   string
+		change func(*trafficGroupIdentityData, map[int64]trafficGroupNode)
+		want   bool
+	}{
+		{name: "independent users and node owner", want: true},
+		{name: "unresolved node owner", change: func(d *trafficGroupIdentityData, _ map[int64]trafficGroupNode) {
+			d.Ownership.Relations[0].ProtocolIdentity = ""
+		}},
+		{name: "shared authentication key", change: func(d *trafficGroupIdentityData, _ map[int64]trafficGroupNode) {
+			d.Configured["in-a"][0].Credential["password"] = "alice-key"
+		}},
+		{name: "shared identity owner", change: func(d *trafficGroupIdentityData, _ map[int64]trafficGroupNode) {
+			d.Ownership.Relations[0].ProtocolIdentity = "alice-a"
+		}},
+		{name: "duplicate identity", change: func(d *trafficGroupIdentityData, _ map[int64]trafficGroupNode) {
+			d.Configured["in-a"] = append(d.Configured["in-a"], d.Configured["in-a"][1])
+		}},
+		{name: "group external node shares inbound", change: func(_ *trafficGroupIdentityData, nodes map[int64]trafficGroupNode) {
+			node := nodes[2]
+			node.Tag = "in-a"
+			nodes[2] = node
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data, assignment, nodes := trafficGroupIdentityFixture(t)
+			var err error
+			data.Configured, err = trafficGroupConfiguredIdentities(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			owners := matchNodeProtocolIdentities([]string{`{"password":"server-key:owner-key"}`}, extractCoreInboundCredentials(config)["in-a"])
+			if len(owners) != 1 || owners[0] != "admin-a" {
+				t.Fatalf("SS2022 node owner was not matched exactly: %v", owners)
+			}
+			data.NodeIdentities[1] = owners
+			data.Ownership.Relations = []connectionOwnershipRelation{{InboundTag: "in-a", ManagementUsername: "admin", ProtocolIdentity: owners[0], Source: connectionSourceOwner}}
+			data.Refs[0].Credential = `{"email":"alice-a","password":"alice-key"}`
+			data.Refs = append(data.Refs, trafficGroupIdentityRef{AssignmentID: 8, Username: "bob", Tag: "in-a", Identity: "bob-a", Credential: `{"email":"bob-a","password":"bob-key"}`})
+			data.Bindings = append(data.Bindings, trafficGroupIdentityBinding{AssignmentID: 8, Username: "bob", NodeIDs: []int64{1}})
+			if test.change != nil {
+				test.change(&data, nodes)
+			}
+			identity, reason := resolveTrafficGroupIdentity(data, assignment, nodes[1], []int64{1}, nodes)
+			if (reason == "") != test.want || (test.want && identity != (serverConnectionIdentity{InboundTag: "in-a", User: "alice-a"})) || (!test.want && identity != (serverConnectionIdentity{})) {
+				t.Fatalf("identity=%#v reason=%q, want safe=%t", identity, reason, test.want)
+			}
+		})
+	}
+}

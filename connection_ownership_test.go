@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -25,18 +26,30 @@ func ownershipSnapshot(tag string, port uint32, identities ...string) serverDeta
 	return snapshot
 }
 
-func TestBindingOverridesOwnerAndMapsAllIdentitiesForSingleBindingUser(t *testing.T) {
+func TestBindingKeepsOtherNodeOwnerIdentities(t *testing.T) {
 	snapshot := ownershipSnapshot("ss-10015", 10015, "base-owner", "ken__ss-10015")
 	ownership := connectionOwnershipData{Relations: []connectionOwnershipRelation{
 		{InboundTag: "ss-10015", ManagementUsername: "imolr", ProtocolIdentity: "base-owner", Source: connectionSourceOwner},
 		{InboundTag: "ss-10015", ManagementUsername: "ken", ProtocolIdentity: "ken__ss-10015", Source: connectionSourceBinding},
 	}}
 	view, mappings := buildManagementView(snapshot, defaultServerConnectionSettings(), ownership)
-	if len(view.Users) != 1 || view.Users[0].Username != "ken" || view.Users[0].Source != connectionSourceBinding || len(view.Users[0].Ports) != 1 {
-		t.Fatalf("binding did not override owner: %#v", view)
+	if len(view.Users) != 2 || view.Users[0].Username != "imolr" || view.Users[1].Username != "ken" || view.Users[1].Source != connectionSourceBinding {
+		t.Fatalf("independent owner or binding was lost: %#v", view)
 	}
-	if len(mappings) != 2 || view.Users[0].Aggregate.OutboundActive != 0 || view.Users[0].Ports[0].Aggregate.OutboundActive != 3 {
-		t.Fatalf("single binding mapping/port aggregate = %#v mappings=%#v", view.Users[0], mappings)
+	if len(mappings) != 2 || mappings[0].Group != "imolr" || mappings[1].Group != "ken" || view.Users[0].Ports[0].Aggregate.OutboundActive != 1 || view.Users[1].Ports[0].Aggregate.OutboundActive != 2 {
+		t.Fatalf("binding stole another user's identity: users=%#v mappings=%#v", view.Users, mappings)
+	}
+}
+
+func TestExactBindingDoesNotClaimUnknownRuntimeIdentities(t *testing.T) {
+	snapshot := ownershipSnapshot("shared", 443, "bound-id", "unknown-id")
+	ownership := connectionOwnershipData{Relations: []connectionOwnershipRelation{
+		{InboundTag: "shared", ManagementUsername: "alice", ProtocolIdentity: "bound-id", Source: connectionSourceBinding},
+		{InboundTag: "shared", ManagementUsername: "old-owner", ProtocolIdentity: "bound-id", Source: connectionSourceOwner},
+	}}
+	view, mappings := buildManagementView(snapshot, defaultServerConnectionSettings(), ownership)
+	if len(mappings) != 1 || mappings[0].Identity.User != "bound-id" || mappings[0].Group != "alice" || len(view.UnassignedPorts) != 1 || len(view.UnassignedPorts[0].ProtocolIdentities) != 1 || view.UnassignedPorts[0].ProtocolIdentities[0] != "unknown-id" {
+		t.Fatalf("exact binding priority guessed unrelated ownership: %#v mappings=%#v", view, mappings)
 	}
 }
 
@@ -111,11 +124,40 @@ func TestManualExactIdentityCanAddASecondUserWithoutStealingOfficialIdentity(t *
 	if len(view.Users) != 2 || len(mappings) != 2 {
 		t.Fatalf("additive exact relation missing: view=%#v mappings=%#v", view, mappings)
 	}
-	if mappings[0].Identity.User != "manual-id" || mappings[0].Group != "official" || mappings[1].Identity.User != "official-id" || mappings[1].Group != "official" {
-		t.Fatalf("single official binding must remain authoritative for every identity: %#v", mappings)
+	if mappings[0].Identity.User != "manual-id" || mappings[0].Group != "observer" || mappings[1].Identity.User != "official-id" || mappings[1].Group != "official" {
+		t.Fatalf("exact official binding claimed an unrelated manual identity: %#v", mappings)
 	}
-	if view.Users[0].Username != "observer" || view.Users[0].Ports[0].RuntimeAttributed || view.Users[0].Ports[0].Aggregate.OutboundActive != 0 {
-		t.Fatalf("manual relationship fabricated runtime attribution: %#v", view.Users)
+	if view.Users[0].Username != "observer" || !view.Users[0].Ports[0].RuntimeAttributed || view.Users[0].Ports[0].Aggregate.OutboundActive != 2 {
+		t.Fatalf("manual exact relationship lost runtime attribution: %#v", view.Users)
+	}
+}
+
+func TestMatchSS2022NodeCombinedPassword(t *testing.T) {
+	config := `{"inbounds":[{"tag":"ss","protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"server-key","clients":[{"email":"owner","password":"owner-key"},{"email":"alice","password":"alice-key"}]}},{"tag":"trojan","protocol":"trojan","settings":{"clients":[{"email":"owner","password":"owner-key"}]}}]}`
+	credentials := extractCoreInboundCredentials(config)
+	for _, test := range []struct {
+		name, tag, password, want string
+	}{
+		{"combined owner", "ss", "server-key:owner-key", "owner"},
+		{"combined bound user", "ss", "server-key:alice-key", "alice"},
+		{"plain key", "ss", "owner-key", "owner"},
+		{"wrong server key", "ss", "another-server:owner-key", ""},
+		{"server key alone", "ss", "server-key", ""},
+		{"unmatched user key", "ss", "server-key:missing-key", ""},
+		{"extra key", "ss", "server-key:another-key:owner-key", ""},
+		{"not SS2022", "trojan", "server-key:owner-key", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			raw, _ := json.Marshal(map[string]string{"password": test.password})
+			identities := matchNodeProtocolIdentities([]string{string(raw)}, credentials[test.tag])
+			if (test.want == "" && len(identities) != 0) || (test.want != "" && (len(identities) != 1 || identities[0] != test.want)) {
+				t.Fatalf("matched identities %v, want %q", identities, test.want)
+			}
+		})
+	}
+	identities := matchNodeProtocolIdentities([]string{"ss://2022-blake3-aes-128-gcm:server-key%3Aowner-key@localhost:443"}, credentials["ss"])
+	if len(identities) != 1 || identities[0] != "owner" {
+		t.Fatalf("combined URI password did not match owner: %v", identities)
 	}
 }
 

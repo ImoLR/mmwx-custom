@@ -288,8 +288,9 @@ func extractProtocolIdentity(raw string) string {
 }
 
 type protocolCredential struct {
-	Identity string
-	Secrets  map[string]struct{}
+	Identity        string
+	Secrets         map[string]struct{}
+	SS2022ServerKey string
 }
 
 func extractCoreInboundCredentials(raw string) map[string][]protocolCredential {
@@ -306,6 +307,16 @@ func extractCoreInboundCredentials(raw string) map[string][]protocolCredential {
 		if tag == "" {
 			continue
 		}
+		serverKey := ""
+		protocol, _ := inbound["protocol"].(string)
+		settings, _ := inbound["settings"].(map[string]any)
+		method, _ := settings["method"].(string)
+		if protocol == "shadowsocks" || protocol == "ss" {
+			switch method {
+			case "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305":
+				serverKey, _ = settings["password"].(string)
+			}
+		}
 		var walk func(any)
 		walk = func(current any) {
 			switch typed := current.(type) {
@@ -318,7 +329,7 @@ func extractCoreInboundCredentials(raw string) map[string][]protocolCredential {
 					}
 				}
 				if identity != "" {
-					result[tag] = append(result[tag], protocolCredential{Identity: identity, Secrets: credentialSecrets(typed)})
+					result[tag] = append(result[tag], protocolCredential{Identity: identity, Secrets: credentialSecrets(typed), SS2022ServerKey: serverKey})
 				}
 				for _, value := range typed {
 					walk(value)
@@ -371,6 +382,14 @@ func matchNodeProtocolIdentities(rawValues []string, candidates []protocolCreden
 			if _, exists := nodeSecrets[secret]; exists {
 				matched = true
 				break
+			}
+			// SS2022 nodes contain server_key:user_key, while Core clients
+			// contain only user_key. Require the current server key too.
+			if candidate.SS2022ServerKey != "" {
+				if _, exists := nodeSecrets[candidate.SS2022ServerKey+":"+secret]; exists {
+					matched = true
+					break
+				}
 			}
 		}
 		if matched {

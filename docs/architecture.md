@@ -125,7 +125,8 @@ Authenticated administrators use:
 - `PUT` at the same path: `{groups: [{id?, name, limit_bytes, node_ids}]}`
   fully replaces the groups; `[]` clears them. Existing IDs must belong to
   the package. Names are required, each group needs a node, each node can be
-  in only one group, and its positive quota cannot exceed the package total.
+  in only one group, and its positive quota cannot exceed a finite package
+  total. A package total of zero means unlimited and allows positive group quotas.
   Member per-node quotas cannot exceed the group quota. Empty package node
   selection means all nodes. Removed/deleted members are filtered on read
   and ignored by enforcement.
@@ -145,7 +146,10 @@ The controller evaluates active assignments on startup and approximately
 every 60 seconds (also after group edits and when reading usage). Reaching
 the sum quota creates a desired block; new cycles, changed quotas/members,
 and unbinding cause reevaluation and removal. Package total and official
-per-node limits continue independently. Block/unblock transitions are logged.
+per-node limits continue independently. Quota transitions are logged as
+`over-quota` / `over-quota cleared`. Changes to the desired identity lists are
+logged separately as `desired block` / `desired unblock`, pending Helper/Core
+application; neither log is execution confirmation.
 `blocked` in the usage view means an over-quota group has at least one safe,
 capable node selected for blocking; it does not claim every member is enforced.
 

@@ -86,7 +86,7 @@ func validatePackageTrafficGroups(groups []packageTrafficGroup, pkg trafficGroup
 		if strings.TrimSpace(group.Name) == "" || len([]rune(group.Name)) > 100 {
 			return trafficGroupValidationError{"共享组名称不能为空且不能超过 100 个字符"}
 		}
-		if group.Limit <= 0 || group.Limit > pkg.Limit {
+		if group.Limit <= 0 || pkg.Limit < 0 || (pkg.Limit > 0 && group.Limit > pkg.Limit) {
 			return trafficGroupValidationError{"共享额度必须大于 0 且不能超过套餐总额度"}
 		}
 		if group.ID < 0 || (group.ID > 0 && seenIDs[group.ID]) {

@@ -60,6 +60,7 @@ func (s *postgresAdminSessionStore) trafficGroupIdentityData(ctx context.Context
 	if err != nil {
 		return data, err
 	}
+	coreCredentials := extractCoreInboundCredentials(raw)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT assignment_id,username,inbound_tag,0::bigint,email,credential_json FROM package_assignment_inbound_configs WHERE server_id=$1
 		UNION ALL
@@ -119,11 +120,7 @@ func (s *postgresAdminSessionStore) trafficGroupIdentityData(ctx context.Context
 		if err := rows.Scan(&id, &tag, &rawURL, &parsed, &clash); err != nil {
 			return data, err
 		}
-		var candidates []protocolCredential
-		for _, configured := range data.Configured[tag] {
-			candidates = append(candidates, protocolCredential{Identity: configured.Identity, Secrets: credentialSecrets(configured.Credential)})
-		}
-		data.NodeIdentities[id] = matchNodeProtocolIdentities([]string{rawURL, parsed, clash}, candidates)
+		data.NodeIdentities[id] = matchNodeProtocolIdentities([]string{rawURL, parsed, clash}, coreCredentials[tag])
 	}
 	return data, rows.Err()
 }

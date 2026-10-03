@@ -244,12 +244,6 @@ func (a *app) refreshTrafficGroupsLocked(ctx context.Context, store *postgresAdm
 	if a.trafficGroupActive != nil {
 		added, removed = trafficGroupBlockTransitions(a.trafficGroupActive, blocks)
 	}
-	for _, block := range removed {
-		log.Printf("[mmwx-custom] traffic group unblock user=%s package=%d assignment=%d group=%d cycle=%s", block.Username, block.PackageID, block.AssignmentID, block.GroupID, block.CycleStart.Format(time.RFC3339))
-	}
-	for _, block := range added {
-		log.Printf("[mmwx-custom] traffic group block user=%s package=%d assignment=%d group=%d used=%d cycle=%s", block.Username, block.PackageID, block.AssignmentID, block.GroupID, block.Used, block.CycleStart.Format(time.RFC3339))
-	}
 	serverBlocks := map[string][]serverConnectionIdentity{}
 	for serverID, identities := range desired {
 		for identity := range identities {
@@ -263,9 +257,34 @@ func (a *app) refreshTrafficGroupsLocked(ctx context.Context, store *postgresAdm
 			return left.User < right.User
 		})
 	}
+	logTrafficGroupTransitions(added, removed, a.trafficGroupBlocks, serverBlocks)
 	a.trafficGroupBlocks, a.trafficGroupUsage, a.trafficGroupsReady = serverBlocks, responses, true
 	a.trafficGroupActive = blocks
 	return nil
+}
+
+func logTrafficGroupTransitions(added, removed []trafficGroupBlock, previous, next map[string][]serverConnectionIdentity) {
+	for _, block := range removed {
+		log.Printf("[mmwx-custom] traffic group over-quota cleared user=%s package=%d assignment=%d group=%d cycle=%s", block.Username, block.PackageID, block.AssignmentID, block.GroupID, block.CycleStart.Format(time.RFC3339))
+	}
+	for _, block := range added {
+		log.Printf("[mmwx-custom] traffic group over-quota user=%s package=%d assignment=%d group=%d used=%d cycle=%s", block.Username, block.PackageID, block.AssignmentID, block.GroupID, block.Used, block.CycleStart.Format(time.RFC3339))
+	}
+	logChanges := func(action string, from, to map[string][]serverConnectionIdentity) {
+		for serverID, identities := range to {
+			for _, identity := range identities {
+				found := false
+				for _, before := range from[serverID] {
+					found = found || before == identity
+				}
+				if !found {
+					log.Printf("[mmwx-custom] traffic group desired %s server=%s inbound=%s identity=%s (pending Helper/Core application)", action, serverID, identity.InboundTag, identity.User)
+				}
+			}
+		}
+	}
+	logChanges("unblock", next, previous)
+	logChanges("block", previous, next)
 }
 
 func trafficGroupBlockTransitions(previous, next []trafficGroupBlock) (added, removed []trafficGroupBlock) {
