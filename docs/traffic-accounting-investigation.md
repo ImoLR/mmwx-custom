@@ -38,6 +38,35 @@ payload bytes. Core user downlink and metrics both reported 157,286,946 bytes
 (546 bytes of HTTP headers); inbound downlink was 157,450,541 bytes including
 encrypted transport overhead. This case reproduced no Core under-count.
 
+All seven completed Core measurements received 157,286,400 payload bytes each:
+
+| Case | Poll interval | User downlink | Inbound downlink |
+| --- | --- | ---: | ---: |
+| SS2022, fast, client closes | 200 ms, cumulative | 157,286,946 | 157,450,541 |
+| SS2022, fast, target closes | 200 ms, cumulative | 157,286,931 | 157,450,594 |
+| SS2022, fast | 10 ms, reset | 157,286,946 | 157,450,541 |
+| SS2022, 5 MiB/s | 200 ms, reset | 157,286,946 | 157,465,433 |
+| SS2022, 5 MiB/s | 50 ms, cumulative | 157,286,946 | 157,469,683 |
+| VLESS, fast | 10 ms, reset | 157,286,946 | 157,278,390 |
+| Trojan, fast | 10 ms, reset | 157,286,946 | 157,286,946 |
+
+Every user counter equals the HTTP body plus response headers. Server-close
+headers are five bytes shorter per request. Inbound counters measure another
+layer and must not replace the user counter: encrypted SS2022 includes
+overhead, and the VLESS control case also showed a small inbound discrepancy
+that does not explain the SS2022 user-ledger loss. It is recorded, not fixed.
+Raw samples and assertions are in `meter/*-result.json` and
+`meter/matrix-summary.json` in the artifact directory.
+
+The source-built Helper v0.6.8 `-print` diagnostic successfully read Core API
+v7. It reports connections, identities and enforcement state, not user byte
+counters, and does not call the destructive Stats API. The diagnostic did not
+run the Helper's lifecycle/firewall reconciliation or upload loop.
+
+Validation passed, run serially with `GOMAXPROCS=2 go test -p 1`:
+Core `./app/stats/... ./app/dispatcher ./common/singbridge
+./common/mmwxcustom/connection`; Custom `./cmd/mmwxc-helper`.
+
 Full evidence and the final Chinese report are saved outside the repository:
 `/root/mmwx-custom-artifacts/traffic-accounting/` and
 `/root/mmwx-workers/runs/traffic-accounting-investigation/summary.md`.
