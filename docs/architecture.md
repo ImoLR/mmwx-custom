@@ -197,46 +197,68 @@ inbound. Unblocking permits reconnection and cannot restore closed sockets.
 
 ### User access lifecycle and traffic groups
 
-Custom disable replaces each user's authentication credential in the Xray
-inbound with a random credential and records the original and replacement in
-`mmwxc_user_disabled_credentials`. It preserves the client `email` used by
-traffic blocks and does not change official `users.is_active`. Enable restores
-the original credential; neither operation resets group usage or quota state.
-SS2022 node credentials contain `server_key:user_key`, while multi-user Core
-clients contain only `user_key`. Lifecycle matching therefore also requires
-the inbound's `2022-blake3-*` method and matching `settings.password` server key.
+Custom persists disabled intent in `mmwxc_user_lifecycle.desired_state`.
+On External servers with a fresh Helper report confirming traffic-block
+support, disable records client `(inbound_tag, email)` identities in
+`mmwxc_user_disable_blocks`, without changing credentials. The email comes
+from Core clients or official credential records, never `users.email`.
+Assignment credentials, routed subaccounts, package node entitlements and
+owned nodes are included. Shared authentication, another user's ambiguous
+entitlement and administrator default credentials are conflicts and are
+never blocked. SOCKS/HTTP accounts and clients without a Core email cannot
+use this block path.
 
-Traffic-group resolution and connection ownership recognise a backed-up
-disabled credential only for its recorded user, server and inbound. The
-current client must match the backup's disabled credential hash or primary
-authentication value, with a consistent identity. The original credential
-can then connect that user's existing refs/node ownership to the same current
-identity. It cannot grant another user that identity. Shared secrets,
-duplicate authentication, ambiguous refs, and group-external node checks still
-refuse unsafe blocks. A disabled user sharing an inbound therefore does not
-prevent an independently identifiable group user from being blocked.
+The minute traffic-group loop also reconciles disabled users. New identities
+are added after official node/package/assignment changes. The official
+inactive API may remove clients from the current configuration, so recorded
+official credentials and persisted disable identities remain usable for
+blocking a later re-push. Persisted identities are rechecked for ownership
+conflicts. A stale Helper capability report preserves existing safe blocks.
+The Helper receives the union of traffic-group and user-disable sources;
+enabling removes only the user's source, and a group cycle reset removes
+only the group's source. Failed evaluations omit a replacement list so the
+Helper retains its last persisted list.
 
-An over-quota user's existing block survives disable/enable because its
-`(inbound_tag, email)` is unchanged. If the quota/cycle changes while the user
-is disabled, the next successful group evaluation removes the block normally;
-enabling the user does not recreate a cleared block. Helper persists the
-desired list and reapplies it to Core on its report loop, including after a
-Core restart caused by an inbound change. Lifecycle replacement and runtime
-block application are separate operations, so application/reconnection timing
-still follows the Helper loop described above.
+Custom also calls the official user page's status operation
+(`POST /api/v3`, op `4b18ad3836973389`) to set the official account inactive.
+The prior state is saved as `official_was_active` in the Custom lifecycle
+row before the first disable. Enable restores that state; an account already
+inactive before Custom disabled it stays inactive. No official account table
+or schema is written directly. The local v0.5.5 harness still serves inactive
+users' `/x/` subscriptions, which do not traverse this API proxy. Subscription
+downloads are therefore not blocked by Custom.
 
-Traffic blocks use the Core control API `PUT /v1/config`; this is runtime
-connection-control state, not the Xray inbound JSON. Adding or clearing blocks
-does not alter the inbound or credential hashes checked by lifecycle plans.
-Actual edits to an inbound or a saved credential still trigger the existing
-drift refusals.
+Unsupported servers and credentials keep the previous one-time random
+credential swap, with original/replacement backups in
+`mmwxc_user_disabled_credentials`. There is no periodic re-swap. The user
+card and disable preview identify these nodes as best effort and explain
+that official renewals, package changes or new nodes can restore access.
+Enable leaves never-swapped credentials unchanged, restores backed-up
+credentials only after drift checks, and retires successfully restored
+backups. A process-local server/inbound lock serializes configuration
+read/modify/write/verify across different users. Replanning preserves
+unrelated users' concurrent credential changes while rejecting target or
+inbound-shape drift. The official replacement API has no demonstrated
+conditional write contract, so writes by the official controller itself
+remain outside this process lock.
 
-Deleting a blocked user first removes its runtime credential and then deletes
-the user. User/assignment/group foreign-key cascades remove its Custom block
-rows. The controller's next successful evaluation drops the identity from its
-desired list, and the next Helper response sends the replacement list (explicit
-`[]` when none remain). Helper applies and persists that clear; a failed
-evaluation continues to preserve the previous list until recovery.
+Existing disabled rows need no destructive data migration. Supported
+identities are blocked first; restoration of legacy swapped credentials
+waits for a fresh Helper snapshot confirming those blocks. The background
+migration uses an existing unexpired official administrator session for
+required official API calls. Without one, blocks and backups remain in place
+until an administrator session becomes available. Unsupported backups remain
+swapped. For an inactive account whose client was removed by the official
+API, a backup can be retired only if its exact original is still recorded
+by the official credential relation. The prior official account state is
+captured when a legacy row is first migrated.
+
+`GET /api/custom/users/{username}/access` previews the disable scope without
+persisting changes. Lifecycle responses include per-node `blocked`,
+`pending`, `best_effort` and `conflict` states. A desired block is shown as
+pending until the Helper snapshot confirms it; HTTP success alone does not
+claim that the runtime applied it. Existing Core limitations for native UDP,
+untracked sessions and multiplexed connections remain unchanged.
 
 ### Usage formula and official v0.5.5 evidence
 

@@ -123,6 +123,9 @@ type app struct {
 	trafficGroupBlocks     map[string][]serverConnectionIdentity
 	trafficGroupUsage      map[int64]packageTrafficGroupUsageResponse
 	trafficGroupActive     []trafficGroupBlock
+	disabledUsersReady     bool
+	disabledUserBlocks     map[string]map[string][]serverConnectionIdentity
+	disabledUserAccess     map[string][]userAccessNodeStatus
 
 	mu      sync.Mutex
 	lastCPU cpuTimes

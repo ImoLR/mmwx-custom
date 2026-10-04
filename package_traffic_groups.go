@@ -239,12 +239,21 @@ func (a *app) runTrafficGroups(ctx context.Context) {
 		a.trafficGroupsMu.Lock()
 		refreshCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		err := a.refreshTrafficGroupsLocked(refreshCtx, store)
+		disableErr := a.refreshDisabledUsersLocked(refreshCtx)
 		cancel()
 		if err != nil {
 			a.trafficGroupsReady = false
 			log.Printf("[mmwx-custom] traffic groups refresh failed: %v", err)
 		}
+		if disableErr != nil {
+			log.Printf("[mmwx-custom] disabled users refresh failed: %v", disableErr)
+		}
 		a.trafficGroupsMu.Unlock()
+		migrationCtx, migrationCancel := context.WithTimeout(ctx, 45*time.Second)
+		if disableErr == nil {
+			a.migratePersistentDisabledUsers(migrationCtx, store)
+		}
+		migrationCancel()
 		select {
 		case <-ctx.Done():
 			return
@@ -270,8 +279,13 @@ func (a *app) trafficBlocksForHelper(settings serverConnectionSettings, serverID
 	}
 	a.trafficGroupsMu.Lock()
 	defer a.trafficGroupsMu.Unlock()
-	if a.trafficGroupsReady {
+	_, persistent := a.adminStore.(*postgresAdminSessionStore)
+	if a.trafficGroupsReady && (!persistent || a.disabledUsersReady) {
 		identities := append([]serverConnectionIdentity{}, a.trafficGroupBlocks[serverID]...)
+		for _, servers := range a.disabledUserBlocks {
+			identities = append(identities, servers[serverID]...)
+		}
+		identities = uniqueAccessIdentities(identities)
 		settings.BlockedIdentities = &identities
 	}
 	return settings

@@ -9,20 +9,11 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
-// Opt-in audit regressions assert the desired behaviour and fail on the audited
-// implementation. The fixtures contain synthetic credentials only.
-func auditUserAccessRepro(t *testing.T, id string) {
-	t.Helper()
-	if os.Getenv("MMWXC_AUDIT_USER_ACCESS") != "1" {
-		t.Skip("audit: " + id)
-	}
-}
-
+// Regression fixtures contain synthetic credentials only.
 func auditAccessRun(t *testing.T, application *app, store *lifecycleTestStore, enable bool) lifecycleDeleteResult {
 	t.Helper()
 	operation := lifecycleOperationDisable
@@ -181,7 +172,6 @@ func TestAccessDistinctCredentialsRemainIndependent(t *testing.T) {
 }
 
 func TestAuditUA_A03_EnableAfterNewNodeDoesNotRequireNeverCreatedBackup(t *testing.T) {
-	auditUserAccessRepro(t, "UA-A03")
 	for _, sameInbound := range []bool{false, true} {
 		t.Run(fmt.Sprintf("same_inbound_%v", sameInbound), func(t *testing.T) {
 			original := map[string]any{"email": "alice-old", "id": "11111111-1111-4111-8111-111111111111"}
@@ -212,79 +202,49 @@ func TestAuditUA_A03_EnableAfterNewNodeDoesNotRequireNeverCreatedBackup(t *testi
 					t.Fatalf("UA-A03: enabling a disabled user with a newly assigned credential cannot finish: %s", item.LastError)
 				}
 			}
+			if result := auditAccessRun(t, application, store, true); result.PendingCount != 0 || result.State != lifecycleStateEnabled {
+				t.Fatalf("UA-A03: enable did not finish: %+v", result)
+			}
+			if !credentialsMatch(findCredential(t, fixture.configs[5], "old", 0), original, "vless") {
+				t.Fatal("UA-A03: original credential was not restored")
+			}
+			addedIndex := 0
+			if sameInbound {
+				addedIndex = 1
+			}
+			if hashJSON(findCredential(t, fixture.configs[5], tag, addedIndex)) != hashJSON(added) {
+				t.Fatal("UA-A03: enable changed a newly added credential with no backup")
+			}
 		})
 	}
 }
 
 func TestAuditUA_A04_ConcurrentUsersCannotRestoreEachOthersCredential(t *testing.T) {
-	auditUserAccessRepro(t, "UA-A04")
 	alice := map[string]any{"email": "alice-in", "id": "11111111-1111-4111-8111-111111111111"}
 	bob := map[string]any{"email": "bob-in", "id": "22222222-2222-4222-8222-222222222222"}
 	config := lifecycleConfig(lifecycleInbound("shared", "vless", alice, bob))
 	aliceItem := analyzeAccessInbound("alice", false, config, []lifecycleCredentialRef{lifecycleRef(5, "shared", "vless", alice)}, nil)
 	bobItem := analyzeAccessInbound("bob", false, config, []lifecycleCredentialRef{lifecycleRef(5, "shared", "vless", bob)}, nil)
-	fixture, unusedServer := newLifecycleAgentFixture(map[int64]map[string]any{5: config})
-	defer unusedServer.Close()
-	prechecked := []chan struct{}{make(chan struct{}), make(chan struct{})}
-	release := []chan struct{}{make(chan struct{}), make(chan struct{})}
-	var mu sync.Mutex
-	checks := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/api/admin/remote/xray/config" {
-			mu.Lock()
-			index := checks
-			checks++
-			mu.Unlock()
-			if index < 2 {
-				response := httptest.NewRecorder()
-				fixture.serveHTTP(response, r)
-				close(prechecked[index])
-				select {
-				case <-release[index]:
-				case <-r.Context().Done():
-					return
-				}
-				for key, values := range response.Header() {
-					w.Header()[key] = values
-				}
-				w.WriteHeader(response.Code)
-				_, _ = w.Write(response.Body.Bytes())
-				return
-			}
-		}
-		fixture.serveHTTP(w, r)
-	}))
+	fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{5: config})
 	defer server.Close()
 	application := lifecycleTestApp(t, &lifecycleTestStore{}, server)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	start := func(username string, item *lifecyclePlanItem) <-chan error {
-		done := make(chan error, 1)
-		go func() {
-			unlock := application.lockUserLifecycle(username)
+	start := make(chan struct{})
+	done := make(chan error, 2)
+	for _, item := range []*lifecyclePlanItem{&aliceItem, &bobItem} {
+		go func(item *lifecyclePlanItem) {
+			<-start
+			unlock := application.lockUserLifecycle(item.accessUsername)
 			defer unlock()
 			done <- application.executeAccessItem(ctx, "session", item)
-		}()
-		return done
+		}(item)
 	}
-	waitCheck := func(index int) {
-		select {
-		case <-prechecked[index]:
-		case <-ctx.Done():
-			t.Fatal("concurrent preflight did not arrive")
+	close(start)
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatalf("concurrent disable failed: %v", err)
 		}
-	}
-	aliceDone := start("alice", &aliceItem)
-	waitCheck(0)
-	bobDone := start("bob", &bobItem)
-	waitCheck(1)
-	close(release[0])
-	if err := <-aliceDone; err != nil {
-		t.Fatalf("alice operation failed: %v", err)
-	}
-	close(release[1])
-	if err := <-bobDone; err != nil {
-		t.Fatalf("bob operation failed: %v", err)
 	}
 	entries, _, err := inboundCredentialEntries(findConfigInbound(fixture.configs[5], "shared"))
 	if err != nil {
@@ -292,7 +252,7 @@ func TestAuditUA_A04_ConcurrentUsersCannotRestoreEachOthersCredential(t *testing
 	}
 	for _, entry := range entries {
 		if credentialsMatch(entry, alice, "vless") || credentialsMatch(entry, bob, "vless") {
-			t.Fatal("UA-A04: both operations returned success, but the later whole-inbound replacement restored the earlier user's original credential")
+			t.Fatal("UA-A04: a concurrent replacement restored another user's original credential")
 		}
 	}
 }
@@ -370,6 +330,7 @@ func TestAccessAnonymousSocksEnableRestoresLegacyBackup(t *testing.T) {
 
 func TestAccessAnonymousSocksEnableAfterPartialDisablePostgres(t *testing.T) {
 	db := auditUserDeleteDB(t, "UA-A05-enable")
+	auditDeleteExec(t, db, `CREATE TABLE server_xray_config_snapshots(id bigint,server_id bigint,config_json text,status text,created_at timestamp)`)
 	auditDeleteExec(t, db, `INSERT INTO users(username) VALUES('alice')`)
 	auditDeleteExec(t, db, `INSERT INTO remote_servers VALUES(5,'server-5')`)
 	account := map[string]any{"user": "alice", "pass": "synthetic-secret"}
@@ -381,12 +342,13 @@ func TestAccessAnonymousSocksEnableAfterPartialDisablePostgres(t *testing.T) {
 	socks := map[string]any{"tag": "socks", "protocol": "socks", "settings": map[string]any{"auth": "noauth"}}
 	fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{5: lifecycleConfig(socks, lifecycleInbound("normal", "vless", credential))})
 	defer server.Close()
+	lifecycleStatusFixture(t, fixture, db, nil)
 	target, err := url.Parse(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := &postgresAdminSessionStore{db: db}
-	application := &app{adminStore: store, officialInternalTarget: target}
+	application := &app{adminStore: store, officialInternalTarget: target, trafficGroupsReady: true}
 	ctx := context.Background()
 	for _, enable := range []bool{false, true} {
 		operation := lifecycleOperationDisable
@@ -542,36 +504,38 @@ func TestAuditUA_A07_AccessMustNotOverwritePartialDeletion(t *testing.T) {
 }
 
 func TestAuditUA_A08_RuntimeRepushCannotLeaveDisabledStateWithLiveOriginal(t *testing.T) {
-	auditUserAccessRepro(t, "UA-A08")
-	original := map[string]any{"email": "alice-in", "id": "11111111-1111-4111-8111-111111111111"}
+	original := map[string]any{"email": "alice__tag", "id": "11111111-1111-4111-8111-111111111111"}
 	base := &lifecycleTestStore{refs: []lifecycleCredentialRef{lifecycleRef(5, "tag", "vless", original)}}
 	store := &auditAccessStateStore{lifecycleTestStore: base}
 	fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{5: lifecycleConfig(lifecycleInbound("tag", "vless", original))})
 	defer server.Close()
 	application := lifecycleTestApp(t, base, server)
 	application.adminStore = store
+	application.trafficGroupsReady = true
+	application.detailedConnections = map[string]serverDetailedConnectionRecord{"5": persistentTestRecord()}
 	if result := auditAccessRun(t, application, base, false); result.PendingCount != 0 {
-		t.Fatal("setup disable failed")
+		t.Fatalf("disable: %+v", result)
 	}
-	// Model an external writer restoring the official credential; this is not a
-	// claim about which closed-source official action performs that write.
-	fixture.configs[5] = lifecycleConfig(lifecycleInbound("tag", "vless", original))
-	request := httptest.NewRequest(http.MethodGet, "/api/custom/users/lifecycle", nil)
-	request.Header.Set("MM-Authorization", "admin-session")
-	response := httptest.NewRecorder()
-	application.userLifecycleIndexHandler(response, request)
-	var body struct {
-		Users map[string]managedUserLifecycle `json:"users"`
+	if len(base.backups) != 0 || len(fixture.actions) != 0 {
+		t.Fatal("supported disable must not swap credentials")
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	entries, _, err := inboundCredentialEntries(findConfigInbound(fixture.configs[5], "tag"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := body.Users["alice"]
-	if state.EffectiveState == lifecycleStateDisabled && len(entries) == 1 && credentialsMatch(entries[0], original, "vless") {
-		t.Fatal("UA-A08: lifecycle refresh still reports disabled while the original credential is present in the current inbound")
+	for _, event := range []string{"renew", "rebind", "add_node", "new_assignment", "renew_while_official_inactive"} {
+		t.Run(event, func(t *testing.T) {
+			fixture.configs[5] = lifecycleConfig(lifecycleInbound("tag", "vless", original))
+			request := httptest.NewRequest(http.MethodGet, "/api/custom/user-lifecycle", nil)
+			request.Header.Set("MM-Authorization", "admin-session")
+			response := httptest.NewRecorder()
+			application.userLifecycleIndexHandler(response, request)
+			var body struct {
+				Users map[string]managedUserLifecycle `json:"users"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			settings := application.trafficBlocksForHelper(defaultServerConnectionSettings(), "5", "v0.6.8")
+			if body.Users["alice"].EffectiveState != lifecycleStateDisabled || settings.BlockedIdentities == nil || len(*settings.BlockedIdentities) != 1 || (*settings.BlockedIdentities)[0].User != "alice__tag" {
+				t.Fatalf("repush lost disabled intent/block: %+v %+v", body, settings.BlockedIdentities)
+			}
+		})
 	}
 }
