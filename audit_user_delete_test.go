@@ -95,7 +95,7 @@ func TestAuditUAD01DeletePreservesOtherUsersInactiveAssignments(t *testing.T) {
 
 func TestAuditUAD02DeleteRetryRetainsFailedInboundAfterPackageCascade(t *testing.T) {
 	db := auditUserDeleteDB(t, "UA-D02")
-	credential := map[string]any{"id": "audit-alice-id", "email": "alice@example.test"}
+	credential := map[string]any{"id": "11111111-1111-4111-8111-111111111111", "email": "alice@example.test"}
 	raw, err := json.Marshal(credential)
 	if err != nil {
 		t.Fatal(err)
@@ -168,5 +168,35 @@ func TestAuditUAD04DeleteRemovesPrivateForwardChainOwnership(t *testing.T) {
 	}
 	if orphans != 0 {
 		t.Fatalf("UA-D04: private forward chain relation remains after its user and node are deleted: %d", orphans)
+	}
+}
+
+func TestAuditUAD05DeletePreservesNodeUsedByAnotherUsersPackage(t *testing.T) {
+	db := auditUserDeleteDB(t, "UA-D05")
+	auditDeleteExec(t, db, `CREATE TABLE nodes(id bigint PRIMARY KEY,username text,original_server text,inbound_tag text,protocol text)`)
+	auditDeleteExec(t, db, `INSERT INTO packages VALUES(1,'bob package','[10]')`)
+	auditDeleteExec(t, db, `INSERT INTO users(username,package_id) VALUES('alice',NULL),('bob',1)`)
+	auditDeleteExec(t, db, `INSERT INTO user_package_assignments VALUES(1,'bob',1,'active')`)
+	auditDeleteExec(t, db, `INSERT INTO nodes VALUES(10,'alice','','','vless')`)
+	store := &postgresAdminSessionStore{db: db}
+	application := &app{adminStore: store}
+	ctx := context.Background()
+	plan, err := application.buildDeletionPlan(ctx, "session", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveDeletePlan(ctx, "alice", "audit-shared-node", plan); err != nil {
+		t.Fatal(err)
+	}
+	result := application.executeDeletePlan(ctx, "session", "alice", "audit-shared-node", plan)
+	if !result.UserDeleted {
+		t.Fatalf("fixture deletion did not complete: %+v", result)
+	}
+	var missingNodes int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM user_package_assignments a JOIN packages p ON p.id=a.package_id CROSS JOIN LATERAL jsonb_array_elements_text(p.nodes::jsonb) member(node_id) LEFT JOIN nodes n ON n.id=member.node_id::bigint WHERE a.username='bob' AND n.id IS NULL`).Scan(&missingNodes); err != nil {
+		t.Fatal(err)
+	}
+	if missingNodes != 0 {
+		t.Fatalf("UA-D05: deleting alice removed a node from bob's active package, leaving %d dangling node reference", missingNodes)
 	}
 }

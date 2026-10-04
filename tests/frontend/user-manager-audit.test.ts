@@ -49,3 +49,34 @@ test("audit control: delete_partial hides access, admin hides destructive action
   assert.doesNotMatch(admin, />(启用|禁用|重置密码|重置流量)<\/button>/);
   assert.doesNotMatch(admin, /<b>删除<\/b>/);
 });
+
+test("audit UA-D06 saving an existing permanent package must not invent an expiry", {
+  skip: enabled ? false : "audit: UA-D06",
+}, async () => {
+  const require = createRequire(new URL("../../frontend/package.json", import.meta.url));
+  const ts = require("typescript");
+  const React = require("react");
+  const source = readFileSync(new URL("../../frontend/src/user-manager.tsx", import.meta.url), "utf8");
+  const file = ts.createSourceFile("user-manager.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const dialog = file.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === "PackageDialog");
+  const compiled = ts.transpileModule(dialog.getText(file), {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.React },
+  }).outputText;
+  let saved: Record<string, unknown> | undefined;
+  const assign = async (_token: string, body: Record<string, unknown>) => { saved = body; return {}; };
+  const PackageDialog = new Function(
+    "React", "useState", "today", "nextMonth", "DialogShell", "assignManagedUserPackage", "unassignManagedUserPackage", "messageOf",
+    `${compiled}\nreturn PackageDialog;`,
+  )(
+    React, (initial: unknown) => [initial, () => undefined], () => "2026-10-04", () => "2026-11-04", () => null,
+    assign, async () => assert.fail("existing permanent package must remain assigned"), () => "failure",
+  );
+  const element = PackageDialog({
+    token: "audit-session", user: { username: "alice", package_id: 1, package_end_date: null },
+    packages: [{ id: 1, name: "permanent" }], onClose: () => undefined, onSaved: async () => undefined,
+  });
+  element.props.footer.props.children[1].props.onClick();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(saved, "save must call the package API");
+  assert.ok(!saved.expire_date, `permanent assignment received finite expiry ${saved.expire_date}`);
+});
