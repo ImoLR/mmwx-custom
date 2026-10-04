@@ -172,15 +172,21 @@ func TestDeleteRetryRecognizesOfficialEmptiedPackagePostgres(t *testing.T) {
 }
 
 func TestLifecycleRecognizesCurrentAdminCredentialsPostgres(t *testing.T) {
-	for _, source := range []string{"user_inbound_configs", "package_assignment_inbound_configs", "without snapshots"} {
+	for _, source := range []string{"user_inbound_configs", "package_assignment_inbound_configs", "user_subaccounts", "package_assignment_subaccounts", "without snapshots"} {
 		t.Run(source, func(t *testing.T) {
 			db := auditUserDeleteDB(t, "current-admin-credential")
 			configs := seedDeletionNodes(t, db)
 			credential := map[string]any{"id": "admin-replaced", "email": "admin@example.test"}
 			raw, _ := json.Marshal(credential)
-			if source == "package_assignment_inbound_configs" {
+			switch source {
+			case "package_assignment_inbound_configs":
 				auditDeleteExec(t, db, `INSERT INTO package_assignment_inbound_configs(username,server_id,inbound_tag,protocol,credential_json) VALUES('admin',5,'coowned','vless',$1)`, string(raw))
-			} else {
+			case "user_subaccounts", "package_assignment_subaccounts":
+				auditDeleteExec(t, db, `CREATE TABLE `+source+`(username text,routed_node_id bigint,credential_json text)`)
+				auditDeleteExec(t, db, `INSERT INTO remote_servers VALUES(6,'other-server')`)
+				auditDeleteExec(t, db, `INSERT INTO nodes VALUES(16,'Other server','admin','other-server','coowned','vless')`)
+				auditDeleteExec(t, db, `INSERT INTO `+source+` VALUES('admin',11,$1)`, string(raw))
+			default:
 				auditDeleteExec(t, db, `INSERT INTO user_inbound_configs VALUES('admin',5,'coowned','vless',$1)`, string(raw))
 			}
 			if source == "without snapshots" {
@@ -209,7 +215,20 @@ func TestLifecycleRecognizesCurrentAdminCredentialsPostgres(t *testing.T) {
 					t.Fatalf("replaced admin credential not recognized: %+v", item)
 				}
 			}
-			wrongScope, err := application.adminStore.(lifecycleStore).LifecycleDefaultAdminCredentials(context.Background(), 6, "coowned")
+			if source == "user_subaccounts" || source == "package_assignment_subaccounts" {
+				auditDeleteExec(t, db, `INSERT INTO `+source+` VALUES('admin',12,'{"id":"wrong-tag"}'),('admin',16,'{"id":"wrong-server"}'),('bob',11,'{"id":"non-admin","email":"admin@example.test"}')`)
+				defaults, err = application.adminStore.(lifecycleStore).LifecycleDefaultAdminCredentials(context.Background(), 5, "coowned")
+				if err != nil || len(defaults) != want {
+					t.Fatalf("routed admin scope: count=%d want=%d err=%v", len(defaults), want, err)
+				}
+			}
+			inbound["settings"].(map[string]any)["clients"].([]any)[1] = map[string]any{"id": "unrecorded-admin-secret", "email": "admin@example.test"}
+			refs := []lifecycleCredentialRef{lifecycleRef(5, "coowned", "vless", map[string]any{"id": "alice-coowned", "email": "alice@example.test"})}
+			item := analyzeLifecycleInbound(configs[5], refs, nil, defaults)
+			if item.Action != lifecycleActionConflict || item.UnknownCredentials != 1 {
+				t.Fatalf("unrecorded admin-like credential trusted: %+v", item)
+			}
+			wrongScope, err := application.adminStore.(lifecycleStore).LifecycleDefaultAdminCredentials(context.Background(), 7, "coowned")
 			if err != nil || len(wrongScope) != 0 {
 				t.Fatalf("admin credential escaped server scope: count=%d err=%v", len(wrongScope), err)
 			}

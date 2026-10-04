@@ -628,11 +628,23 @@ func lifecycleDefaultAdminCredentials(ctx context.Context, db lifecycleQueryer, 
 		return nil, err
 	}
 	var current []map[string]any
+	var queries []string
 	for _, table := range []string{"user_inbound_configs", "package_assignment_inbound_configs"} {
 		if !hasLifecycleColumns(columns, table, "username", "server_id", "inbound_tag", "credential_json") {
 			continue
 		}
-		rows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT c.credential_json FROM %s c JOIN users u ON u.username=c.username WHERE u.role='admin' AND c.server_id=$1 AND c.inbound_tag=$2 AND COALESCE(c.credential_json,'')<>''`, table), serverID, inboundTag)
+		queries = append(queries, fmt.Sprintf(`SELECT c.credential_json FROM %s c JOIN users u ON u.username=c.username WHERE u.role='admin' AND c.server_id=$1 AND c.inbound_tag=$2 AND COALESCE(c.credential_json,'')<>''`, table))
+	}
+	for _, table := range []string{"user_subaccounts", "package_assignment_subaccounts"} {
+		if !hasLifecycleColumns(columns, table, "username", "routed_node_id", "credential_json") ||
+			!hasLifecycleColumns(columns, "nodes", "id", "original_server", "inbound_tag") ||
+			!hasLifecycleColumns(columns, "remote_servers", "id", "name") {
+			continue
+		}
+		queries = append(queries, fmt.Sprintf(`SELECT c.credential_json FROM %s c JOIN users u ON u.username=c.username JOIN nodes n ON n.id=c.routed_node_id JOIN remote_servers s ON s.name=n.original_server WHERE u.role='admin' AND s.id=$1 AND n.inbound_tag=$2 AND COALESCE(c.credential_json,'')<>''`, table))
+	}
+	for _, query := range queries {
+		rows, err := db.QueryContext(ctx, query, serverID, inboundTag)
 		if err != nil {
 			return nil, err
 		}
