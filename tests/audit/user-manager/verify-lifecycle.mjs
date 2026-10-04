@@ -135,7 +135,7 @@ if (process.argv.includes('--agent')) {
       writeConfig(config);
       ref(username,tag,secret);
       if (admin) sql(`INSERT INTO server_xray_config_snapshots(server_id,config_json,config_hash,source,status) VALUES(1,${q(JSON.stringify(config))},${q(`lifecycle-${tag}`)},'master_write','success')`);
-      return {id:addNode(tag,port,secret),tag,secret};
+      return {id:addNode(tag,port,secret),tag,secret,inbound:config.inbounds.at(-1)};
     };
     const maps = ['node_multipliers','node_name_overrides','node_speed_limits','node_device_limits','node_traffic_limits'];
     const createPackage = async (username, name, nodes) => {
@@ -152,12 +152,17 @@ if (process.argv.includes('--agent')) {
       const preview = await custom(username,'deletion-preview');
       record(`${label} preview`,preview);
       assert.equal(preview.status,200);
+      for (const item of preview.data.preview.inbound_plan.filter(i=>i.item_kind==='package')) {
+        for (const n of [...(item.own_nodes ?? []),...(item.other_user_nodes ?? [])]) assert.ok(n.name?.trim(),`node ${n.id} has no preview name`);
+      }
       const response = await custom(username,'delete',{});
       record(`${label} delete`,response);
       assert.equal(response.status,200);
       assert.equal(response.data.result?.user_deleted,true);
       assert.equal(response.data.result?.pending_count,0);
       assert.equal(count('users',`username=${q(username)}`),0);
+      // Official package mutations can schedule their config write after the response.
+      await new Promise(resolve=>setTimeout(resolve,500));
       return preview;
     };
     const gone = nodes => {
@@ -169,7 +174,7 @@ if (process.argv.includes('--agent')) {
     };
     const retained = node => {
       assert.equal(count('nodes',`id=${node.id}`),1);
-      assert.ok(readConfig().inbounds.find(i=>i.tag===node.tag)?.settings.clients.some(c=>c.id===node.secret.id));
+      assert.deepEqual(readConfig().inbounds.find(i=>i.tag===node.tag),node.inbound);
     };
     const pruned = (id, deleted, retainedNodes) => {
       const pkg = JSON.parse(sql(`SELECT row_to_json(p) FROM packages p WHERE id=${id}`));
@@ -177,7 +182,7 @@ if (process.argv.includes('--agent')) {
       for (const key of maps) {
         const values = typeof pkg[key] === 'string' ? JSON.parse(pkg[key]) : pkg[key];
         for (const n of deleted) assert.equal(Object.hasOwn(values ?? {},n.id),false,`${key} retains ${n.id}`);
-        for (const n of retainedNodes) assert.equal(Object.hasOwn(values ?? {},n.id),true,`${key} lost ${n.id}`);
+        for (const n of retainedNodes) assert.equal(values?.[n.id],key === 'node_name_overrides' ? n.tag : key === 'node_multipliers' ? 0.5 : 1,`${key} changed ${n.id}`);
       }
       const groups = JSON.parse(sql(`SELECT COALESCE(json_agg(node_ids),'[]') FROM mmwxc_package_traffic_groups WHERE package_id=${id}`));
       for (const members of groups) for (const n of deleted) assert.equal(members.includes(n.id),false);
