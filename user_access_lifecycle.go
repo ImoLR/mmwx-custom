@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -315,8 +316,8 @@ func accessCredentialSharingReason(inbound map[string]any, item lifecyclePlanIte
 			return "该端口还有其他用户、子账户或套餐绑定使用，无法单独禁用此用户"
 		}
 		for _, backup := range item.accessCredentials {
-			if lifecycleEntryMatchesRefs(backup.OriginalCredential, inbound, item.Protocol, []lifecycleCredentialRef{ref}) ||
-				lifecycleEntryMatchesRefs(backup.DisabledCredential, inbound, item.Protocol, []lifecycleCredentialRef{ref}) {
+			if accessEntrySharesCredential(backup.OriginalCredential, inbound, item.Protocol, ref) ||
+				accessEntrySharesCredential(backup.DisabledCredential, inbound, item.Protocol, ref) {
 				return "该认证凭据被其他用户、子账户或套餐绑定共用，拒绝替换"
 			}
 		}
@@ -326,9 +327,60 @@ func accessCredentialSharingReason(inbound map[string]any, item lifecyclePlanIte
 			if credentialsMatch(backup.OriginalCredential, credential, item.Protocol) || credentialsMatch(backup.DisabledCredential, credential, item.Protocol) {
 				return "该认证凭据与管理员默认凭据共用，拒绝替换"
 			}
+			if lifecycleCredentialPrimaryKey(item.Protocol) == "id" &&
+				(persistentSameAuthentication(backup.OriginalCredential, credential, item.Protocol) || persistentSameAuthentication(backup.DisabledCredential, credential, item.Protocol)) {
+				return "该认证凭据与管理员默认凭据共用，拒绝替换"
+			}
 		}
 	}
 	return ""
+}
+
+func accessEntrySharesCredential(entry, inbound map[string]any, protocol string, ref lifecycleCredentialRef) bool {
+	if lifecycleEntryMatchesRefs(entry, inbound, protocol, []lifecycleCredentialRef{ref}) {
+		return true
+	}
+	if lifecycleCredentialPrimaryKey(protocol) != "id" || !nonEmptyCredentialValue(entry, "id") {
+		return false
+	}
+	id := persistentNormalizeUUID(fmt.Sprint(entry["id"]))
+	if id == persistentNormalizeUUID(ref.Identity) {
+		return true
+	}
+	var credential map[string]any
+	if json.Unmarshal([]byte(ref.CredentialRaw), &credential) == nil && persistentSameAuthentication(entry, credential, protocol) {
+		return true
+	}
+	var rawValues []string
+	_ = json.Unmarshal([]byte(ref.CredentialRaw), &rawValues)
+	for _, raw := range rawValues {
+		var value any
+		if json.Unmarshal([]byte(raw), &value) == nil {
+			for secret := range credentialSecrets(value) {
+				if id == persistentNormalizeUUID(secret) {
+					return true
+				}
+			}
+		}
+		if parsed, err := url.Parse(strings.TrimSpace(raw)); err == nil && parsed.Scheme != "" {
+			if parsed.User != nil {
+				password, _ := parsed.User.Password()
+				if id == persistentNormalizeUUID(parsed.User.Username()) || id == persistentNormalizeUUID(password) {
+					return true
+				}
+			}
+			for key, values := range parsed.Query() {
+				if credentialKey(key) {
+					for _, value := range values {
+						if id == persistentNormalizeUUID(value) {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 func accessInboundCredentialEntries(inbound map[string]any) ([]map[string]any, string, error) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -536,5 +537,185 @@ func TestAuditUA_A08_RuntimeRepushCannotLeaveDisabledStateWithLiveOriginal(t *te
 				t.Fatalf("repush lost disabled intent/block: %+v %+v", body, settings.BlockedIdentities)
 			}
 		})
+	}
+}
+
+func TestReleaseGateUnsupportedSharedUUID(t *testing.T) {
+	parseUUID := func(value string) string {
+		raw, err := hex.DecodeString(strings.ReplaceAll(value, "-", ""))
+		if err != nil || len(raw) != 16 {
+			t.Fatalf("invalid synthetic UUID %q: %v", value, err)
+		}
+		return string(raw)
+	}
+	for _, protocol := range []string{"vless", "vmess"} {
+		for _, source := range []string{"user_inbound_configs", "package_assignment_inbound_configs", "user_subaccounts", "package_assignment_subaccounts", "admin_default"} {
+			for _, supported := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/supported=%t", protocol, source, supported), func(t *testing.T) {
+					original := map[string]any{"id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "email": "alice__inbound"}
+					sharedAlias := map[string]any{"id": "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE", "email": "bob__inbound"}
+					if parseUUID(original["id"].(string)) != parseUUID(sharedAlias["id"].(string)) {
+						t.Fatal("fixture must use the same actual UUID")
+					}
+					aliceRef := lifecycleRef(5, "inbound", protocol, original)
+					aliceRef.Username = "alice"
+					otherRef := lifecycleRef(5, "inbound", protocol, sharedAlias)
+					otherRef.Username, otherRef.Source = "bob", source
+					otherRef.Identity = "bob__inbound"
+					store := &lifecycleTestStore{refs: []lifecycleCredentialRef{aliceRef}}
+					if source == "admin_default" {
+						store.defaults = map[string][]map[string]any{"5/inbound": {sharedAlias}}
+					} else {
+						store.businessRefs = map[string][]lifecycleCredentialRef{"5/inbound": {otherRef}}
+					}
+					fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{5: lifecycleConfig(lifecycleInbound("inbound", protocol, original))})
+					defer server.Close()
+					application := lifecycleTestApp(t, store, server)
+					if supported {
+						application.detailedConnections = map[string]serverDetailedConnectionRecord{"5": persistentTestRecord()}
+					}
+					result := auditAccessRun(t, application, store, false)
+					entries, _, err := inboundCredentialEntries(findConfigInbound(fixture.configs[5], "inbound"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					otherStillAuthenticates := false
+					for _, entry := range entries {
+						if value, ok := entry["id"].(string); ok {
+							otherStillAuthenticates = otherStillAuthenticates || parseUUID(value) == parseUUID(sharedAlias["id"].(string))
+						}
+					}
+					t.Logf("source=%s supported=%t state=%s pending=%d dispatched_actions=%d shared_UUID_still_present=%t", source, supported, result.State, result.PendingCount, len(fixture.actions), otherStillAuthenticates)
+					if len(fixture.actions) != 0 || !otherStillAuthenticates || result.PendingCount == 0 || result.Items[0].Action != lifecycleActionConflict {
+						t.Fatalf("shared authentication must be refused: action=%s state=%s pending=%d dispatched_actions=%d shared_UUID_still_present=%t", result.Items[0].Action, result.State, result.PendingCount, len(fixture.actions), otherStillAuthenticates)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestReleaseGateUnsupportedDifferentUUIDAllowsSwap(t *testing.T) {
+	for _, protocol := range []string{"vless", "vmess"} {
+		t.Run(protocol, func(t *testing.T) {
+			original := map[string]any{"id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "email": "alice__inbound"}
+			other := map[string]any{"id": "ffffffff-bbbb-4ccc-8ddd-eeeeeeeeeeee", "email": "bob__inbound"}
+			aliceRef := lifecycleRef(5, "inbound", protocol, original)
+			aliceRef.Username = "alice"
+			otherRef := lifecycleRef(5, "inbound", protocol, other)
+			otherRef.Username, otherRef.Identity = "bob", "bob__inbound"
+			store := &lifecycleTestStore{
+				refs:         []lifecycleCredentialRef{aliceRef},
+				businessRefs: map[string][]lifecycleCredentialRef{"5/inbound": {otherRef}},
+			}
+			fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{5: lifecycleConfig(lifecycleInbound("inbound", protocol, original, other))})
+			defer server.Close()
+			result := auditAccessRun(t, lifecycleTestApp(t, store, server), store, false)
+			if result.PendingCount != 0 || result.State != lifecycleStateDisabled || len(fixture.actions) != 1 || len(store.backups) != 1 {
+				t.Fatalf("distinct authentication must allow the fallback swap: %+v actions=%d backups=%d", result, len(fixture.actions), len(store.backups))
+			}
+			entries, _, err := inboundCredentialEntries(findConfigInbound(fixture.configs[5], "inbound"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			otherPresent := false
+			for _, entry := range entries {
+				if credentialsMatch(entry, original, protocol) {
+					t.Fatal("the target user's credential was not swapped")
+				}
+				otherPresent = otherPresent || hashJSON(entry) == hashJSON(other)
+			}
+			if !otherPresent {
+				t.Fatal("fallback swap changed the other user's credential")
+			}
+		})
+	}
+}
+
+func TestAccessFallbackSharedUUIDReferences(t *testing.T) {
+	for _, protocol := range []string{"vless", "vmess"} {
+		for _, source := range []string{"credential_json", "raw_url", "raw_json", "identity", "admin_default"} {
+			t.Run(protocol+"/"+source, func(t *testing.T) {
+				original := map[string]any{"id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "email": "alice__inbound"}
+				alias := " \tAAAAAAAABBBB4CCC8DDDEEEEEEEEEEEE \n"
+				shared := map[string]any{"id": alias, "email": "bob__inbound"}
+				otherRef := lifecycleRef(5, "inbound", protocol, shared)
+				otherRef.Username, otherRef.Identity = "bob", "bob__inbound"
+				switch source {
+				case "raw_url":
+					raw, _ := json.Marshal([]string{protocol + "://" + url.User(alias).String() + "@example.invalid:443"})
+					otherRef.CredentialRaw = string(raw)
+				case "raw_json":
+					node, _ := json.Marshal(map[string]any{"type": protocol, "uuid": alias})
+					raw, _ := json.Marshal([]string{string(node)})
+					otherRef.CredentialRaw = string(raw)
+				case "identity":
+					otherRef.CredentialRaw, otherRef.Identity = "", alias
+				}
+				store := &lifecycleTestStore{refs: []lifecycleCredentialRef{lifecycleRef(5, "inbound", protocol, original)}}
+				fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{5: lifecycleConfig(lifecycleInbound("inbound", protocol, original))})
+				defer server.Close()
+				application := lifecycleTestApp(t, store, server)
+				plan, err := application.buildAccessPlan(context.Background(), "session", "alice", false)
+				if err != nil || len(plan) != 1 || plan[0].Action != lifecycleActionReplaceCredential || plan[0].Status != lifecycleItemPending {
+					t.Fatalf("unshared setup must allow a fallback swap: plan=%+v err=%v", plan, err)
+				}
+				if source == "admin_default" {
+					store.defaults = map[string][]map[string]any{"5/inbound": {shared}}
+				} else {
+					store.businessRefs = map[string][]lifecycleCredentialRef{"5/inbound": {otherRef}}
+				}
+				if err := application.executeAccessItem(context.Background(), "session", &plan[0]); err == nil {
+					t.Fatal("execution must reject a UUID alias added after planning")
+				}
+				result := auditAccessRun(t, application, store, false)
+				if result.PendingCount == 0 || len(result.Items) != 1 || result.Items[0].Action != lifecycleActionConflict || len(fixture.actions) != 0 || len(store.backups) != 0 {
+					t.Fatalf("planning must reject the shared UUID alias: %+v actions=%d backups=%d", result, len(fixture.actions), len(store.backups))
+				}
+				if hashJSON(fixture.configs[5]) != hashJSON(lifecycleConfig(lifecycleInbound("inbound", protocol, original))) {
+					t.Fatal("shared UUID alias refusal must preserve the runtime credential")
+				}
+			})
+		}
+	}
+}
+
+func TestAccessFallbackPasswordCaseIsDistinct(t *testing.T) {
+	for _, protocol := range []string{"trojan", "shadowsocks", "hysteria"} {
+		for _, source := range []string{"credential_json", "raw_url", "raw_json", "identity", "admin_default"} {
+			t.Run(protocol+"/"+source, func(t *testing.T) {
+				key := lifecycleCredentialPrimaryKey(protocol)
+				password := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+				otherPassword := strings.ToUpper(password)
+				original := map[string]any{key: password, "email": "alice__inbound"}
+				other := map[string]any{key: otherPassword, "email": "bob__inbound"}
+				inbound := lifecycleInbound("inbound", protocol, original)
+				item := lifecyclePlanItem{Protocol: protocol, accessCredentials: []lifecycleCredentialBackup{{OriginalCredential: original}}}
+				ref := lifecycleRef(5, "inbound", protocol, other)
+				ref.Username, ref.Identity = "bob", "bob__inbound"
+				switch source {
+				case "raw_url":
+					raw, _ := json.Marshal([]string{protocol + "://" + url.User(otherPassword).String() + "@example.invalid:443"})
+					ref.CredentialRaw = string(raw)
+				case "raw_json":
+					node, _ := json.Marshal(map[string]any{"type": protocol, "password": otherPassword})
+					raw, _ := json.Marshal([]string{string(node)})
+					ref.CredentialRaw = string(raw)
+				case "identity":
+					ref.CredentialRaw, ref.Identity = "", otherPassword
+				}
+				refs := []lifecycleCredentialRef{ref}
+				var defaults []map[string]any
+				if source == "admin_default" {
+					refs, defaults = nil, []map[string]any{other}
+				}
+				if reason := accessCredentialSharingReason(inbound, item, refs, defaults); reason != "" {
+					t.Fatalf("case-sensitive passwords must not share authentication: %s", reason)
+				}
+				if persistentSameAuthentication(original, other, protocol) {
+					t.Fatal("supported-server authentication matching must preserve password case")
+				}
+			})
+		}
 	}
 }

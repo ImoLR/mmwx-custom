@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -213,9 +214,20 @@ func persistentSameAuthentication(left, right map[string]any, protocol string) b
 		return false
 	}
 	if key == "id" {
-		return strings.EqualFold(fmt.Sprint(left[key]), fmt.Sprint(right[key]))
+		return persistentNormalizeUUID(fmt.Sprint(left[key])) == persistentNormalizeUUID(fmt.Sprint(right[key]))
 	}
 	return fmt.Sprint(left[key]) == fmt.Sprint(right[key])
+}
+
+func persistentNormalizeUUID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	compact := strings.ReplaceAll(value, "-", "")
+	if len(compact) == 32 {
+		if _, err := hex.DecodeString(compact); err == nil {
+			return compact
+		}
+	}
+	return value
 }
 
 func uniqueAccessIdentities(values []serverConnectionIdentity) []serverConnectionIdentity {
