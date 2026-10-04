@@ -1091,6 +1091,11 @@ export type ManagedUserLifecycleItem = {
   package_id?: number;
   package_name?: string;
   node_ids?: number[];
+  deleted_node_ids?: number[];
+  own_nodes?: Array<{ id: number; name: string }>;
+  other_user_nodes?: Array<{ id: number; name: string }>;
+  neutral_nodes?: Array<{ id: number; name: string }>;
+  unknown_nodes?: Array<{ id: number; name: string }>;
   attempts: number;
   last_error?: string;
   last_checked_at?: string;

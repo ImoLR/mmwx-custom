@@ -114,3 +114,48 @@ test("UA-D07 package counts and filters use every assignment with legacy fallbac
   assert.equal(compute("counts").get("none"), 1);
   assert.deepEqual(compute("visible", "none").map((user: { username: string }) => user.username), ["none"]);
 });
+
+test("UA-D01 and UA-D05 deletion preview explains package actions and node ownership", () => {
+  const require = createRequire(new URL("../../frontend/package.json", import.meta.url));
+  const ts = require("typescript");
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const source = readFileSync(new URL("../../frontend/src/user-manager.tsx", import.meta.url), "utf8");
+  const file = ts.createSourceFile("user-manager.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const names = new Set(["DeleteUserDialog", "deletionDecision"]);
+  const functions = file.statements.filter((node: any) => ts.isFunctionDeclaration(node) && names.has(node.name?.text));
+  const compiled = ts.transpileModule(functions.map((node: any) => node.getText(file)).join("\n"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.React },
+  }).outputText;
+  const preview = {
+    package_bindings: 5, subscriptions: 0, sessions_and_tokens: 0, telegram_bindings: 0,
+    subaccounts: 0, inbound_bindings: 0, private_nodes: 2, routed_relations: 0,
+    user_limits: 0, custom_assignments: 0, traffic_records: 0, other_private: 0,
+    inbound_plan: [
+      { item_kind: "package", package_id: 1, package_name: "只有自己的套餐", action: "DELETE_PACKAGE", own_nodes: [{ id: 10, name: "Alice 节点" }], other_user_nodes: [], decision_note: "没有其他用户的节点，随用户删除" },
+      { item_kind: "package", package_id: 2, package_name: "混合节点套餐", action: "KEEP_PACKAGE", deleted_node_ids: [10, 11], own_nodes: [{ id: 10, name: "Alice 节点" }, { id: 11, name: "Alice 管理员共同节点" }], other_user_nodes: [{ id: 20, name: "Bob 节点" }] },
+      { item_kind: "package", package_id: 3, package_name: "Bob 的套餐", action: "KEEP_PACKAGE", deleted_node_ids: [10], own_nodes: [{ id: 10, name: "Alice 节点" }], other_user_nodes: [{ id: 20, name: "Bob 节点" }] },
+      { item_kind: "package", package_id: 4, package_name: "意外共享套餐", action: "CONFLICT", decision_note: "套餐还绑定了其他用户，不能删除" },
+      { item_kind: "package", package_id: 5, package_name: "未知节点套餐", action: "CONFLICT", unknown_nodes: [{ id: 30, name: "待核对节点" }], decision_note: "无法确认节点归属，不能删除套餐" },
+    ],
+  };
+  const states = [preview, null, false, false, ""];
+  let stateIndex = 0;
+  const DeleteUserDialog = new Function("React", "useState", "useEffect", "DialogShell", `${compiled}\nreturn DeleteUserDialog;`)(
+    React, () => [states[stateIndex++], () => undefined], () => undefined,
+    ({ children }: { children: unknown }) => React.createElement("div", null, children),
+  );
+  const html = renderToStaticMarkup(React.createElement(DeleteUserDialog, {
+    token: "test-session", user: { username: "alice" }, onClose: () => undefined, onResult: async () => undefined,
+  }));
+  assert.match(html, /<b>删除<\/b>/);
+  assert.match(html, /保留（移除 2 个该用户节点）/);
+  assert.match(html, /保留（移除 1 个该用户节点）/);
+  assert.match(html, /该用户节点：Alice 节点（ID 10）/);
+  assert.match(html, /其他用户节点：Bob 节点（ID 20）/);
+  assert.match(html, /其他用户节点：无/);
+  assert.match(html, /冲突：套餐还绑定了其他用户，不能删除/);
+  assert.match(html, /冲突：无法确认节点归属，不能删除套餐/);
+  assert.match(html, /归属待确认节点：待核对节点（ID 30）/);
+  assert.doesNotMatch(html, /没有其他绑定用户|仍有业务绑定的套餐/);
+});

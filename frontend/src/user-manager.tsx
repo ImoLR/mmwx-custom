@@ -481,9 +481,9 @@ function TelegramDialog({ token, user, onClose, onChanged }: { token: string; us
 }
 
 function deletionDecision(item: ManagedUserLifecycleItem) {
-  if (item.action === "DELETE_PACKAGE") return "该套餐没有其他绑定用户，将一起删除";
-  if (item.action === "KEEP_PACKAGE") return `还有 ${item.remaining_users} 个业务用户绑定，保留套餐`;
-  if (item.action === "CONFLICT") return item.decision_note || `发现 ${item.unknown_credentials || 1} 个无法确认来源的 credential，需要人工检查`;
+  if (item.action === "DELETE_PACKAGE") return "删除";
+  if (item.action === "KEEP_PACKAGE") return `保留（移除 ${item.deleted_node_ids?.length ?? 0} 个该用户节点）`;
+  if (item.action === "CONFLICT") return `冲突：${item.decision_note || `发现 ${item.unknown_credentials || 1} 个无法确认来源的凭据，需要人工检查`}`;
   if (item.action === "REMOVE_USER_ONLY") return `还有 ${item.remaining_users} 个业务用户使用，保留 Inbound`;
   if (item.default_credentials > 0) return "仅存在创建时管理员 credential，不视为业务共享";
   return "没有其他业务用户，删除整个 Inbound";
@@ -541,14 +541,19 @@ function DeleteUserDialog({ token, user, onClose, onResult }: { token: string; u
 
   return <DialogShell title={`删除用户 ${user.username}？`} subtitle="远程访问逐项清理；成功项保留，失败项可重试。" onClose={deleting ? () => {} : onClose} footer={<><button type="button" onClick={onClose} disabled={deleting}>取消</button><button className="danger" type="button" onClick={() => void confirmDelete()} disabled={!preview || deleting}>{deleting ? "删除中..." : result && !result.user_deleted ? "重试待清理项" : "确认删除"}</button></>}>
     {loading ? <div className="user-empty small">正在从数据库核对关联关系...</div> : preview ? <div className="user-delete-preview">
-      <p>将逐项清理真实 Inbound，再删除用户私有数据库关系：</p>
-      {plan.length > 0 ? <div className="user-delete-plan">{plan.map((item) => <article key={`${item.server_id}-${item.inbound_tag}`} className={item.status}>
-        <div><strong>{item.item_kind === "package" ? item.package_name || `套餐 ${item.package_id}` : item.server_name || `Server ${item.server_id}`}</strong><span>{item.item_kind === "package" ? `关联节点 ${(item.node_ids || []).join("、") || "无"}` : `${item.inbound_tag} · ${item.protocol || "未知协议"}`}</span></div>
+      <p>先清理用户节点，再删除用户关联记录：</p>
+      {plan.length > 0 ? <div className="user-delete-plan">{plan.map((item) => <article key={`${item.item_kind}-${item.package_id ?? `${item.server_id}-${item.inbound_tag}`}`} className={item.status}>
+        <div><strong>{item.item_kind === "package" ? item.package_name || `套餐 ${item.package_id}` : item.server_name || `Server ${item.server_id}`}</strong>{item.item_kind === "package" ? <>
+          <span>该用户节点：{(item.own_nodes || []).map((node) => `${node.name || "节点"}（ID ${node.id}）`).join("、") || "无"}</span>
+          <span>其他用户节点：{(item.other_user_nodes || []).map((node) => `${node.name || "节点"}（ID ${node.id}）`).join("、") || "无"}</span>
+          {(item.unknown_nodes?.length ?? 0) > 0 && <span>归属待确认节点：{item.unknown_nodes?.map((node) => `${node.name || "节点"}（ID ${node.id}）`).join("、")}</span>}
+        </> : <span>{item.inbound_tag} · {item.protocol || "未知协议"}</span>}</div>
         <b>{deletionDecision(item)}</b>
+        {item.item_kind === "package" && item.action !== "CONFLICT" && item.decision_note && <p>{item.decision_note}</p>}
         {item.last_error && <p>{item.last_error}</p>}
       </article>)}</div> : <p className="user-delete-empty-plan">没有需要清理的远程 Inbound。</p>}
       <dl>{rows.map(([label, count]) => <div key={label}><dt>{label}</dt><dd>{count}</dd></div>)}</dl>
-      <p className="safe">远程服务器、其他用户、仍有业务绑定的套餐和共享 Inbound 会保留。</p>
+      <p className="safe">其他用户的节点会保留；该用户的节点会从所有引用它们的套餐中移除。</p>
       {result && !result.user_deleted && <p className="user-form-error">删除未完成，还有 {result.pending_count} 个项目待清理，可再次点击删除重试。</p>}
     </div> : null}
     {error && <p className="user-form-error">{error}</p>}
