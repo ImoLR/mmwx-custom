@@ -90,6 +90,55 @@ func TestPersistentAccessIdentitiesRefuseDuplicateClients(t *testing.T) {
 	}
 }
 
+func TestPersistentAccessIdentitiesMatchDisabledClientOnlyOnce(t *testing.T) {
+	original := map[string]any{"id": "11111111-1111-4111-8111-111111111111", "email": "alice__pkg2__inbound"}
+	disabled := map[string]any{"id": "22222222-2222-4222-8222-222222222222", "email": "alice__pkg2__inbound"}
+	ref := lifecycleRef(5, "inbound", "vless", original)
+	ref.Username, ref.Identity, ref.Source = "alice", "alice__pkg2__inbound", "package_assignment_inbound_configs"
+	backup := lifecycleCredentialBackup{
+		Username: "alice", ServerID: 5, InboundTag: "inbound", Protocol: "vless",
+		OriginalCredential: original, DisabledCredential: disabled, OriginalHash: hashJSON(original), DisabledHash: hashJSON(disabled),
+	}
+	got, fallback, reason := persistentAccessIdentities("alice", lifecycleInbound("inbound", "vless", disabled), []lifecycleCredentialRef{ref}, []lifecycleCredentialBackup{backup}, nil, nil)
+	if len(got) != 1 || got[0].User != ref.Identity || len(fallback) != 0 || reason != "" {
+		t.Fatalf("one client matching both official label and backup is not a duplicate: %+v fallback=%d reason=%s", got, len(fallback), reason)
+	}
+	got, _, reason = persistentAccessIdentities("alice", lifecycleInbound("inbound", "vless", disabled, cloneLifecycleMap(disabled)), []lifecycleCredentialRef{ref}, []lifecycleCredentialBackup{backup}, nil, nil)
+	if len(got) != 0 || reason == "" {
+		t.Fatalf("two actual clients must still be rejected even with identical hashes: %+v reason=%s", got, reason)
+	}
+}
+
+func TestPersistentAccessIdentitiesRefuseCaseInsensitiveSharedUUIDs(t *testing.T) {
+	for _, protocol := range []string{"vless", "vmess"} {
+		for _, source := range []string{"business_ref", "admin_default", "current_client"} {
+			t.Run(protocol+"/"+source, func(t *testing.T) {
+				original := map[string]any{"id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "email": "alice__inbound"}
+				alias := map[string]any{"id": "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE", "email": "bob__inbound"}
+				ref := lifecycleRef(5, "inbound", protocol, original)
+				ref.Username = "alice"
+				inbound := lifecycleInbound("inbound", protocol, original)
+				var business []lifecycleCredentialRef
+				var defaults []map[string]any
+				switch source {
+				case "business_ref":
+					other := lifecycleRef(5, "inbound", protocol, alias)
+					other.Username = "bob"
+					business = []lifecycleCredentialRef{other}
+				case "admin_default":
+					defaults = []map[string]any{alias}
+				case "current_client":
+					inbound = lifecycleInbound("inbound", protocol, original, alias)
+				}
+				got, _, reason := persistentAccessIdentities("alice", inbound, []lifecycleCredentialRef{ref}, nil, business, defaults)
+				if len(got) != 0 || reason == "" {
+					t.Fatalf("equivalent UUIDs must not be treated as independent users: %+v reason=%s", got, reason)
+				}
+			})
+		}
+	}
+}
+
 func TestPersistentAccessIdentitiesRefuseUnresolvedOtherUserCredentials(t *testing.T) {
 	credential := map[string]any{"id": "alice-uuid", "email": "alice__inbound"}
 	ref := lifecycleRef(5, "inbound", "vless", credential)
