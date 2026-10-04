@@ -270,9 +270,9 @@ func accessInboundCredentialEntries(inbound map[string]any) ([]map[string]any, s
 	settings, _ := inbound["settings"].(map[string]any)
 	protocol, _ := inbound["protocol"].(string)
 	if (protocol == "shadowsocks" || protocol == "ss") && nonEmptyCredentialValue(settings, "password") {
-		clients, exists := settings["clients"]
+		clients := settings["clients"]
 		entries, array := clients.([]any)
-		if !exists || (array && len(entries) == 0) {
+		if clients == nil || (array && len(entries) == 0 && lifecycleInboundSS2022ServerKey(inbound) != "") {
 			credential := map[string]any{"password": settings["password"]}
 			for _, key := range []string{"email", "level"} {
 				if value, ok := settings[key]; ok {

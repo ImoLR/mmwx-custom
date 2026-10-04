@@ -314,29 +314,43 @@ func TestAuditUA_A05_SocksNoAuthCannotReportSuccessfulDisable(t *testing.T) {
 
 func TestAuditUA_A06_SingleSecretShadowsocksCanBeDisabled(t *testing.T) {
 	for _, method := range []string{"aes-128-gcm", "2022-blake3-aes-128-gcm"} {
-		t.Run(method, func(t *testing.T) {
-			credential := map[string]any{"password": "c3ludGhldGljLWtleS0xNg==", "email": "alice-in"}
-			inbound := map[string]any{"tag": "single", "protocol": "shadowsocks", "settings": map[string]any{
-				"method": method, "password": credential["password"], "email": credential["email"],
-			}}
-			store := &lifecycleTestStore{refs: []lifecycleCredentialRef{lifecycleRef(5, "single", "shadowsocks", credential)}}
-			fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{5: lifecycleConfig(inbound)})
-			defer server.Close()
-			application := lifecycleTestApp(t, store, server)
-			for _, enable := range []bool{false, true} {
-				result := auditAccessRun(t, application, store, enable)
-				if result.PendingCount != 0 {
-					t.Fatalf("UA-A06: valid single-secret Shadowsocks access change failed: %+v", result)
+		for _, clients := range []string{"missing", "null", "empty"} {
+			t.Run(method+"/clients_"+clients, func(t *testing.T) {
+				credential := map[string]any{"password": "c3ludGhldGljLWtleS0xNg==", "email": "alice-in"}
+				originalSettings := map[string]any{
+					"method": method, "password": credential["password"], "email": credential["email"],
 				}
-				settings := findConfigInbound(fixture.configs[5], "single")["settings"].(map[string]any)
-				if (settings["password"] == credential["password"]) != enable || settings["email"] != credential["email"] || settings["method"] != method {
-					t.Fatalf("single password or unchanged settings incorrect after enable=%v", enable)
+				if clients == "null" {
+					originalSettings["clients"] = nil
+				} else if clients == "empty" {
+					originalSettings["clients"] = []any{}
 				}
-				if _, exists := settings["clients"]; exists {
-					t.Fatal("single-password replacement created a clients array")
+				inbound := map[string]any{"tag": "single", "protocol": "shadowsocks", "settings": originalSettings}
+				store := &lifecycleTestStore{refs: []lifecycleCredentialRef{lifecycleRef(5, "single", "shadowsocks", credential)}}
+				fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{5: lifecycleConfig(inbound)})
+				defer server.Close()
+				application := lifecycleTestApp(t, store, server)
+				for _, enable := range []bool{false, true} {
+					result := auditAccessRun(t, application, store, enable)
+					if method == "aes-128-gcm" && clients == "empty" {
+						if result.PendingCount != 1 || len(fixture.actions) != 0 || len(store.backups) != 0 {
+							t.Fatal("classic Shadowsocks with an empty clients array must not treat the ignored top-level password as a user")
+						}
+						return
+					}
+					if result.PendingCount != 0 {
+						t.Fatalf("UA-A06: valid single-secret Shadowsocks access change failed: %+v", result)
+					}
+					settings := findConfigInbound(fixture.configs[5], "single")["settings"].(map[string]any)
+					if (settings["password"] == credential["password"]) != enable || settings["email"] != credential["email"] || settings["method"] != method {
+						t.Fatalf("single password or unchanged settings incorrect after enable=%v", enable)
+					}
+					if _, exists := settings["clients"]; exists != (clients != "missing") || hashJSON(settings["clients"]) != hashJSON(originalSettings["clients"]) {
+						t.Fatal("single-password replacement changed the clients setting")
+					}
 				}
-			}
-		})
+			})
+		}
 	}
 }
 
