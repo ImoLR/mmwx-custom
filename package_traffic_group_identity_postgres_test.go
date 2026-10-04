@@ -127,6 +127,9 @@ func TestTrafficGroupAliasEntitlementsIsolatedPostgres(t *testing.T) {
 			if err := a.refreshTrafficGroupsLocked(ctx, store); err != nil {
 				t.Fatal("refresh:", err)
 			}
+			if err := a.refreshDisabledUsersLocked(ctx); err != nil {
+				t.Fatal("refresh disabled users:", err)
+			}
 			usage := a.trafficGroupUsage[1].Usage
 			if len(usage) != 1 || usage[0].AssignmentID != 1 || usage[0].Used != 600 || len(usage[0].Nodes) != 1 || usage[0].Nodes[0].NodeID != 65 {
 				t.Fatalf("unexpected group usage: %+v", usage)

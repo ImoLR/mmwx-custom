@@ -223,7 +223,11 @@ Custom also calls the official user page's status operation
 (`POST /api/v3`, op `4b18ad3836973389`) to set the official account inactive.
 The prior state is saved as `official_was_active` in the Custom lifecycle
 row before the first disable. Enable restores that state; an account already
-inactive before Custom disabled it stays inactive. No official account table
+inactive before Custom disabled it stays inactive. Because the official inactive
+API also removes clients, Custom skips that call when any access item is
+conflicting or unverified, preserving a partial state with an explicit reason
+instead of risking another user’s shared credential. Background migration
+respects both cached and freshly detected conflicts. No official account table
 or schema is written directly. The local v0.5.5 harness still serves inactive
 users' `/x/` subscriptions, which do not traverse this API proxy. Subscription
 downloads are therefore not blocked by Custom.

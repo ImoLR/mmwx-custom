@@ -175,3 +175,67 @@ func TestPersistentDisableMigrationMixedInboundRestoresOnlyBlockableCredential(t
 		t.Fatal("migration did not restore just the blocked identity while retaining the unsupported credential swap")
 	}
 }
+
+func TestPersistentDisableMigrationFreshConflictSkipsOfficialInactive(t *testing.T) {
+	for _, change := range []string{"duplicate_identity", "credential_drift"} {
+		t.Run(change, func(t *testing.T) {
+			db := auditUserDeleteDB(t, "disable-migration-fresh-conflict")
+			auditDeleteExec(t, db, `ALTER TABLE remote_servers ADD COLUMN xray_mode text DEFAULT 'external'`)
+			auditDeleteExec(t, db, `CREATE TABLE server_xray_config_snapshots(id bigint,server_id bigint,config_json text,status text,created_at timestamptz DEFAULT CURRENT_TIMESTAMP)`)
+			auditDeleteExec(t, db, `INSERT INTO users(username,is_active) VALUES('alice',1)`)
+			auditDeleteExec(t, db, `INSERT INTO remote_servers VALUES(1,'supported','external')`)
+			original := map[string]any{"email": "alice__old", "id": "11111111-1111-4111-8111-111111111111"}
+			ref := lifecycleRef(1, "old", "vless", original)
+			auditDeleteExec(t, db, `INSERT INTO package_assignment_inbound_configs(username,server_id,inbound_tag,protocol,credential_json) VALUES('alice',1,'old','vless',$1)`, ref.CredentialRaw)
+			item := analyzeAccessInbound("alice", false, lifecycleConfig(lifecycleInbound("old", "vless", original)), []lifecycleCredentialRef{ref}, nil)
+			store := &postgresAdminSessionStore{db: db}
+			ctx := context.Background()
+			if err := store.SaveAccessPlan(ctx, "alice", lifecycleOperationDisable, "old-disable", []lifecyclePlanItem{item}); err != nil {
+				t.Fatal(err)
+			}
+			auditDeleteExec(t, db, `UPDATE mmwxc_user_lifecycle SET effective_state='disabled',pending_count=0 WHERE username='alice'`)
+			snapshot := lifecycleConfig(item.replacementInbound)
+			raw, _ := json.Marshal(snapshot)
+			auditDeleteExec(t, db, `INSERT INTO server_xray_config_snapshots(id,server_id,config_json,status) VALUES(1,1,$1,'current')`, string(raw))
+			live := cloneLifecycleMap(snapshot)
+			credential := findCredential(t, live, "old", 0)
+			if change == "duplicate_identity" {
+				settings := findConfigInbound(live, "old")["settings"].(map[string]any)
+				settings["clients"] = append(settings["clients"].([]any), cloneLifecycleMap(credential))
+			} else {
+				credential["level"] = float64(7)
+			}
+			fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{1: live})
+			defer server.Close()
+			calls := lifecycleStatusFixture(t, fixture, db, func(_ string, active bool) {
+				if !active {
+					fixture.configs[1] = lifecycleConfig(lifecycleInbound("old", "vless"))
+				}
+			})
+			application := lifecycleTestApp(t, &lifecycleTestStore{}, server)
+			application.adminStore, application.trafficGroupsReady = store, true
+			record := persistentTestRecord()
+			record.Snapshot.ProxyUsers = []serverProxyUserConnections{{Identity: serverConnectionIdentity{InboundTag: "old", User: "alice__old"}, Blocked: true}}
+			application.detailedConnections = map[string]serverDetailedConnectionRecord{"1": record}
+			if err := application.refreshDisabledUsers(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for _, status := range application.disabledUserAccess["alice"] {
+				if status.Status == "conflict" {
+					t.Fatal("fixture cache must still reflect the earlier safe snapshot")
+				}
+			}
+			if err := application.migratePersistentDisabledUser(ctx, store, "session", "alice"); err != nil {
+				t.Fatal(err)
+			}
+			current, err := store.ManagedUserState(ctx, "alice")
+			if err != nil || !current.IsActive || len(*calls) != 0 || len(fixture.actions) != 0 {
+				t.Fatalf("fresh %s bypassed the official account safety gate: current=%+v calls=%v actions=%d err=%v", change, current, *calls, len(fixture.actions), err)
+			}
+			backups, err := store.LifecycleDisabledCredentials(ctx, "alice")
+			if err != nil || len(backups) != 1 || hashJSON(fixture.configs[1]) != hashJSON(live) {
+				t.Fatalf("fresh conflict must retain the backup and live configuration: backups=%d err=%v", len(backups), err)
+			}
+		})
+	}
+}

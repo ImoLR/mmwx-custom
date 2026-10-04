@@ -180,6 +180,7 @@ type lifecyclePlanItem struct {
 	accessEnable            bool
 	accessUsername          string
 	persistentIdentities    []serverConnectionIdentity
+	persistentRestore       *lifecyclePlanItem
 }
 
 type lifecyclePackageBinding struct {

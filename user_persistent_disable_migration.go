@@ -57,6 +57,7 @@ func (a *app) migratePersistentDisabledUser(ctx context.Context, store *postgres
 		return err
 	}
 	groups := map[string][]lifecycleCredentialBackup{}
+	officialChangeSafe := true
 	for _, backup := range backups {
 		key := lifecycleInboundKey(backup.ServerID, backup.InboundTag)
 		groups[key] = append(groups[key], backup)
@@ -90,6 +91,16 @@ func (a *app) migratePersistentDisabledUser(ctx context.Context, store *postgres
 		item, handled, err := a.planPersistentAccess(ctx, username, false, config, groupRefs, group)
 		if err != nil {
 			return err
+		}
+		if item.Status == lifecycleItemFailed || item.Action == lifecycleActionConflict {
+			officialChangeSafe = false
+		}
+		if handled && item.persistentRestore != nil {
+			restore := item.persistentRestore
+			if err := a.executePersistentAccessItem(ctx, token, username, false, restore); err != nil {
+				return err
+			}
+			continue
 		}
 		if handled && item.Action == lifecycleActionBlockIdentity && item.Status != lifecycleItemFailed && item.accessEnable {
 			if err := a.executePersistentAccessItem(ctx, token, username, false, &item); err != nil {
@@ -131,6 +142,17 @@ func (a *app) migratePersistentDisabledUser(ctx context.Context, store *postgres
 				return err
 			}
 		}
+	}
+	// The official inactive operation removes clients too. Never use it to
+	// bypass a shared-credential refusal made by the Custom planner.
+	a.trafficGroupsMu.Lock()
+	unsafe := !officialChangeSafe || !a.disabledUsersReady || states[username].PendingCount > 0
+	for _, item := range a.disabledUserAccess[username] {
+		unsafe = unsafe || item.Status == "conflict"
+	}
+	a.trafficGroupsMu.Unlock()
+	if unsafe {
+		return nil
 	}
 	return a.applyAccessOfficialState(ctx, token, username, false)
 }

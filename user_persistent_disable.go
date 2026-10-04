@@ -86,17 +86,12 @@ func persistentAccessIdentities(username string, inbound map[string]any, refs []
 		_ = json.Unmarshal([]byte(ref.CredentialRaw), &credential)
 		var matched []map[string]any
 		for _, entry := range entries {
-			if lifecycleEntryMatchesRefs(entry, inbound, protocol, []lifecycleCredentialRef{ref}) {
-				matched = append(matched, entry)
+			matches := lifecycleEntryMatchesRefs(entry, inbound, protocol, []lifecycleCredentialRef{ref})
+			for _, backup := range backups {
+				matches = matches || len(credential) > 0 && credentialsMatch(credential, backup.OriginalCredential, protocol) && hashJSON(entry) == backup.DisabledHash
 			}
-		}
-		for _, backup := range backups {
-			if len(credential) > 0 && credentialsMatch(credential, backup.OriginalCredential, protocol) {
-				for _, entry := range entries {
-					if hashJSON(entry) == backup.DisabledHash {
-						matched = append(matched, entry)
-					}
-				}
+			if matches {
+				matched = append(matched, entry)
 			}
 		}
 		if len(matched) > 1 {
@@ -147,8 +142,19 @@ func persistentAccessIdentities(username string, inbound map[string]any, refs []
 	}
 	for _, target := range targets {
 		email := target["email"]
+		variants := []map[string]any{target}
+		for _, backup := range backups {
+			if backup.OriginalCredential["email"] == email {
+				variants = append(variants, backup.OriginalCredential)
+			}
+		}
 		for _, entry := range entries {
-			if entry["email"] == email && !credentialsMatch(entry, target, protocol) || entry["email"] != email && credentialsMatch(entry, target, protocol) {
+			sameAuth := credentialsMatch(entry, target, protocol) || persistentSameAuthentication(entry, target, protocol)
+			shared := false
+			for _, variant := range variants {
+				shared = shared || persistentSameAuthentication(entry, variant, protocol)
+			}
+			if entry["email"] == email && !sameAuth || entry["email"] != email && shared {
 				return nil, nil, "入站身份或认证凭据被多个客户端共用，无法安全封禁"
 			}
 		}
@@ -158,7 +164,11 @@ func persistentAccessIdentities(username string, inbound map[string]any, refs []
 			}
 			var other map[string]any
 			_ = json.Unmarshal([]byte(ref.CredentialRaw), &other)
-			if ref.Identity == email || other["email"] == email || lifecycleEntryMatchesRefs(target, inbound, protocol, []lifecycleCredentialRef{ref}) || persistentSameAuthentication(target, other, protocol) {
+			shared := false
+			for _, variant := range variants {
+				shared = shared || persistentSameAuthentication(variant, other, protocol) || lifecycleEntryMatchesRefs(variant, inbound, protocol, []lifecycleCredentialRef{ref})
+			}
+			if ref.Identity == email || other["email"] == email || shared {
 				return nil, nil, "该身份与其他用户、子账户或套餐绑定共用，已跳过封禁"
 			}
 			var nodeValues []string
@@ -174,7 +184,11 @@ func persistentAccessIdentities(username string, inbound map[string]any, refs []
 			}
 		}
 		for _, credential := range defaults {
-			if credential["email"] == email || credentialsMatch(credential, target, protocol) || persistentSameAuthentication(target, credential, protocol) {
+			shared := false
+			for _, variant := range variants {
+				shared = shared || persistentSameAuthentication(variant, credential, protocol)
+			}
+			if credential["email"] == email || shared {
 				return nil, nil, "该身份与管理员默认凭据共用，已跳过封禁"
 			}
 		}
@@ -257,13 +271,33 @@ func (a *app) planPersistentAccess(ctx context.Context, username string, enable 
 		return item, false, nil
 	}
 	if len(fallback) > 0 {
-		item = analyzeAccessInbound(username, false, config, fallback, backups)
+		var fallbackBackups, coreBackups []lifecycleCredentialBackup
+		for _, backup := range backups {
+			core := false
+			for _, identity := range identities {
+				core = core || backup.OriginalCredential["email"] == identity.User
+			}
+			if core {
+				coreBackups = append(coreBackups, backup)
+			} else {
+				fallbackBackups = append(fallbackBackups, backup)
+			}
+		}
+		item = analyzeAccessInbound(username, false, config, fallback, fallbackBackups)
 		if reason := accessCredentialSharingReason(inbound, item, business, defaults); reason != "" {
 			item.Action, item.Status, item.LastError, item.DecisionNote = lifecycleActionConflict, lifecycleItemFailed, reason, reason
 			item.replacementInbound, item.accessCredentials = nil, nil
 		}
 		if item.Status == lifecycleItemFailed {
 			return item, true, nil
+		}
+		if len(coreBackups) > 0 {
+			restore := analyzeAccessInbound(username, true, config, nil, coreBackups)
+			if restore.Status == lifecycleItemFailed {
+				return restore, true, nil
+			}
+			restore.persistentIdentities = identities
+			item.persistentRestore = &restore
 		}
 	} else if len(backups) > 0 {
 		item = analyzeAccessInbound(username, true, config, refs, backups)
@@ -298,6 +332,30 @@ func (a *app) executePersistentAccessItem(ctx context.Context, token, username s
 	if err := a.refreshDisabledUsers(ctx); err != nil {
 		return err
 	}
+	if !enable {
+		a.trafficGroupsMu.Lock()
+		current := a.disabledUserBlocks[username][strconv.FormatInt(item.ServerID, 10)]
+		complete := true
+		for _, wanted := range item.persistentIdentities {
+			found := false
+			for _, identity := range current {
+				found = found || identity == wanted
+			}
+			complete = complete && found
+		}
+		a.trafficGroupsMu.Unlock()
+		if !complete {
+			return errors.New("身份归属或服务器能力已变化，封禁未完成，请重新核对冲突")
+		}
+	}
+	if item.persistentRestore != nil {
+		if !a.accessIdentitiesConfirmed(item.ServerID, item.persistentIdentities) {
+			return errors.New("封禁已安排，等待服务器确认后恢复旧凭据；可稍后重试")
+		}
+		if err := a.executePersistentAccessItem(ctx, token, username, false, item.persistentRestore); err != nil {
+			return err
+		}
+	}
 	if item.replacementInbound != nil {
 		if !enable && item.accessEnable && !a.accessIdentitiesConfirmed(item.ServerID, item.persistentIdentities) {
 			return errors.New("封禁已安排，等待服务器确认后恢复旧凭据；可稍后重试")
@@ -307,8 +365,11 @@ func (a *app) executePersistentAccessItem(ctx context.Context, token, username s
 		}
 	}
 	if store, ok := a.adminStore.(*postgresAdminSessionStore); ok && item.accessEnable {
-		_, err := store.db.ExecContext(ctx, `DELETE FROM mmwxc_user_disabled_credentials WHERE username=$1 AND server_id=$2 AND inbound_tag=$3`, username, item.ServerID, item.InboundTag)
-		return err
+		for _, backup := range item.accessCredentials {
+			if _, err := store.db.ExecContext(ctx, `DELETE FROM mmwxc_user_disabled_credentials WHERE username=$1 AND server_id=$2 AND inbound_tag=$3 AND credential_key=$4`, username, item.ServerID, item.InboundTag, backup.CredentialKey); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -362,6 +423,18 @@ func (a *app) attachUserAccess(states map[string]managedUserLifecycle) {
 	for username, state := range states {
 		if state.DesiredState == lifecycleStateDisabled {
 			state.Access = append([]userAccessNodeStatus{}, a.disabledUserAccess[username]...)
+			for index, item := range state.Access {
+				if item.Status != "blocked" {
+					continue
+				}
+				a.connectionMu.Lock()
+				record := a.detailedConnections[strconv.FormatInt(item.ServerID, 10)]
+				a.connectionMu.Unlock()
+				if !a.disabledUsersReady || time.Since(record.UpdatedAt) > helperStaleTimeout {
+					state.Access[index].Status = "pending"
+					state.Access[index].Reason = "尚未确认最新状态，已保留上次封禁名单"
+				}
+			}
 			states[username] = state
 		}
 	}
@@ -395,6 +468,14 @@ func (a *app) evaluateDisabledUsers(ctx context.Context, store *postgresAdminSes
 	states, err := store.LifecycleStates(ctx)
 	if err != nil {
 		return err
+	}
+	disabled := false
+	for _, state := range states {
+		disabled = disabled || state.DesiredState == lifecycleStateDisabled
+	}
+	if !disabled {
+		a.disabledUserBlocks, a.disabledUserAccess, a.disabledUsersReady = map[string]map[string][]serverConnectionIdentity{}, map[string][]userAccessNodeStatus{}, true
+		return nil
 	}
 	data, err := store.persistentAccessData(ctx)
 	if err != nil {
