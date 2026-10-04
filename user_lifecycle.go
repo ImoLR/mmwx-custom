@@ -99,6 +99,10 @@ ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS default_credenti
 ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS unknown_credentials INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS decision_note TEXT NOT NULL DEFAULT '';
 ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS deletion_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
+UPDATE mmwxc_user_lifecycle_items AS item SET deletion_snapshot='{}'::jsonb
+    FROM mmwxc_user_lifecycle_operations AS operation
+    WHERE item.operation_id=operation.operation_id AND operation.state='deleted'
+      AND item.deletion_snapshot<>'{}'::jsonb;
 CREATE TABLE IF NOT EXISTS mmwxc_user_disabled_credentials (
     username TEXT NOT NULL,
     server_id BIGINT NOT NULL,
