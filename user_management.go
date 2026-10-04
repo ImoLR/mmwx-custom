@@ -135,8 +135,7 @@ BEGIN
 		'mmwxc_package_traffic_group_blocks:username',
         'mmwxc_routing_rule_presets:username',
         'mmwxc_ui_preferences:username',
-        'wg_leases:username',
-        'nodes:username'
+        'wg_leases:username'
     ] LOOP
         relation_table := split_part(relation_spec, ':', 1);
         relation_column := split_part(relation_spec, ':', 2);

@@ -5,14 +5,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
 
-// Audit reproducers assert the intended safe outcome and deliberately fail on
-// the audited implementation. They never use the public schema or production.
+// Lifecycle regressions use an isolated loopback schema, never public or production.
 func auditUserDeleteDB(t *testing.T, id string) *sql.DB {
 	t.Helper()
 
@@ -63,31 +65,6 @@ func auditDeleteExec(t *testing.T, db *sql.DB, statement string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(statement, args...); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestAuditUAD01DeletePreservesOtherUsersInactiveAssignments(t *testing.T) {
-	db := auditUserDeleteDB(t, "UA-D01")
-	auditDeleteExec(t, db, `INSERT INTO packages VALUES(1,'ordinary reusable template','[]')`)
-	auditDeleteExec(t, db, `INSERT INTO users(username,package_id) VALUES('alice',1),('bob',NULL)`)
-	auditDeleteExec(t, db, `INSERT INTO user_package_assignments VALUES(1,'alice',1,'active'),(2,'bob',1,'inactive')`)
-	auditDeleteExec(t, db, `INSERT INTO package_assignment_inbound_configs VALUES(2,'bob',5,'bob-inbound','vless','{}')`)
-	store := &postgresAdminSessionStore{db: db}
-	bindings, err := store.LifecyclePackageBindings(context.Background(), "alice")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("package preview remaining users=%d (bob owns an inactive assignment)", bindings[0].RemainingUsers)
-	err = store.DeleteExclusivePackage(context.Background(), 1, "alice")
-	var assignments, configs int
-	if scanErr := db.QueryRow(`SELECT COUNT(*) FROM user_package_assignments WHERE username='bob'`).Scan(&assignments); scanErr != nil {
-		t.Fatal(scanErr)
-	}
-	if scanErr := db.QueryRow(`SELECT COUNT(*) FROM package_assignment_inbound_configs WHERE username='bob'`).Scan(&configs); scanErr != nil {
-		t.Fatal(scanErr)
-	}
-	if assignments != 1 || configs != 1 {
-		t.Fatalf("UA-D01: deleting alice's package removed bob's assignment/config: assignments=%d configs=%d error=%v", assignments, configs, err)
 	}
 }
 
@@ -184,32 +161,240 @@ func TestAuditUAD04DeleteRemovesPrivateForwardChainOwnership(t *testing.T) {
 	}
 }
 
-func TestAuditUAD05DeletePreservesNodeUsedByAnotherUsersPackage(t *testing.T) {
-	db := auditUserDeleteDB(t, "UA-D05")
-	auditDeleteExec(t, db, `CREATE TABLE nodes(id bigint PRIMARY KEY,username text,original_server text,inbound_tag text,protocol text)`)
-	auditDeleteExec(t, db, `INSERT INTO packages VALUES(1,'bob package','[10]')`)
-	auditDeleteExec(t, db, `INSERT INTO users(username,package_id) VALUES('alice',NULL),('bob',1)`)
-	auditDeleteExec(t, db, `INSERT INTO user_package_assignments VALUES(1,'bob',1,'active')`)
-	auditDeleteExec(t, db, `INSERT INTO nodes VALUES(10,'alice','','','vless')`)
-	store := &postgresAdminSessionStore{db: db}
-	application := &app{adminStore: store}
-	ctx := context.Background()
-	plan, err := application.buildDeletionPlan(ctx, "session", "alice")
+func auditDeletionApplication(t *testing.T, db *sql.DB, configs map[int64]map[string]any) (*app, *lifecycleAgentFixture) {
+	t.Helper()
+	fixture, server := newLifecycleAgentFixture(configs)
+	t.Cleanup(server.Close)
+	fixture.removeNodes = func(serverID int64, tag string) error {
+		_, err := db.Exec(`DELETE FROM nodes WHERE original_server=(SELECT name FROM remote_servers WHERE id=$1) AND inbound_tag=$2`, serverID, tag)
+		return err
+	}
+	fixture.extraHandler = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/admin/packages" {
+			rows, err := db.Query(`SELECT id,name,nodes,node_traffic_limits,node_name_overrides FROM packages ORDER BY id`)
+			if err != nil {
+				t.Error(err)
+				writeJSON(w, 500, map[string]any{"success": false})
+				return true
+			}
+			defer rows.Close()
+			var packages []map[string]any
+			for rows.Next() {
+				var id int64
+				var name, nodes, limits, names string
+				if err := rows.Scan(&id, &name, &nodes, &limits, &names); err != nil {
+					t.Error(err)
+					return true
+				}
+				pkg := map[string]any{"id": id, "name": name}
+				for key, raw := range map[string]string{"nodes": nodes, "node_traffic_limits": limits, "node_name_overrides": names} {
+					var value any
+					if err := json.Unmarshal([]byte(raw), &value); err != nil {
+						t.Error(err)
+						return true
+					}
+					pkg[key] = value
+				}
+				packages = append(packages, pkg)
+			}
+			writeJSON(w, 200, map[string]any{"packages": packages})
+			return true
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v3" {
+			var request struct {
+				Op      string         `json:"op"`
+				Payload map[string]any `json:"payload"`
+			}
+			if json.NewDecoder(r.Body).Decode(&request) != nil || request.Op != "f9bed75c75a38c5f" {
+				t.Error("invalid package update")
+				writeJSON(w, 400, map[string]any{"success": false})
+				return true
+			}
+			nodes, _ := json.Marshal(request.Payload["nodes"])
+			limits, _ := json.Marshal(request.Payload["node_traffic_limits"])
+			names, _ := json.Marshal(request.Payload["node_name_overrides"])
+			_, err := db.Exec(`UPDATE packages SET nodes=$2,node_traffic_limits=$3,node_name_overrides=$4 WHERE id=$1`, request.Payload["id"], string(nodes), string(limits), string(names))
+			if err != nil {
+				t.Error(err)
+				writeJSON(w, 500, map[string]any{"success": false})
+				return true
+			}
+			writeJSON(w, 200, map[string]any{"success": true})
+			return true
+		}
+		return false
+	}
+	target, err := url.Parse(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveDeletePlan(ctx, "alice", "audit-shared-node", plan); err != nil {
+	return &app{adminStore: &postgresAdminSessionStore{db: db}, officialInternalTarget: target}, fixture
+}
+
+func seedDeletionNodes(t *testing.T, db *sql.DB) map[int64]map[string]any {
+	t.Helper()
+	for _, statement := range []string{
+		`ALTER TABLE packages ADD COLUMN node_traffic_limits text DEFAULT '{}', ADD COLUMN node_name_overrides text DEFAULT '{}'`,
+		`CREATE TABLE nodes(id bigint PRIMARY KEY,name text,username text,original_server text,inbound_tag text,protocol text)`,
+		`CREATE TABLE user_inbound_configs(username text,server_id bigint,inbound_tag text,protocol text,credential_json text)`,
+		`CREATE TABLE server_xray_config_snapshots(id bigint,server_id bigint,config_json text,source text,created_at timestamptz DEFAULT CURRENT_TIMESTAMP)`,
+		`CREATE TABLE mmwxc_package_traffic_groups(id bigint PRIMARY KEY,package_id bigint REFERENCES packages(id) ON DELETE CASCADE,node_ids jsonb)`,
+		`CREATE TABLE forward_chain_nodes(node_id bigint PRIMARY KEY,owner_username text,billing_assignment_id bigint)`,
+		`INSERT INTO users(username,role,email) VALUES('admin','admin','admin@example.test'),('alice','user','alice@example.test'),('bob','user','bob@example.test')`,
+		`INSERT INTO remote_servers VALUES(5,'server-5')`,
+		`INSERT INTO nodes VALUES(10,'Alice','admin','server-5','alice','vless'),(11,'Alice with admin','admin','server-5','coowned','vless'),(12,'Admin only','admin','server-5','admin-only','vless'),(13,'External','admin','','','vless'),(14,'Bob','admin','server-5','bob','vless')`,
+		`INSERT INTO user_inbound_configs VALUES('alice',5,'alice','vless','{"id":"alice-secret","email":"alice@example.test"}'),('alice',5,'coowned','vless','{"id":"alice-coowned","email":"alice@example.test"}'),('bob',5,'bob','vless','{"id":"bob-secret","email":"bob@example.test"}')`,
+	} {
+		auditDeleteExec(t, db, statement)
+	}
+	admin := map[string]any{"id": "admin-default", "email": "admin@example.test"}
+	config := lifecycleConfig(
+		lifecycleInbound("alice", "vless", map[string]any{"id": "alice-secret", "email": "alice@example.test"}),
+		lifecycleInbound("coowned", "vless", map[string]any{"id": "alice-coowned", "email": "alice@example.test"}, admin),
+		lifecycleInbound("admin-only", "vless", admin),
+		lifecycleInbound("bob", "vless", map[string]any{"id": "bob-secret", "email": "bob@example.test"}),
+	)
+	raw, _ := json.Marshal(config)
+	auditDeleteExec(t, db, `INSERT INTO server_xray_config_snapshots(id,server_id,config_json,source) VALUES(1,5,$1,'master_write')`, string(raw))
+	return map[int64]map[string]any{5: config}
+}
+
+func runDeletionRegression(t *testing.T, application *app, username string) ([]lifecyclePlanItem, lifecycleDeleteResult) {
+	t.Helper()
+	ctx := context.Background()
+	plan, err := application.buildDeletionPlan(ctx, "session", username)
+	if err != nil {
 		t.Fatal(err)
 	}
-	result := application.executeDeletePlan(ctx, "session", "alice", "audit-shared-node", plan)
+	store := application.adminStore.(lifecycleStore)
+	if err := store.SaveDeletePlan(ctx, username, "regression-delete", plan); err != nil {
+		t.Fatal(err)
+	}
+	return plan, application.executeDeletePlan(ctx, "session", username, "regression-delete", plan)
+}
+
+func TestAuditUAD01DeletePackageFollowsNodeOwnership(t *testing.T) {
+	for _, test := range []struct {
+		name, nodes    string
+		keep, conflict bool
+	}{
+		{"own only", "[10,11]", false, false},
+		{"own admin external missing", "[10,11,12,13,999]", false, false},
+		{"another users node", "[10,11,14]", true, false},
+		{"unexpected inactive binding", "[10,11]", true, true},
+		{"unknown credential", "[10,11,15]", true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := auditUserDeleteDB(t, "UA-D01")
+			configs := seedDeletionNodes(t, db)
+			auditDeleteExec(t, db, `INSERT INTO packages(id,name,nodes,node_traffic_limits,node_name_overrides) VALUES(1,'Alice package',$1,'{"10":1,"11":2,"14":3}','{"10":"own","14":"other"}')`, test.nodes)
+			auditDeleteExec(t, db, `UPDATE users SET package_id=1 WHERE username='alice'`)
+			auditDeleteExec(t, db, `INSERT INTO user_package_assignments VALUES(1,'alice',1,'active')`)
+			auditDeleteExec(t, db, `INSERT INTO forward_chain_nodes VALUES(13,'bob',1),(14,'bob',NULL)`)
+			auditDeleteExec(t, db, `INSERT INTO mmwxc_package_traffic_groups VALUES(1,1,'[10,11,14]')`)
+			if test.name == "unexpected inactive binding" {
+				auditDeleteExec(t, db, `INSERT INTO user_package_assignments VALUES(2,'bob',1,'inactive')`)
+			}
+			if test.name == "unknown credential" {
+				auditDeleteExec(t, db, `INSERT INTO nodes VALUES(15,'Unknown','admin','server-5','unknown','vless')`)
+				configs[5]["inbounds"] = append(configs[5]["inbounds"].([]any), lifecycleInbound("unknown", "vless", map[string]any{"id": "unclaimed"}))
+			}
+			application, fixture := auditDeletionApplication(t, db, configs)
+			plan, result := runDeletionRegression(t, application, "alice")
+			var pkg lifecyclePlanItem
+			for _, item := range plan {
+				if item.PackageID == 1 {
+					pkg = item
+				}
+			}
+			want := lifecycleActionDeletePackage
+			if test.keep {
+				want = lifecycleActionKeepPackage
+			}
+			if test.conflict {
+				want = lifecycleActionConflict
+			}
+			if pkg.Action != want || len(pkg.OwnNodes) != 2 {
+				t.Fatalf("package classification=%+v", pkg)
+			}
+			if test.conflict {
+				if result.UserDeleted || pkg.DecisionNote == "" {
+					t.Fatalf("conflict lost: %+v", result)
+				}
+				return
+			}
+			if !result.UserDeleted {
+				t.Fatalf("delete failed: %+v", result)
+			}
+			var count int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM packages WHERE id=1`).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if (count == 1) != test.keep {
+				t.Fatalf("package remains=%d wantKeep=%t", count, test.keep)
+			}
+			if err := db.QueryRow(`SELECT COUNT(*) FROM nodes WHERE id IN(10,11)`).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("own node rows=%d err=%v", count, err)
+			}
+			if err := db.QueryRow(`SELECT COUNT(*) FROM forward_chain_nodes WHERE node_id=13`).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("billing-only relation remains=%d err=%v", count, err)
+			}
+			if findConfigInbound(fixture.configs[5], "alice") != nil || findConfigInbound(fixture.configs[5], "coowned") != nil || findConfigInbound(fixture.configs[5], "bob") == nil || findConfigInbound(fixture.configs[5], "admin-only") == nil {
+				t.Fatal("wrong inbound deletion")
+			}
+			if test.keep {
+				assertDeletionPackagePruned(t, db, 1)
+			}
+		})
+	}
+}
+
+func assertDeletionPackagePruned(t *testing.T, db *sql.DB, id int64) {
+	t.Helper()
+	var nodes, limits, names, groups string
+	if err := db.QueryRow(`SELECT nodes,node_traffic_limits,node_name_overrides FROM packages WHERE id=$1`, id).Scan(&nodes, &limits, &names); err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	if json.Unmarshal([]byte(nodes), &ids) != nil || !reflect.DeepEqual(ids, []int64{14}) {
+		t.Fatalf("remaining package nodes=%s", nodes)
+	}
+	for _, raw := range []string{limits, names} {
+		var values map[string]any
+		if json.Unmarshal([]byte(raw), &values) != nil || values["10"] != nil || values["11"] != nil || values["14"] == nil {
+			t.Fatalf("per-node data=%s", raw)
+		}
+	}
+	if err := db.QueryRow(`SELECT node_ids::text FROM mmwxc_package_traffic_groups WHERE package_id=$1`, id).Scan(&groups); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ReplaceAll(groups, " ", "") != "[14]" {
+		t.Fatalf("group nodes=%s", groups)
+	}
+}
+
+func TestAuditUAD05DeletePrunesOtherUsersPackage(t *testing.T) {
+	db := auditUserDeleteDB(t, "UA-D05")
+	configs := seedDeletionNodes(t, db)
+	auditDeleteExec(t, db, `INSERT INTO packages(id,name,nodes,node_traffic_limits,node_name_overrides) VALUES(2,'Bob package','[10,11,14]','{"10":1,"11":2,"14":3}','{"10":"own","14":"other"}')`)
+	auditDeleteExec(t, db, `UPDATE users SET package_id=2 WHERE username='bob'`)
+	auditDeleteExec(t, db, `INSERT INTO user_package_assignments VALUES(2,'bob',2,'active')`)
+	auditDeleteExec(t, db, `INSERT INTO mmwxc_package_traffic_groups VALUES(2,2,'[10,11,14]')`)
+	auditDeleteExec(t, db, `INSERT INTO forward_chain_nodes VALUES(10,'bob',2),(14,'bob',2)`)
+	application, fixture := auditDeletionApplication(t, db, configs)
+	_, result := runDeletionRegression(t, application, "alice")
 	if !result.UserDeleted {
-		t.Fatalf("fixture deletion did not complete: %+v", result)
+		t.Fatalf("delete failed: %+v", result)
 	}
-	var missingNodes int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM user_package_assignments a JOIN packages p ON p.id=a.package_id CROSS JOIN LATERAL jsonb_array_elements_text(p.nodes::jsonb) member(node_id) LEFT JOIN nodes n ON n.id=member.node_id::bigint WHERE a.username='bob' AND n.id IS NULL`).Scan(&missingNodes); err != nil {
-		t.Fatal(err)
+	assertDeletionPackagePruned(t, db, 2)
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM nodes WHERE id IN(10,11)`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("deleted nodes=%d err=%v", count, err)
 	}
-	if missingNodes != 0 {
-		t.Fatalf("UA-D05: deleting alice removed a node from bob's active package, leaving %d dangling node reference", missingNodes)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM forward_chain_nodes`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("forward node references=%d err=%v", count, err)
+	}
+	if findConfigInbound(fixture.configs[5], "bob") == nil {
+		t.Fatal("Bob credential lost")
 	}
 }

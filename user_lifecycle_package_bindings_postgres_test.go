@@ -49,8 +49,8 @@ func TestLifecyclePackageBindingsIsolatedPostgresSingleConnection(t *testing.T) 
 		t.Fatalf("package bindings with one connection: %v", err)
 	}
 	want := []lifecyclePackageBinding{
-		{ID: 1, Name: "assigned", NodeIDs: []int64{65, 76}, RemainingUsers: 3},
-		{ID: 2, Name: "legacy", NodeIDs: []int64{}, RemainingUsers: 2},
+		{ID: 1, Name: "assigned", NodeIDs: []int64{65, 76}, Bound: true, BindingConflict: true},
+		{ID: 2, Name: "legacy", NodeIDs: []int64{}, Bound: true, BindingConflict: true},
 	}
 	if !reflect.DeepEqual(bindings, want) {
 		t.Fatalf("package bindings = %+v, want %+v", bindings, want)

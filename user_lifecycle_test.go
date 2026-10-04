@@ -107,7 +107,7 @@ func (s *lifecycleTestStore) LifecycleDefaultAdminCredentials(_ context.Context,
 func (s *lifecycleTestStore) LifecyclePackageBindings(context.Context, string) ([]lifecyclePackageBinding, error) {
 	return append([]lifecyclePackageBinding(nil), s.packages...), nil
 }
-func (s *lifecycleTestStore) DeleteExclusivePackage(_ context.Context, packageID int64, _ string) error {
+func (s *lifecycleTestStore) DeleteExclusivePackage(_ context.Context, packageID int64, _ string, _ lifecyclePackageRecheck) error {
 	s.deletedPackages = append(s.deletedPackages, packageID)
 	return nil
 }
@@ -148,6 +148,8 @@ type lifecycleAgentFixture struct {
 	failTagOnce       string
 	failed            bool
 	ignoreMutations   bool
+	extraHandler      func(http.ResponseWriter, *http.Request) bool
+	removeNodes       func(int64, string) error
 }
 
 func newLifecycleAgentFixture(configs map[int64]map[string]any) (*lifecycleAgentFixture, *httptest.Server) {
@@ -269,6 +271,9 @@ func (f *lifecycleAgentFixture) handshake(w http.ResponseWriter, r *http.Request
 func (f *lifecycleAgentFixture) servePlain(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.extraHandler != nil && f.extraHandler(w, r) {
+		return
+	}
 	serverID, _ := strconv.ParseInt(r.URL.Query().Get("server_id"), 10, 64)
 	if r.Method == http.MethodGet && r.URL.Path == "/api/admin/remote/xray/config" {
 		raw, _ := json.Marshal(f.configs[serverID])
@@ -293,6 +298,12 @@ func (f *lifecycleAgentFixture) servePlain(w http.ResponseWriter, r *http.Reques
 	}
 	if !f.ignoreMutations {
 		f.apply(serverID, action)
+		if action["action"] == "remove" && f.removeNodes != nil {
+			if err := f.removeNodes(serverID, tag); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false})
+				return
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
 }
@@ -419,8 +430,8 @@ func TestDeleteLifecycleNoInboundFinalizesUser(t *testing.T) {
 
 func TestDeleteLifecycleDeletesOnlyExclusivePackages(t *testing.T) {
 	store := &lifecycleTestStore{packages: []lifecyclePackageBinding{
-		{ID: 11, Name: "exclusive", NodeIDs: []int64{65, 73, 74}, RemainingUsers: 0},
-		{ID: 12, Name: "shared", NodeIDs: []int64{80}, RemainingUsers: 1},
+		{ID: 11, Name: "exclusive", NodeIDs: []int64{65, 73, 74}, Bound: true},
+		{ID: 12, Name: "shared", NodeIDs: []int64{80}, Bound: true, BindingConflict: true},
 	}}
 	_, server := newLifecycleAgentFixture(map[int64]map[string]any{})
 	defer server.Close()
@@ -429,11 +440,11 @@ func TestDeleteLifecycleDeletesOnlyExclusivePackages(t *testing.T) {
 	if err != nil || len(plan) != 2 {
 		t.Fatalf("package plan=%#v err=%v", plan, err)
 	}
-	if plan[0].Action != lifecycleActionDeletePackage || plan[1].Action != lifecycleActionKeepPackage {
+	if plan[0].Action != lifecycleActionDeletePackage || plan[1].Action != lifecycleActionConflict {
 		t.Fatalf("unexpected package decisions: %#v", plan)
 	}
 	result := application.executeDeletePlan(context.Background(), "session", "alice", "op-packages", plan)
-	if !result.UserDeleted || len(store.deletedPackages) != 1 || store.deletedPackages[0] != 11 {
+	if result.UserDeleted || result.PendingCount != 1 || len(store.deletedPackages) != 1 || store.deletedPackages[0] != 11 {
 		t.Fatalf("exclusive package handling failed: result=%#v deleted=%v", result, store.deletedPackages)
 	}
 }
@@ -840,4 +851,8 @@ func TestUserLifecycleIsolatedPostgresRelationsAndFinalCleanup(t *testing.T) {
 			t.Errorf("query %q got=%d want=%d err=%v", query, got, want, err)
 		}
 	}
+}
+
+func (s *lifecycleTestStore) LifecycleDeletionData(context.Context, string) (lifecycleDeletionData, error) {
+	return lifecycleDeletionData{Packages: s.packages}, nil
 }

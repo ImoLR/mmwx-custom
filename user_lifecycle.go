@@ -136,23 +136,28 @@ type lifecycleCredentialRef struct {
 }
 
 type lifecyclePlanItem struct {
-	ItemKind           string     `json:"item_kind"`
-	ServerID           int64      `json:"server_id"`
-	ServerName         string     `json:"server_name"`
-	InboundTag         string     `json:"inbound_tag"`
-	Protocol           string     `json:"protocol"`
-	Action             string     `json:"action"`
-	Status             string     `json:"status"`
-	RemainingUsers     int        `json:"remaining_users"`
-	DefaultCredentials int        `json:"default_credentials"`
-	UnknownCredentials int        `json:"unknown_credentials"`
-	DecisionNote       string     `json:"decision_note,omitempty"`
-	PackageID          int64      `json:"package_id,omitempty"`
-	PackageName        string     `json:"package_name,omitempty"`
-	NodeIDs            []int64    `json:"node_ids,omitempty"`
-	Attempts           int        `json:"attempts"`
-	LastError          string     `json:"last_error,omitempty"`
-	LastCheckedAt      *time.Time `json:"last_checked_at,omitempty"`
+	ItemKind           string               `json:"item_kind"`
+	ServerID           int64                `json:"server_id"`
+	ServerName         string               `json:"server_name"`
+	InboundTag         string               `json:"inbound_tag"`
+	Protocol           string               `json:"protocol"`
+	Action             string               `json:"action"`
+	Status             string               `json:"status"`
+	RemainingUsers     int                  `json:"remaining_users"`
+	DefaultCredentials int                  `json:"default_credentials"`
+	UnknownCredentials int                  `json:"unknown_credentials"`
+	DecisionNote       string               `json:"decision_note,omitempty"`
+	PackageID          int64                `json:"package_id,omitempty"`
+	PackageName        string               `json:"package_name,omitempty"`
+	NodeIDs            []int64              `json:"node_ids,omitempty"`
+	DeletedNodeIDs     []int64              `json:"deleted_node_ids,omitempty"`
+	OwnNodes           []lifecycleNodeLabel `json:"own_nodes,omitempty"`
+	OtherUserNodes     []lifecycleNodeLabel `json:"other_user_nodes,omitempty"`
+	NeutralNodes       []lifecycleNodeLabel `json:"neutral_nodes,omitempty"`
+	UnknownNodes       []lifecycleNodeLabel `json:"unknown_nodes,omitempty"`
+	Attempts           int                  `json:"attempts"`
+	LastError          string               `json:"last_error,omitempty"`
+	LastCheckedAt      *time.Time           `json:"last_checked_at,omitempty"`
 
 	deleteRefs              []lifecycleCredentialRef
 	targetCredentials       []map[string]any
@@ -164,10 +169,11 @@ type lifecyclePlanItem struct {
 }
 
 type lifecyclePackageBinding struct {
-	ID             int64
-	Name           string
-	NodeIDs        []int64
-	RemainingUsers int
+	ID              int64
+	Name            string
+	NodeIDs         []int64
+	Bound           bool
+	BindingConflict bool
 }
 
 type lifecycleCredentialBackup struct {
@@ -199,7 +205,8 @@ type lifecycleStore interface {
 	LifecycleInboundBusinessRefs(context.Context, int64, string, string, string) ([]lifecycleCredentialRef, error)
 	LifecycleDefaultAdminCredentials(context.Context, int64, string) ([]map[string]any, error)
 	LifecyclePackageBindings(context.Context, string) ([]lifecyclePackageBinding, error)
-	DeleteExclusivePackage(context.Context, int64, string) error
+	DeleteExclusivePackage(context.Context, int64, string, lifecyclePackageRecheck) error
+	LifecycleDeletionData(context.Context, string) (lifecycleDeletionData, error)
 	LifecycleDisabledCredentials(context.Context, string) ([]lifecycleCredentialBackup, error)
 	LatestAccessOperation(context.Context, string, string) (string, error)
 	SaveAccessPlan(context.Context, string, string, string, []lifecyclePlanItem) error
@@ -533,7 +540,11 @@ func (s *postgresAdminSessionStore) LifecycleInboundBusinessRefs(ctx context.Con
 }
 
 func (s *postgresAdminSessionStore) schemaColumns(ctx context.Context) (map[string]map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT table_name,column_name FROM information_schema.columns WHERE table_schema=current_schema()`)
+	return lifecycleSchemaColumns(ctx, s.db)
+}
+
+func lifecycleSchemaColumns(ctx context.Context, db lifecycleQueryer) (map[string]map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT table_name,column_name FROM information_schema.columns WHERE table_schema=current_schema()`)
 	if err != nil {
 		return nil, err
 	}
@@ -553,48 +564,14 @@ func (s *postgresAdminSessionStore) schemaColumns(ctx context.Context) (map[stri
 }
 
 func (s *postgresAdminSessionStore) LifecyclePackageBindings(ctx context.Context, username string) ([]lifecyclePackageBinding, error) {
-	username = strings.TrimSpace(username)
-	if username == "" {
-		return nil, errors.New("username is required")
-	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT DISTINCT p.id,COALESCE(p.name,''),COALESCE(p.nodes,'[]')
-		FROM packages p
-		WHERE EXISTS (SELECT 1 FROM user_package_assignments a WHERE a.package_id=p.id AND a.username=$1)
-		   OR EXISTS (SELECT 1 FROM users u WHERE u.package_id=p.id AND u.username=$1)
-		ORDER BY p.id`, username)
+	packages, err := lifecyclePackageBindings(ctx, s.db, username)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var result []lifecyclePackageBinding
-	for rows.Next() {
-		var item lifecyclePackageBinding
-		var rawNodes string
-		if err := rows.Scan(&item.ID, &item.Name, &rawNodes); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(rawNodes), &item.NodeIDs); err != nil {
-			return nil, fmt.Errorf("package %d has invalid node list", item.ID)
-		}
-		result = append(result, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	for i := range result {
-		item := &result[i]
-		if err := s.db.QueryRowContext(ctx, `
-			SELECT COUNT(DISTINCT username) FROM (
-				SELECT a.username FROM user_package_assignments a
-				WHERE a.package_id=$1 AND a.username<>$2 AND COALESCE(a.status,'active')='active'
-				UNION
-				SELECT u.username FROM users u WHERE u.package_id=$1 AND u.username<>$2
-			) package_users`, item.ID, username).Scan(&item.RemainingUsers); err != nil {
-			return nil, err
+	for _, pkg := range packages {
+		if pkg.Bound {
+			result = append(result, pkg)
 		}
 	}
 	return result, nil
@@ -639,7 +616,11 @@ func (s *postgresAdminSessionStore) lifecyclePackageBusinessRefs(ctx context.Con
 }
 
 func (s *postgresAdminSessionStore) LifecycleDefaultAdminCredentials(ctx context.Context, serverID int64, inboundTag string) ([]map[string]any, error) {
-	columns, err := s.schemaColumns(ctx)
+	return lifecycleDefaultAdminCredentials(ctx, s.db, serverID, inboundTag)
+}
+
+func lifecycleDefaultAdminCredentials(ctx context.Context, db lifecycleQueryer, serverID int64, inboundTag string) ([]map[string]any, error) {
+	columns, err := lifecycleSchemaColumns(ctx, db)
 	if err != nil {
 		return nil, err
 	}
@@ -647,7 +628,7 @@ func (s *postgresAdminSessionStore) LifecycleDefaultAdminCredentials(ctx context
 		return nil, nil
 	}
 	admins := make(map[string]bool)
-	rows, err := s.db.QueryContext(ctx, `SELECT username,COALESCE(email,'') FROM users WHERE role='admin'`)
+	rows, err := db.QueryContext(ctx, `SELECT username,COALESCE(email,'') FROM users WHERE role='admin'`)
 	if err != nil {
 		return nil, err
 	}
@@ -668,7 +649,7 @@ func (s *postgresAdminSessionStore) LifecycleDefaultAdminCredentials(ctx context
 	if len(admins) == 0 {
 		return nil, nil
 	}
-	rows, err = s.db.QueryContext(ctx, `
+	rows, err = db.QueryContext(ctx, `
 		SELECT config_json::text,COALESCE(source,'')
 		FROM server_xray_config_snapshots
 		WHERE server_id=$1 AND config_json::text LIKE $2
@@ -694,7 +675,7 @@ func (s *postgresAdminSessionStore) LifecycleDefaultAdminCredentials(ctx context
 		if source != "master_write" {
 			return nil, nil
 		}
-		entries, _, err := inboundCredentialEntries(inbound)
+		entries, _, err := accessInboundCredentialEntries(inbound)
 		if err != nil {
 			return nil, nil
 		}
@@ -727,38 +708,46 @@ func credentialMatchesAdmin(credential map[string]any, admins map[string]bool) b
 	return false
 }
 
-func (s *postgresAdminSessionStore) DeleteExclusivePackage(ctx context.Context, packageID int64, username string) error {
+func (s *postgresAdminSessionStore) DeleteExclusivePackage(ctx context.Context, packageID int64, username string, recheck lifecyclePackageRecheck) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM packages WHERE id=$1)`, packageID).Scan(&exists); err != nil {
-		return err
-	}
-	if !exists {
+	var rawNodes string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(nodes,'[]') FROM packages WHERE id=$1 FOR UPDATE`, packageID).Scan(&rawNodes); errors.Is(err, sql.ErrNoRows) {
 		return nil
-	}
-	var remaining int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(DISTINCT other_user) FROM (
-			SELECT a.username AS other_user FROM user_package_assignments a
-			WHERE a.package_id=$1 AND a.username<>$2 AND COALESCE(a.status,'active')='active'
-			UNION
-			SELECT u.username AS other_user FROM users u WHERE u.package_id=$1 AND u.username<>$2
-		) package_users`, packageID, username).Scan(&remaining); err != nil {
+	} else if err != nil {
 		return err
 	}
-	if remaining > 0 {
-		return fmt.Errorf("套餐仍有 %d 个业务用户，未执行删除", remaining)
+	var nodes []int64
+	if json.Unmarshal([]byte(rawNodes), &nodes) != nil {
+		return errors.New("套餐节点列表无效，未删除套餐")
 	}
-	result, err := tx.ExecContext(ctx, `DELETE FROM packages WHERE id=$1`, packageID)
+	var shared bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_package_assignments WHERE package_id=$1 AND username<>$2) OR EXISTS(SELECT 1 FROM users WHERE package_id=$1 AND username<>$2)`, packageID, username).Scan(&shared); err != nil {
+		return err
+	}
+	if shared {
+		return errors.New("套餐同时绑定其他用户，存在冲突，未删除套餐")
+	}
+	if recheck == nil {
+		return errors.New("缺少节点归属复核，未删除套餐")
+	}
+	if err := recheck(ctx, tx, nodes); err != nil {
+		return err
+	}
+	columns, err := lifecycleSchemaColumns(ctx, tx)
 	if err != nil {
 		return err
 	}
-	if rows, _ := result.RowsAffected(); rows != 1 {
-		return errors.New("套餐删除未提交")
+	if hasLifecycleColumns(columns, "forward_chain_nodes", "billing_assignment_id") {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM forward_chain_nodes WHERE billing_assignment_id IN (SELECT id FROM user_package_assignments WHERE package_id=$1)`, packageID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM packages WHERE id=$1`, packageID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -964,7 +953,7 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 			})
 		}
 	}
-	packages, err := store.LifecyclePackageBindings(ctx, username)
+	data, err := store.LifecycleDeletionData(ctx, username)
 	if err != nil {
 		return nil, err
 	}
@@ -988,7 +977,9 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 			config, err = a.fetchOfficialXrayConfig(ctx, token, first.ServerID)
 			if err != nil {
 				log.Printf("[mmwx-custom] lifecycle config read failed server_id=%d: %v", first.ServerID, err)
-				items = append(items, failedPlanItem(first, "读取真实 Xray 配置失败"))
+				failed := failedPlanItem(first, "读取真实 Xray 配置失败")
+				failed.deleteRefs = refs
+				items = append(items, failed)
 				continue
 			}
 			configs[first.ServerID] = config
@@ -1003,23 +994,75 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 			items = append(items, failedPlanItem(first, "核对创建时管理员 credential 失败"))
 			continue
 		}
+		businessRefs = deletionBusinessRefs(findConfigInbound(config, first.InboundTag), username, data, businessRefs)
 		item := analyzeLifecycleInbound(config, refs, businessRefs, defaultCredentials)
 		item.deleteRefs = refs
 		items = append(items, item)
 	}
-	for _, pkg := range packages {
-		action, status := lifecycleActionDeletePackage, lifecycleItemPending
-		note := "该套餐没有其他绑定用户，将一起删除"
-		if pkg.RemainingUsers > 0 {
-			action, status = lifecycleActionKeepPackage, lifecycleItemCompleted
-			note = fmt.Sprintf("还有 %d 个业务用户绑定，保留套餐", pkg.RemainingUsers)
+	deleted := make(map[int64]lifecycleNodeLabel)
+	for index := range items {
+		item := &items[index]
+		for _, old := range previous {
+			if old.ItemKind == lifecycleItemKindInbound && old.ServerID == item.ServerID && old.InboundTag == item.InboundTag && old.Action == lifecycleActionDeleteWhole {
+				item.NodeIDs = append(item.NodeIDs, old.NodeIDs...)
+				if item.Action != lifecycleActionConflict && len(item.targetCredentials) == 0 && len(old.targetCredentials) > 0 {
+					item.Action = old.Action
+					item.Status = lifecycleItemPending
+					item.targetCredentials = old.targetCredentials
+					item.nonTargetHashes = old.nonTargetHashes
+					item.defaultCredentialHashes = old.defaultCredentialHashes
+				}
+			}
 		}
-		items = append(items, lifecyclePlanItem{
-			ItemKind: lifecycleItemKindPackage, ServerID: 0, ServerName: pkg.Name,
-			InboundTag: "package:" + strconv.FormatInt(pkg.ID, 10), Protocol: "package",
-			Action: action, Status: status, RemainingUsers: pkg.RemainingUsers,
-			PackageID: pkg.ID, PackageName: pkg.Name, NodeIDs: append([]int64(nil), pkg.NodeIDs...), DecisionNote: note,
-		})
+		if item.Action != lifecycleActionDeleteWhole {
+			continue
+		}
+		for _, node := range data.Nodes {
+			if node.ServerID == item.ServerID && node.InboundTag == item.InboundTag && !containsLifecycleNode(item.NodeIDs, node.ID) {
+				item.NodeIDs = append(item.NodeIDs, node.ID)
+			}
+		}
+		for _, id := range item.NodeIDs {
+			label := lifecycleNodeLabel{ID: id}
+			if node, ok := data.Nodes[id]; ok {
+				label = node.lifecycleNodeLabel
+			}
+			deleted[id] = label
+		}
+		if len(item.NodeIDs) > 0 {
+			item.Status = lifecycleItemPending
+		}
+	}
+	for _, pkg := range data.Packages {
+		affected := pkg.Bound
+		for _, id := range pkg.NodeIDs {
+			if _, ok := deleted[id]; ok {
+				affected = true
+			}
+		}
+		// The official remove operation may already have pruned packages.nodes;
+		// retain our per-node cleanup targets across retries as well.
+		var previousDeleted []int64
+		for _, old := range previous {
+			if old.ItemKind == lifecycleItemKindPackage && old.PackageID == pkg.ID {
+				affected = true
+				previousDeleted = old.DeletedNodeIDs
+			}
+		}
+		if !affected {
+			continue
+		}
+		item := a.classifyDeletionPackage(ctx, token, username, pkg, data, deleted, configs)
+		for _, id := range previousDeleted {
+			if !containsLifecycleNode(item.DeletedNodeIDs, id) {
+				item.DeletedNodeIDs = append(item.DeletedNodeIDs, id)
+				item.OwnNodes = append(item.OwnNodes, lifecycleNodeLabel{ID: id})
+				if item.Action == lifecycleActionKeepPackage {
+					item.Status = lifecycleItemPending
+				}
+			}
+		}
+		items = append(items, item)
 	}
 	return items, nil
 }
@@ -1046,7 +1089,7 @@ func analyzeLifecycleInbound(config map[string]any, refs, businessRefs []lifecyc
 		return item
 	}
 	item.Protocol = strings.ToLower(strings.TrimSpace(fmt.Sprint(inbound["protocol"])))
-	entries, _, err := inboundCredentialEntries(inbound)
+	entries, _, err := accessInboundCredentialEntries(inbound)
 	if err != nil {
 		item.Action = lifecycleActionConflict
 		item.Status = lifecycleItemFailed
@@ -1064,6 +1107,16 @@ func analyzeLifecycleInbound(config map[string]any, refs, businessRefs []lifecyc
 		}
 	}
 	item.targetCredentials = targets
+	for _, target := range targets {
+		for _, ref := range businessRefs {
+			if (ref.CredentialRaw == "" && ref.Identity == "") || lifecycleEntryMatchesRefs(target, inbound, item.Protocol, []lifecycleCredentialRef{ref}) {
+				item.Action, item.Status = lifecycleActionConflict, lifecycleItemFailed
+				item.LastError = "该用户凭据同时被其他用户使用，不能安全删除"
+				item.DecisionNote = item.LastError
+				return item
+			}
+		}
+	}
 	wholePortBusiness := false
 	wholePortBusinessUsers := make(map[string]bool)
 	for _, ref := range businessRefs {
@@ -1121,6 +1174,11 @@ func analyzeLifecycleInbound(config map[string]any, refs, businessRefs []lifecyc
 		if len(targets) == 0 {
 			item.Status = lifecycleItemCompleted
 		}
+		return item
+	}
+	if len(targets) == 0 {
+		item.Action, item.Status = lifecycleActionRemoveUser, lifecycleItemCompleted
+		item.DecisionNote = "没有该用户的运行凭据，保留节点"
 		return item
 	}
 	item.Action = lifecycleActionDeleteWhole
@@ -1435,22 +1493,15 @@ func (a *app) executeLifecycleDeleteItem(ctx context.Context, token, username st
 		}
 		return errors.New("删除计划存在冲突，未执行远程修改")
 	}
-	if item.ItemKind == lifecycleItemKindPackage || item.Action == lifecycleActionDeletePackage || item.Action == lifecycleActionKeepPackage {
-		if item.Action == lifecycleActionKeepPackage {
-			return nil
-		}
-		store, ok := a.adminStore.(lifecycleStore)
-		if !ok {
-			return errors.New("lifecycle store unavailable")
-		}
-		return store.DeleteExclusivePackage(ctx, item.PackageID, username)
+	if item.ItemKind == lifecycleItemKindPackage {
+		return a.executeDeletionPackage(ctx, token, username, item)
 	}
 	config, err := a.fetchOfficialXrayConfig(ctx, token, item.ServerID)
 	if err != nil {
 		return err
 	}
 	if findConfigInbound(config, item.InboundTag) == nil {
-		return nil
+		return a.finishLifecycleDeletedNodes(ctx, token, item)
 	}
 	if len(item.targetCredentials) == 0 {
 		if item.Status == lifecycleItemCompleted {
@@ -1465,7 +1516,7 @@ func (a *app) executeLifecycleDeleteItem(ctx context.Context, token, username st
 	if item.Protocol != "" && currentProtocol != strings.ToLower(strings.TrimSpace(item.Protocol)) {
 		return errors.New("Inbound 协议已发生变化，未执行删除")
 	}
-	entries, _, err := inboundCredentialEntries(inbound)
+	entries, _, err := accessInboundCredentialEntries(inbound)
 	if err != nil {
 		return err
 	}
@@ -1497,7 +1548,7 @@ func (a *app) executeLifecycleDeleteItem(ctx context.Context, token, username st
 		}
 	}
 	if len(currentTargets) == 0 {
-		if item.Action != lifecycleActionDeleteWhole || len(entries) > 0 {
+		if item.Action != lifecycleActionDeleteWhole {
 			return nil
 		}
 	}
@@ -1532,7 +1583,7 @@ func (a *app) executeLifecycleDeleteItem(ctx context.Context, token, username st
 		if findConfigInbound(verified, item.InboundTag) != nil {
 			return errors.New("HTTP 成功但真实 Xray 配置仍存在该 Inbound")
 		}
-		return nil
+		return a.finishLifecycleDeletedNodes(ctx, token, item)
 	}
 	if item.Action != lifecycleActionRemoveUser {
 		return errors.New("删除计划存在冲突，未执行远程修改")
@@ -1555,7 +1606,7 @@ func (a *app) executeLifecycleDeleteItem(ctx context.Context, token, username st
 	if inbound == nil {
 		return errors.New("共享 Inbound 被意外删除")
 	}
-	entries, _, err = inboundCredentialEntries(inbound)
+	entries, _, err = accessInboundCredentialEntries(inbound)
 	if err != nil {
 		return err
 	}

@@ -37,7 +37,7 @@ func (s *fakeUserManagementStore) LifecyclePackageBindings(context.Context, stri
 	return nil, s.err
 }
 
-func (s *fakeUserManagementStore) DeleteExclusivePackage(context.Context, int64, string) error {
+func (s *fakeUserManagementStore) DeleteExclusivePackage(context.Context, int64, string, lifecyclePackageRecheck) error {
 	return s.err
 }
 
@@ -265,4 +265,8 @@ func TestUserDeletionPreviewCoversCurrentProductionRelations(t *testing.T) {
 	for relation := range want {
 		t.Errorf("preview does not cover %s", relation)
 	}
+}
+
+func (s *fakeUserManagementStore) LifecycleDeletionData(context.Context, string) (lifecycleDeletionData, error) {
+	return lifecycleDeletionData{}, s.err
 }
