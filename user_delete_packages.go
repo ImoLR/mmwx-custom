@@ -273,6 +273,8 @@ func (a *app) classifyDeletionPackage(ctx context.Context, token, username strin
 		item.Action, item.Status, item.DecisionNote = lifecycleActionConflict, lifecycleItemFailed, "部分节点无法确认归属，保留套餐，请先核对节点凭据"
 	} else if pkg.Bound && len(item.OtherUserNodes) == 0 {
 		item.Action, item.DecisionNote = lifecycleActionDeletePackage, "没有其他普通用户的节点，随用户删除套餐"
+	} else if lifecyclePackageEmptied(pkg.NodeIDs, item.DeletedNodeIDs) {
+		item.Action, item.DecisionNote = lifecycleActionDeleteEmptyPackage, "删除（移除节点后为空）"
 	} else {
 		item.DecisionNote = fmt.Sprintf("保留套餐，移除 %d 个该用户节点", len(item.DeletedNodeIDs))
 		if len(item.DeletedNodeIDs) == 0 {
@@ -303,6 +305,20 @@ func (a *app) executeDeletionPackage(ctx context.Context, token, username string
 	if len(item.DeletedNodeIDs) == 0 {
 		return nil
 	}
+	if item.Action == lifecycleActionDeleteEmptyPackage || lifecyclePackageEmptied(item.NodeIDs, item.DeletedNodeIDs) {
+		cleanup, ok := store.(interface {
+			DeleteEmptiedLifecyclePackage(context.Context, int64, []int64) (bool, error)
+		})
+		if !ok {
+			return errors.New("套餐清空删除不可用，未更新套餐")
+		}
+		deleted, err := cleanup.DeleteEmptiedLifecyclePackage(ctx, item.PackageID, item.DeletedNodeIDs)
+		if err != nil || deleted {
+			return err
+		}
+		item.Action = lifecycleActionKeepPackage
+		item.DecisionNote = "套餐新增了其他节点，保留套餐并移除已删除节点"
+	}
 	var response struct {
 		Packages []map[string]any `json:"packages"`
 	}
@@ -331,6 +347,23 @@ func (a *app) executeDeletionPackage(ctx context.Context, token, username string
 	if err := pruneLifecyclePackagePayload(payload, deleted); err != nil {
 		return err
 	}
+	if nodes, _ := payload["nodes"].([]any); len(nodes) == 0 {
+		cleanup, ok := store.(interface {
+			DeleteEmptiedLifecyclePackage(context.Context, int64, []int64) (bool, error)
+		})
+		if !ok {
+			return errors.New("套餐清空删除不可用，未更新套餐")
+		}
+		removed, err := cleanup.DeleteEmptiedLifecyclePackage(ctx, item.PackageID, item.DeletedNodeIDs)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			return errors.New("套餐节点已变化，请重试节点清理")
+		}
+		item.Action, item.DecisionNote = lifecycleActionDeleteEmptyPackage, "删除（移除节点后为空）"
+		return nil
+	}
 	if err := a.officialLifecycleJSON(ctx, token, http.MethodPost, "/api/v3", map[string]any{"op": "f9bed75c75a38c5f", "payload": payload}, nil); err != nil {
 		return err
 	}
@@ -340,6 +373,85 @@ func (a *app) executeDeletionPackage(ctx context.Context, token, username string
 		return cleanup.PruneLifecycleNodeRelations(ctx, item.PackageID, item.DeletedNodeIDs)
 	}
 	return nil
+}
+
+func lifecyclePackageEmptied(nodes, deleted []int64) bool {
+	if len(nodes) == 0 {
+		return false
+	}
+	for _, id := range nodes {
+		if !containsLifecycleNode(deleted, id) {
+			return false
+		}
+	}
+	return true
+}
+
+// Call only for a package known to have referenced the deleted nodes before the
+// official node removal; an intentional all-nodes package must never enter here.
+func (s *postgresAdminSessionStore) DeleteEmptiedLifecyclePackage(ctx context.Context, packageID int64, deleted []int64) (bool, error) {
+	if len(deleted) == 0 {
+		return false, errors.New("缺少已删除节点，未删除套餐")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var raw string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(nodes,'[]') FROM packages WHERE id=$1 FOR UPDATE`, packageID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var nodes []int64
+	if json.Unmarshal([]byte(raw), &nodes) != nil {
+		return false, errors.New("套餐节点列表无效，未删除套餐")
+	}
+	if len(nodes) > 0 && !lifecyclePackageEmptied(nodes, deleted) {
+		return false, nil
+	}
+	columns, err := lifecycleSchemaColumns(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	if hasLifecycleColumns(columns, "forward_chain_nodes", "billing_assignment_id") {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM forward_chain_nodes WHERE billing_assignment_id IN (SELECT id FROM user_package_assignments WHERE package_id=$1)`, packageID); err != nil {
+			return false, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM packages WHERE id=$1`, packageID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+func (a *app) cleanupLifecycleDeletedNodePackages(ctx context.Context, token string, before []lifecyclePackageBinding, deletedNodeIDs []int64) error {
+	var failures []error
+	for _, pkg := range before {
+		item := lifecyclePlanItem{ItemKind: lifecycleItemKindPackage, PackageID: pkg.ID, PackageName: pkg.Name, NodeIDs: pkg.NodeIDs, Action: lifecycleActionKeepPackage}
+		for _, id := range pkg.NodeIDs {
+			if containsLifecycleNode(deletedNodeIDs, id) {
+				item.DeletedNodeIDs = append(item.DeletedNodeIDs, id)
+			}
+		}
+		if len(item.DeletedNodeIDs) == 0 {
+			continue
+		}
+		if err := a.executeDeletionPackage(ctx, token, "", &item); err != nil {
+			failures = append(failures, fmt.Errorf("清理套餐 %s：%w", pkg.Name, err))
+		}
+	}
+	if cleanup, ok := a.adminStore.(interface {
+		PruneLifecycleNodeRelations(context.Context, int64, []int64) error
+	}); ok {
+		if err := cleanup.PruneLifecycleNodeRelations(ctx, 0, deletedNodeIDs); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
 }
 
 func pruneLifecyclePackagePayload(payload map[string]any, deleted map[string]bool) error {

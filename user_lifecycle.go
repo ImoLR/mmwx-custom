@@ -26,12 +26,13 @@ const (
 	lifecycleStateDeletePartial = "delete_partial"
 	lifecycleStateDeleted       = "deleted"
 
-	lifecycleActionRemoveUser    = "REMOVE_USER_ONLY"
-	lifecycleActionDeleteWhole   = "DELETE_WHOLE_INBOUND"
-	lifecycleActionDeleteNode    = "DELETE_NODE"
-	lifecycleActionConflict      = "CONFLICT"
-	lifecycleActionDeletePackage = "DELETE_PACKAGE"
-	lifecycleActionKeepPackage   = "KEEP_PACKAGE"
+	lifecycleActionRemoveUser         = "REMOVE_USER_ONLY"
+	lifecycleActionDeleteWhole        = "DELETE_WHOLE_INBOUND"
+	lifecycleActionDeleteNode         = "DELETE_NODE"
+	lifecycleActionConflict           = "CONFLICT"
+	lifecycleActionDeletePackage      = "DELETE_PACKAGE"
+	lifecycleActionDeleteEmptyPackage = "DELETE_EMPTY_PACKAGE"
+	lifecycleActionKeepPackage        = "KEEP_PACKAGE"
 
 	lifecycleItemKindInbound = "inbound"
 	lifecycleItemKindNode    = "node"
@@ -626,8 +627,34 @@ func lifecycleDefaultAdminCredentials(ctx context.Context, db lifecycleQueryer, 
 	if err != nil {
 		return nil, err
 	}
+	var current []map[string]any
+	for _, table := range []string{"user_inbound_configs", "package_assignment_inbound_configs"} {
+		if !hasLifecycleColumns(columns, table, "username", "server_id", "inbound_tag", "credential_json") {
+			continue
+		}
+		rows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT c.credential_json FROM %s c JOIN users u ON u.username=c.username WHERE u.role='admin' AND c.server_id=$1 AND c.inbound_tag=$2 AND COALESCE(c.credential_json,'')<>''`, table), serverID, inboundTag)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var raw string
+			if err := rows.Scan(&raw); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			var credential map[string]any
+			if json.Unmarshal([]byte(raw), &credential) == nil && len(credential) > 0 {
+				current = append(current, credential)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
 	if !hasLifecycleColumns(columns, "server_xray_config_snapshots", "id", "server_id", "config_json", "source", "created_at") {
-		return nil, nil
+		return current, nil
 	}
 	admins := make(map[string]bool)
 	rows, err := db.QueryContext(ctx, `SELECT username,COALESCE(email,'') FROM users WHERE role='admin'`)
@@ -649,7 +676,7 @@ func lifecycleDefaultAdminCredentials(ctx context.Context, db lifecycleQueryer, 
 		return nil, err
 	}
 	if len(admins) == 0 {
-		return nil, nil
+		return current, nil
 	}
 	rows, err = db.QueryContext(ctx, `
 		SELECT config_json::text,COALESCE(source,'')
@@ -675,21 +702,20 @@ func lifecycleDefaultAdminCredentials(ctx context.Context, db lifecycleQueryer, 
 			continue
 		}
 		if source != "master_write" {
-			return nil, nil
+			return current, nil
 		}
 		entries, _, err := accessInboundCredentialEntries(inbound)
 		if err != nil {
-			return nil, nil
+			return current, nil
 		}
-		var result []map[string]any
 		for _, entry := range entries {
 			if credentialMatchesAdmin(entry, admins) {
-				result = append(result, entry)
+				current = append(current, entry)
 			}
 		}
-		return result, nil
+		return current, nil
 	}
-	return nil, rows.Err()
+	return current, rows.Err()
 }
 
 func credentialMatchesAdmin(credential map[string]any, admins map[string]bool) bool {
@@ -1119,7 +1145,11 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 			}
 		}
 		if item.Action == lifecycleActionKeepPackage {
-			item.DecisionNote = fmt.Sprintf("保留套餐，移除 %d 个该用户节点", len(item.DeletedNodeIDs))
+			if len(pkg.NodeIDs) == 0 && len(previousDeleted) > 0 {
+				item.Action, item.Status, item.DecisionNote = lifecycleActionDeleteEmptyPackage, lifecycleItemPending, "删除（移除节点后为空）"
+			} else {
+				item.DecisionNote = fmt.Sprintf("保留套餐，移除 %d 个该用户节点", len(item.DeletedNodeIDs))
+			}
 		}
 		items = append(items, item)
 	}
