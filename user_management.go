@@ -77,6 +77,17 @@ BEGIN
                  )', TG_TABLE_SCHEMA, TG_TABLE_SCHEMA) USING OLD.username;
     END IF;
 
+    -- Forward-chain billing must be resolved before its assignment is removed.
+    IF to_regclass(format('%I.%I', TG_TABLE_SCHEMA, 'forward_chain_nodes')) IS NOT NULL THEN
+        EXECUTE format('DELETE FROM %I.forward_chain_nodes WHERE owner_username = $1', TG_TABLE_SCHEMA) USING OLD.username;
+        IF to_regclass(format('%I.%I', TG_TABLE_SCHEMA, 'user_package_assignments')) IS NOT NULL THEN
+            EXECUTE format('DELETE FROM %I.forward_chain_nodes
+                     WHERE billing_assignment_id IN (
+                        SELECT id FROM %I.user_package_assignments WHERE username = $1
+                     )', TG_TABLE_SCHEMA, TG_TABLE_SCHEMA) USING OLD.username;
+        END IF;
+    END IF;
+
     -- A targeted, unused bind invite is private to the deleted account. Codes
     -- merely created by that account are retained as administrative records.
     IF to_regclass(format('%I.%I', TG_TABLE_SCHEMA, 'invite_codes')) IS NOT NULL THEN

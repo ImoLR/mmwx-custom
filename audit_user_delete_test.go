@@ -160,19 +160,27 @@ func TestAuditUAD04DeleteRemovesPrivateForwardChainOwnership(t *testing.T) {
 	db := auditUserDeleteDB(t, "UA-D04")
 	auditDeleteExec(t, db, `CREATE TABLE forward_chain_nodes(node_id bigint PRIMARY KEY,owner_username text,billing_assignment_id bigint)`)
 	auditDeleteExec(t, db, `CREATE TABLE nodes(id bigint PRIMARY KEY,username text)`)
-	auditDeleteExec(t, db, `INSERT INTO users(username) VALUES('alice')`)
-	auditDeleteExec(t, db, `INSERT INTO nodes VALUES(10,'alice')`)
-	auditDeleteExec(t, db, `INSERT INTO forward_chain_nodes VALUES(10,'alice',123)`)
+	auditDeleteExec(t, db, `INSERT INTO packages VALUES(1,'alice package','[]'),(2,'bob package','[]')`)
+	auditDeleteExec(t, db, `INSERT INTO users(username,package_id) VALUES('alice',1),('bob',2)`)
+	auditDeleteExec(t, db, `INSERT INTO user_package_assignments VALUES(1,'alice',1,'active'),(2,'alice',1,'inactive'),(3,'bob',2,'active')`)
+	auditDeleteExec(t, db, `INSERT INTO nodes VALUES(10,'admin'),(11,'admin'),(12,'admin'),(13,'bob'),(14,'bob')`)
+	auditDeleteExec(t, db, `INSERT INTO forward_chain_nodes VALUES(10,'alice',3),(11,'bob',1),(12,'bob',2),(13,'bob',3),(14,NULL,NULL)`)
 	store := &postgresAdminSessionStore{db: db}
 	if err := store.FinalizeManagementUserDeletion(context.Background(), "alice", "audit-delete-forward"); err != nil {
 		t.Fatal(err)
 	}
-	var orphans int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM forward_chain_nodes f LEFT JOIN users u ON u.username=f.owner_username LEFT JOIN nodes n ON n.id=f.node_id WHERE u.username IS NULL AND n.id IS NULL`).Scan(&orphans); err != nil {
+	var remainingPrivate, preserved, otherAssignments int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM forward_chain_nodes WHERE node_id IN (10,11,12)`).Scan(&remainingPrivate); err != nil {
 		t.Fatal(err)
 	}
-	if orphans != 0 {
-		t.Fatalf("UA-D04: private forward chain relation remains after its user and node are deleted: %d", orphans)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM forward_chain_nodes WHERE node_id IN (13,14)`).Scan(&preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM user_package_assignments WHERE id=3 AND username='bob'`).Scan(&otherAssignments); err != nil {
+		t.Fatal(err)
+	}
+	if remainingPrivate != 0 || preserved != 2 || otherAssignments != 1 {
+		t.Fatalf("UA-D04: owner/billing cleanup damaged unrelated relations: private=%d preserved=%d bob assignments=%d", remainingPrivate, preserved, otherAssignments)
 	}
 }
 
