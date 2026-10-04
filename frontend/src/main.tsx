@@ -882,7 +882,7 @@ function Dashboard({
       ) : activeTab === "packages" ? (
         <PackageManagementPage token={session.token} />
       ) : activeTab === "users" ? (
-        <UserManagementPage token={session.token} />
+        <UserManagementPage token={session.token} currentUsername={session.username} />
       ) : activeTab === "forward" ? (
         <ForwardManagementPage token={session.token} />
       ) : activeTab === "settings" ? (

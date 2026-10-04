@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { eligiblePackages, parseTrafficOverride, remainingDays, matchesExpiry } from "../../frontend/src/user-manager-logic.ts";
 
 // Compile the real, unexported card in isolation. API calls and the page's
 // effects are deliberately excluded; no product export is needed for these tests.
-function renderUserCard(user: Record<string, unknown>, lifecycle?: Record<string, unknown>) {
+function renderUserCard(user: Record<string, unknown>, lifecycle?: Record<string, unknown>, props: Record<string, unknown> = {}) {
   const require = createRequire(new URL("../../frontend/package.json", import.meta.url));
   const ts = require("typescript");
   const React = require("react");
@@ -19,11 +20,12 @@ function renderUserCard(user: Record<string, unknown>, lifecycle?: Record<string
   const compiled = ts.transpileModule(functions.map((node: any) => node.getText(file)).join("\n"), {
     compilerOptions: { target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.React },
   }).outputText;
-  const UserCard = new Function("React", ...iconNames, `${compiled}\nreturn UserCard;`)(React, ...iconNames.map(() => () => null));
+  const UserCard = new Function("React", "remainingDays", ...iconNames, `${compiled}\nreturn UserCard;`)(React, remainingDays, ...iconNames.map(() => () => null));
   const noop = () => undefined;
   return renderToStaticMarkup(React.createElement(UserCard, {
     user, lifecycle, busy: "", view: "full", onDialog: noop, onStatus: noop,
     onExtend: noop, onResetTraffic: noop, onDelete: noop,
+    ...props,
   }));
 }
 
@@ -48,6 +50,22 @@ test("delete_partial hides access, admin hides destructive actions", () => {
   assert.doesNotMatch(admin, /<b>删除<\/b>/);
 });
 
+test("assignment-only users can open subscription and custom renewal without a legacy short code", () => {
+  const html = renderUserCard({ username: "alice", role: "user", is_active: true, assignment_package_ids: [2] }, undefined, { view: "renewal" });
+  assert.match(html, /<button type="button">订阅<\/button>/);
+  assert.match(html, /<button type="button">自定义续期<\/button>/);
+  assert.match(html, /已绑定 1 个套餐/);
+  const partial = renderUserCard({ username: "alice", role: "user", is_active: true, assignment_package_ids: [2] }, { effective_state: "delete_partial" }, { view: "renewal" });
+  assert.match(partial, /<button type="button" disabled="">自定义续期<\/button>/);
+});
+
+test("admin credential actions only target the current signed-in administrator", () => {
+  const admin = { username: "admin", role: "admin", is_active: true };
+  assert.match(renderUserCard(admin, undefined, { currentUsername: "admin" }), /更换订阅凭据/);
+  assert.match(renderUserCard(admin, undefined, { currentUsername: "admin" }), /修复自己节点凭据/);
+  assert.doesNotMatch(renderUserCard(admin, undefined, { currentUsername: "someone-else" }), /更换订阅凭据|修复自己节点凭据/);
+});
+
 test("UA-D06 saving an existing package preserves permanent and finite expiry", async () => {
   const require = createRequire(new URL("../../frontend/package.json", import.meta.url));
   const ts = require("typescript");
@@ -61,13 +79,15 @@ test("UA-D06 saving an existing package preserves permanent and finite expiry", 
   let saved: Record<string, unknown> | undefined;
   const assign = async (_token: string, body: Record<string, unknown>) => { saved = body; return {}; };
   const PackageDialog = new Function(
-    "React", "useState", "today", "nextMonth", "DialogShell", "assignManagedUserPackage", "unassignManagedUserPackage", "messageOf",
+    "React", "useState", "useEffect", "today", "nextMonth", "DialogShell", "assignManagedUserPackage", "unassignManagedUserPackage", "messageOf", "eligiblePackages", "parseTrafficOverride", "confirmCredentialWrite", "Plus",
     `${compiled}\nreturn PackageDialog;`,
   )(
-    React, (initial: unknown) => [initial, () => undefined], () => "2026-10-04", () => "2026-11-04", () => null,
-    assign, async () => assert.fail("existing permanent package must remain assigned"), () => "failure",
+    React, (initial: unknown) => [stateIndex++ === 1 ? [1] : initial, () => undefined], () => undefined, () => "2026-10-04", () => "2026-11-04", () => null,
+    assign, async () => assert.fail("existing permanent package must remain assigned"), () => "failure", eligiblePackages, parseTrafficOverride, () => false, () => null,
   );
+  let stateIndex = 0;
   for (const expiry of [null, "", "2027-05-15"]) {
+    stateIndex = 0;
     saved = undefined;
     const element = PackageDialog({
       token: "test-session", user: { username: "alice", package_id: 1, package_end_date: expiry },
@@ -104,7 +124,7 @@ test("UA-D07 package counts and filters use every assignment with legacy fallbac
     const compiled = ts.transpileModule(`${helper.getText(file)}\nconst compute = ${callback.getText(file)};`, {
       compilerOptions: { target: ts.ScriptTarget.ES2020 },
     }).outputText;
-    return new Function("users", "packages", "query", "packageFilter", `${compiled}\nreturn compute();`)(users, packages, "", filter);
+    return new Function("users", "packages", "query", "packageFilter", "view", "expiryFilter", "matchesExpiry", `${compiled}\nreturn compute();`)(users, packages, "", filter, "full", "all", matchesExpiry);
   };
   assert.deepEqual({ count: compute("counts").get("2"), visible: compute("visible").map((user: { username: string }) => user.username) }, {
     count: 3, visible: ["alice", "bob", "fallback"],
@@ -139,6 +159,7 @@ test("UA-D01 and UA-D05 deletion preview explains package actions and node owner
       { item_kind: "package", package_id: 3, package_name: "Bob 的套餐", action: "KEEP_PACKAGE", deleted_node_ids: [10], own_nodes: [{ id: 10, name: "Alice 节点" }], other_user_nodes: [{ id: 20, name: "Bob 节点" }] },
       { item_kind: "package", package_id: 4, package_name: "意外共享套餐", action: "CONFLICT", decision_note: "套餐还绑定了其他用户，不能删除" },
       { item_kind: "package", package_id: 5, package_name: "未知节点套餐", action: "CONFLICT", unknown_nodes: [{ id: 30, name: "待核对节点" }], decision_note: "无法确认节点归属，不能删除套餐" },
+      { item_kind: "package", package_id: 6, package_name: "移除后为空的另一套餐", action: "DELETE_EMPTY_PACKAGE", deleted_node_ids: [10], decision_note: "删除（移除节点后为空）" },
     ],
   };
   const states = [preview, null, false, false, ""];
@@ -163,5 +184,6 @@ test("UA-D01 and UA-D05 deletion preview explains package actions and node owner
   assert.match(html, /冲突：套餐还绑定了其他用户，不能删除/);
   assert.match(html, /冲突：无法确认节点归属，不能删除套餐/);
   assert.match(html, /归属待确认节点：待核对节点（ID 30）/);
+  assert.match(html, /<b>删除（移除节点后为空）<\/b>/);
   assert.doesNotMatch(html, /没有其他绑定用户|仍有业务绑定的套餐/);
 });
