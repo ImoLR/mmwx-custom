@@ -752,17 +752,20 @@ function DeleteUserDialog({ token, user, lifecycle, onClose, onResult }: { token
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
+  const [currentLifecycle, setCurrentLifecycle] = useState(lifecycle);
   useEffect(() => {
     let active = true;
-    fetchManagedUserDeletionPreview(token, user.username)
-      .then((result) => { if (active) setPreview(result.preview); })
+    setLoading(true);
+    setPreview(null);
+    Promise.all([fetchManagedUserDeletionPreview(token, user.username), fetchManagedUserLifecycles(token)])
+      .then(([result, states]) => { if (active) { setCurrentLifecycle(states.users[user.username]); setPreview(result.preview); } })
       .catch((err) => { if (active) setError(messageOf(err, "读取删除清单失败")); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [token, user.username]);
 
   async function confirmDelete() {
-    if (!preview || deleting || blockedByConflicts) return;
+    if (!preview || loading || deleting || blockedByConflicts) return;
     setDeleting(true);
     setError("");
     try {
@@ -795,10 +798,10 @@ function DeleteUserDialog({ token, user, lifecycle, onClose, onResult }: { token
   ] : [];
 
   const plan = result?.items ?? preview?.inbound_plan ?? [];
-  const retrying = (result && !result.user_deleted) || lifecycle?.effective_state === "deleting" || lifecycle?.effective_state === "delete_partial";
+  const retrying = (result && !result.user_deleted) || currentLifecycle?.effective_state === "deleting" || currentLifecycle?.effective_state === "delete_partial";
   const blockedByConflicts = !retrying && plan.some((item) => item.action === "CONFLICT");
 
-  return <DialogShell title={`删除用户 ${user.username}？`} subtitle="远程访问逐项清理；成功项保留，失败项可重试。" onClose={deleting ? () => {} : onClose} footer={<><button type="button" onClick={onClose} disabled={deleting}>取消</button><button className="danger" type="button" onClick={() => void confirmDelete()} disabled={!preview || deleting || blockedByConflicts}>{deleting ? "删除中..." : retrying ? "重试待清理项" : "确认删除"}</button></>}>
+  return <DialogShell title={`删除用户 ${user.username}？`} subtitle="远程访问逐项清理；成功项保留，失败项可重试。" onClose={deleting ? () => {} : onClose} footer={<><button type="button" onClick={onClose} disabled={deleting}>取消</button><button className="danger" type="button" onClick={() => void confirmDelete()} disabled={!preview || loading || deleting || blockedByConflicts}>{deleting ? "删除中..." : retrying ? "重试待清理项" : "确认删除"}</button></>}>
     {loading ? <div className="user-empty small">正在从数据库核对关联关系...</div> : preview ? <div className="user-delete-preview">
       <p>先清理用户节点，再删除用户关联记录：</p>
       {blockedByConflicts && <p className="user-form-error" role="alert">存在冲突，删除不会执行，请先处理以下项目</p>}

@@ -170,6 +170,7 @@ test("UA-D01 and UA-D05 deletion preview explains package actions and node owner
   );
   const render = (lifecycle?: Record<string, unknown>) => {
     stateIndex = 0;
+    states[5] = lifecycle;
     return renderToStaticMarkup(React.createElement(DeleteUserDialog, {
       token: "test-session", user: { username: "alice" }, lifecycle, onClose: () => undefined, onResult: async () => undefined,
     }));
@@ -204,4 +205,80 @@ test("UA-D01 and UA-D05 deletion preview explains package actions and node owner
   states[0] = { ...preview, inbound_plan: preview.inbound_plan.filter((item) => item.action !== "CONFLICT") };
   assert.doesNotMatch(render(), /存在冲突，删除不会执行/);
   assert.match(render(), /<button class="danger" type="button">确认删除<\/button>/);
+});
+
+test("deletion dialog refreshes stale lifecycle and waits for both preview reads", async () => {
+  const require = createRequire(new URL("../../frontend/package.json", import.meta.url));
+  const ts = require("typescript");
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const source = readFileSync(new URL("../../frontend/src/user-manager.tsx", import.meta.url), "utf8");
+  const file = ts.createSourceFile("user-manager.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const names = new Set(["DeleteUserDialog", "deletionDecision", "messageOf"]);
+  const functions = file.statements.filter((node: any) => ts.isFunctionDeclaration(node) && names.has(node.name?.text));
+  const compiled = ts.transpileModule(functions.map((node: any) => node.getText(file)).join("\n"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.React },
+  }).outputText;
+  const preview = {
+    package_bindings: 0, subscriptions: 0, sessions_and_tokens: 0, telegram_bindings: 0,
+    subaccounts: 0, inbound_bindings: 1, private_nodes: 0, routed_relations: 0,
+    user_limits: 0, custom_assignments: 0, traffic_records: 0, other_private: 0,
+    inbound_plan: [{ item_kind: "inbound", server_id: 5, inbound_tag: "conflicted", action: "CONFLICT" }],
+  };
+  for (const lifecycleFails of [false, true]) {
+    const states: unknown[] = [];
+    let stateIndex = 0;
+    let effect: () => void;
+    let resolveLifecycle: (value: unknown) => void;
+    let rejectLifecycle: (error: Error) => void;
+    const lifecycleResponse = new Promise((resolve, reject) => { resolveLifecycle = resolve; rejectLifecycle = reject; });
+    let deleteCalls = 0;
+    let lifecycleCalls = 0;
+    const DeleteUserDialog = new Function(
+      "React", "useState", "useEffect", "DialogShell", "fetchManagedUserDeletionPreview", "fetchManagedUserLifecycles", "deleteManagedUser",
+      `${compiled}\nreturn DeleteUserDialog;`,
+    )(
+      React, (initial: unknown) => {
+        const index = stateIndex++;
+        if (!(index in states)) states[index] = initial;
+        return [states[index], (value: unknown) => { states[index] = value; }];
+      }, (callback: () => void) => { effect = callback; },
+      ({ children, footer }: { children: unknown; footer: unknown }) => React.createElement("div", null, children, footer),
+      async () => ({ preview }),
+      () => { lifecycleCalls++; return lifecycleResponse; },
+      async () => { deleteCalls++; return { result: { user_deleted: false, pending_count: 1, items: preview.inbound_plan } }; },
+    );
+    const render = () => {
+      stateIndex = 0;
+      return DeleteUserDialog({ token: "test-session", user: { username: "alice" }, lifecycle: { effective_state: "enabled" }, onClose: () => undefined, onResult: async () => undefined });
+    };
+    let element = render();
+    effect!();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(lifecycleCalls, 1, "opening the dialog must refresh the cached lifecycle");
+    element = render();
+    let button = element.props.footer.props.children[1];
+    assert.equal(button.props.disabled, true, "preview alone cannot enable deletion before lifecycle is read");
+    button.props.onClick();
+    assert.equal(deleteCalls, 0);
+    if (lifecycleFails) rejectLifecycle!(new Error("读取用户生命周期失败"));
+    else resolveLifecycle!({ users: { alice: { effective_state: "delete_partial" } } });
+    await new Promise((resolve) => setImmediate(resolve));
+    element = render();
+    button = element.props.footer.props.children[1];
+    const html = renderToStaticMarkup(element);
+    if (lifecycleFails) {
+      assert.match(html, /读取用户生命周期失败/);
+      assert.equal(button.props.disabled, true);
+      button.props.onClick();
+      assert.equal(deleteCalls, 0, "failed lifecycle reads must leave deletion unavailable");
+    } else {
+      assert.doesNotMatch(html, /存在冲突，删除不会执行/);
+      assert.match(html, /重试待清理项/);
+      assert.equal(button.props.disabled, false, "fresh partial state must override stale enabled prop");
+      button.props.onClick();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(deleteCalls, 1, "existing partial operation can retry despite conflicts");
+    }
+  }
 });
