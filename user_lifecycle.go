@@ -735,11 +735,14 @@ func lifecycleInboundCreationSnapshot(ctx context.Context, db lifecycleQueryer, 
 			args = append(args, beforeTime, beforeID)
 		}
 		query += ` ORDER BY created_at DESC,id DESC LIMIT 128`
-		query = `SELECT snapshot.id,snapshot.created_at,EXISTS(
-			SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(snapshot.config_json::jsonb->'inbounds')='array'
-				THEN snapshot.config_json::jsonb->'inbounds' ELSE '[]'::jsonb END) inbound
+		// Limit the page first, then decode each configuration only once.
+		query = `WITH snapshot AS MATERIALIZED (
+			SELECT id,created_at,config_json::jsonb AS config FROM (` + query + `) page
+		) SELECT snapshot.id,snapshot.created_at,EXISTS(
+			SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(snapshot.config->'inbounds')='array'
+				THEN snapshot.config->'inbounds' ELSE '[]'::jsonb END) inbound
 			WHERE btrim(inbound->>'tag',$3::text)=$2
-		) FROM (` + query + `) snapshot ORDER BY snapshot.created_at DESC,snapshot.id DESC`
+		) FROM snapshot ORDER BY snapshot.created_at DESC,snapshot.id DESC`
 		rows, err := db.QueryContext(ctx, query, args...)
 		if err != nil {
 			return nil, "", err
