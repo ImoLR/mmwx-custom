@@ -375,7 +375,7 @@ func (a *app) userManagementHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid username"})
 		return
 	}
-	writeAction := parts[1] == "delete" || parts[1] == "access"
+	writeAction := parts[1] == "delete" || (parts[1] == "access" && r.Method != http.MethodGet)
 	if (writeAction && r.Method != http.MethodPost) || (!writeAction && r.Method != http.MethodGet) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"success": false, "message": "method not allowed"})
 		return
@@ -425,6 +425,20 @@ func (a *app) userManagementHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "administrator access cannot be managed"})
 			return
 		}
+		token := strings.TrimSpace(r.Header.Get("MM-Authorization"))
+		if token == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "official operator session is required"})
+			return
+		}
+		if r.Method == http.MethodGet {
+			access, err := a.previewUserAccess(r.Context(), token, username)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "读取禁用范围失败"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"success": true, "access": access})
+			return
+		}
 		states, err := lifecycle.LifecycleStates(r.Context())
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "读取用户删除状态失败"})
@@ -444,14 +458,13 @@ func (a *app) userManagementHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid access request"})
 			return
 		}
-		token := strings.TrimSpace(r.Header.Get("MM-Authorization"))
-		if token == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "official operator session is required"})
-			return
-		}
 		operation := lifecycleOperationDisable
 		if *request.Enabled {
 			operation = lifecycleOperationEnable
+			if err := a.applyAccessOfficialState(r.Context(), token, username, true); err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]any{"success": false, "message": lifecycleSafeError(err)})
+				return
+			}
 		}
 		plan, err := a.buildAccessPlan(r.Context(), token, username, *request.Enabled)
 		if err != nil {

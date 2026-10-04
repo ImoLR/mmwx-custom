@@ -84,8 +84,10 @@ func (s *postgresAdminSessionStore) SaveAccessPlan(ctx context.Context, username
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO mmwxc_user_lifecycle(username,desired_state,effective_state,operation,pending_count,last_error)
-		VALUES($1,$2,$3,$4,0,'') ON CONFLICT(username) DO UPDATE SET desired_state=$2,effective_state=$3,operation=$4,last_error='',updated_at=CURRENT_TIMESTAMP`,
+	if _, err = tx.ExecContext(ctx, `INSERT INTO mmwxc_user_lifecycle(username,desired_state,effective_state,operation,pending_count,last_error,official_was_active)
+		VALUES($1,$2,$3,$4,0,'',CASE WHEN $4='disable' THEN (SELECT COALESCE(is_active,0)<>0 FROM users WHERE username=$1) ELSE NULL END)
+		ON CONFLICT(username) DO UPDATE SET desired_state=$2,effective_state=$3,operation=$4,last_error='',updated_at=CURRENT_TIMESTAMP,
+		official_was_active=COALESCE(mmwxc_user_lifecycle.official_was_active,EXCLUDED.official_was_active)`,
 		username, desired, progress, operation); err != nil {
 		return err
 	}
@@ -135,6 +137,9 @@ func (s *postgresAdminSessionStore) SaveAccessPlan(ctx context.Context, username
 	if _, err = tx.ExecContext(ctx, `UPDATE mmwxc_user_lifecycle SET pending_count=$2,updated_at=CURRENT_TIMESTAMP WHERE username=$1`, username, pending); err != nil {
 		return err
 	}
+	if err := s.savePersistentAccessBlocks(ctx, tx, username, operation, items); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -160,19 +165,36 @@ func (s *postgresAdminSessionStore) FinishAccessAttempt(ctx context.Context, use
 		if _, err = tx.ExecContext(ctx, `DELETE FROM mmwxc_user_disabled_credentials WHERE username=$1`, username); err != nil {
 			return err
 		}
+		if _, err = tx.ExecContext(ctx, `UPDATE mmwxc_user_lifecycle SET official_was_active=NULL WHERE username=$1`, username); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
 
 func (a *app) buildAccessPlan(ctx context.Context, token, username string, enable bool) ([]lifecyclePlanItem, error) {
 	store := a.adminStore.(lifecycleStore)
-	refs, err := store.LifecycleCredentialRefs(ctx, username)
+	refs, err := a.accessCredentialRefs(ctx, username)
 	if err != nil {
 		return nil, err
 	}
 	backups, err := store.LifecycleDisabledCredentials(ctx, username)
 	if err != nil {
 		return nil, err
+	}
+	keepOfficialInactive := false
+	if enable {
+		states, err := store.LifecycleStates(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if previous := states[username].OfficialWasActive; previous != nil && !*previous {
+			current, err := a.adminStore.(userManagementStore).ManagedUserState(ctx, username)
+			if err != nil {
+				return nil, err
+			}
+			keepOfficialInactive = current.Exists && !current.IsActive
+		}
 	}
 	type accessGroup struct {
 		refs    []lifecycleCredentialRef
@@ -213,16 +235,38 @@ func (a *app) buildAccessPlan(ctx context.Context, token, username string, enabl
 		if config == nil {
 			config, err = a.fetchOfficialXrayConfig(ctx, token, serverID)
 			if err != nil {
+				if enable && len(group.backups) == 0 {
+					items = append(items, lifecyclePlanItem{ServerID: serverID, ServerName: serverName, InboundTag: inboundTag, Protocol: protocol,
+						Action: lifecycleActionReplaceCredential, Status: lifecycleItemCompleted, DecisionNote: "此节点未替换凭据，无需恢复"})
+					continue
+				}
 				items = append(items, lifecyclePlanItem{ServerID: serverID, ServerName: serverName, InboundTag: inboundTag, Protocol: protocol,
 					Action: lifecycleActionReplaceCredential, Status: lifecycleItemFailed, LastError: "读取真实 Xray 配置失败"})
 				continue
 			}
 			configs[serverID] = config
 		}
-		item := analyzeAccessInbound(username, enable, config, group.refs, group.backups)
+		if keepOfficialInactive {
+			remaining := accessPresentBackups(findConfigInbound(config, inboundTag), group.backups)
+			if len(remaining) == 0 && len(group.backups) > 0 {
+				items = append(items, lifecyclePlanItem{ServerID: serverID, ServerName: serverName, InboundTag: inboundTag, Protocol: protocol,
+					Action: lifecycleActionReplaceCredential, Status: lifecycleItemCompleted, DecisionNote: "官方账户保持停用，已移除的凭据无需恢复"})
+				continue
+			}
+			group.backups = remaining
+		}
+		item, handled, persistentErr := a.planPersistentAccess(ctx, username, enable, config, group.refs, group.backups)
+		if persistentErr != nil {
+			return nil, persistentErr
+		}
+		if handled {
+			items = append(items, item)
+			continue
+		}
+		item = analyzeAccessInbound(username, enable, config, group.refs, group.backups)
 		if !enable && item.Status != lifecycleItemFailed {
-			businessRefs, businessErr := store.LifecycleInboundBusinessRefs(ctx, serverID, serverName, inboundTag, username)
-			defaultCredentials, defaultErr := store.LifecycleDefaultAdminCredentials(ctx, serverID, inboundTag)
+			businessRefs, businessErr := a.accessBusinessRefs(ctx, serverID, serverName, inboundTag, username)
+			defaultCredentials, defaultErr := a.accessDefaultCredentials(ctx, serverID, inboundTag)
 			message := ""
 			switch {
 			case businessErr != nil:
@@ -241,6 +285,27 @@ func (a *app) buildAccessPlan(ctx context.Context, token, username string, enabl
 		items = append(items, item)
 	}
 	return items, nil
+}
+
+func accessPresentBackups(inbound map[string]any, backups []lifecycleCredentialBackup) []lifecycleCredentialBackup {
+	if inbound == nil {
+		return nil
+	}
+	entries, _, err := accessInboundCredentialEntries(inbound)
+	if err != nil {
+		return backups
+	}
+	var remaining []lifecycleCredentialBackup
+	for _, backup := range backups {
+		for _, entry := range entries {
+			sameLabel := nonEmptyCredentialValue(entry, "email") && (fmt.Sprint(entry["email"]) == fmt.Sprint(backup.OriginalCredential["email"]) || fmt.Sprint(entry["email"]) == fmt.Sprint(backup.DisabledCredential["email"]))
+			if sameLabel || credentialsMatch(entry, backup.OriginalCredential, backup.Protocol) || credentialsMatch(entry, backup.DisabledCredential, backup.Protocol) {
+				remaining = append(remaining, backup)
+				break
+			}
+		}
+	}
+	return remaining
 }
 
 func accessCredentialSharingReason(inbound map[string]any, item lifecyclePlanItem, businessRefs []lifecycleCredentialRef, defaultCredentials []map[string]any) string {
@@ -286,7 +351,7 @@ func accessInboundCredentialEntries(inbound map[string]any) ([]map[string]any, s
 }
 
 func analyzeAccessInbound(username string, enable bool, config map[string]any, refs []lifecycleCredentialRef, backups []lifecycleCredentialBackup) lifecyclePlanItem {
-	item := lifecyclePlanItem{Action: lifecycleActionReplaceCredential, Status: lifecycleItemPending}
+	item := lifecyclePlanItem{Action: lifecycleActionReplaceCredential, Status: lifecycleItemPending, accessEnable: enable, accessUsername: username}
 	if len(refs) > 0 {
 		item.ServerID, item.ServerName, item.InboundTag, item.Protocol = refs[0].ServerID, refs[0].ServerName, refs[0].InboundTag, refs[0].Protocol
 	} else if len(backups) > 0 {
@@ -296,6 +361,16 @@ func analyzeAccessInbound(username string, enable bool, config map[string]any, r
 		return item
 	}
 	inbound := findConfigInbound(config, item.InboundTag)
+	if enable && len(backups) == 0 {
+		item.Status, item.DecisionNote = lifecycleItemCompleted, "此节点未替换凭据，无需恢复"
+		if inbound != nil {
+			settings, _ := inbound["settings"].(map[string]any)
+			if inbound["protocol"] == "socks" && strings.TrimSpace(fmt.Sprint(settings["auth"])) != "password" {
+				item.DecisionNote = "匿名 SOCKS 端口无需恢复"
+			}
+		}
+		return item
+	}
 	if inbound == nil {
 		item.Status, item.LastError = lifecycleItemFailed, "目标 Inbound 不存在"
 		return item
@@ -305,10 +380,6 @@ func analyzeAccessInbound(username string, enable bool, config map[string]any, r
 	if item.Protocol == "socks" && strings.TrimSpace(fmt.Sprint(settings["auth"])) != "password" {
 		if !enable {
 			item.Status, item.LastError = lifecycleItemFailed, "匿名 SOCKS 端口无法单独禁用用户"
-			return item
-		}
-		if len(backups) == 0 {
-			item.Status, item.DecisionNote = lifecycleItemCompleted, "匿名 SOCKS 端口无需恢复"
 			return item
 		}
 	}
@@ -376,6 +447,9 @@ func analyzeAccessInbound(username string, enable bool, config map[string]any, r
 	}
 	replacements := make(map[int]map[string]any)
 	for _, wanted := range expected {
+		if enable && wanted.backup == nil {
+			continue
+		}
 		var original, disabled map[string]any
 		if wanted.backup != nil {
 			original, disabled = wanted.backup.OriginalCredential, wanted.backup.DisabledCredential
@@ -410,10 +484,6 @@ func analyzeAccessInbound(username string, enable bool, config map[string]any, r
 			return item
 		}
 		if wanted.backup == nil {
-			if enable {
-				item.Status, item.LastError = lifecycleItemFailed, "缺少禁用 credential 备份，拒绝盲目启用"
-				return item
-			}
 			disabled, err = disabledLifecycleCredential(item.Protocol, original, username, item.ServerID, item.InboundTag, wanted.key, inbound)
 			if err != nil {
 				item.Status, item.LastError = lifecycleItemFailed, err.Error()
@@ -462,6 +532,7 @@ func analyzeAccessInbound(username string, enable bool, config map[string]any, r
 		settings[key] = rawEntries
 	}
 	item.sourceInboundHash = hashJSON(inbound)
+	item.sourceInbound = cloneLifecycleMap(inbound)
 	item.replacementInbound = replacement
 	return item
 }
@@ -580,7 +651,12 @@ func (a *app) executeAccessPlan(ctx context.Context, token, username, operationI
 			continue
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := a.executeAccessItem(attemptCtx, token, item)
+		var err error
+		if item.Action == lifecycleActionBlockIdentity || item.Action == lifecycleActionUnblockIdentity {
+			err = a.executePersistentAccessItem(attemptCtx, token, username, operation == lifecycleOperationEnable, item)
+		} else {
+			err = a.executeAccessItem(attemptCtx, token, item)
+		}
 		cancel()
 		if err != nil {
 			item.Status, item.LastError = lifecycleItemFailed, lifecycleSafeError(err)
@@ -598,6 +674,14 @@ func (a *app) executeAccessPlan(ctx context.Context, token, username, operationI
 			item.Status, item.LastError = lifecycleItemFailed, "远程状态已复核，但生命周期进度保存失败"
 			lastError = item.LastError
 		}
+	}
+	if err := a.applyAccessOfficialState(ctx, token, username, operation == lifecycleOperationEnable); err != nil {
+		result.PendingCount++
+		lastError = lifecycleSafeError(err)
+	}
+	if err := a.refreshDisabledUsers(ctx); err != nil {
+		result.PendingCount++
+		lastError = "刷新持续封禁状态失败，请重试"
 	}
 	for _, item := range result.Items {
 		if item.Status != lifecycleItemCompleted {
@@ -621,13 +705,42 @@ func (a *app) executeAccessPlan(ctx context.Context, token, username, operationI
 }
 
 func (a *app) executeAccessItem(ctx context.Context, token string, item *lifecyclePlanItem) error {
+	unlock := a.lockUserLifecycle("\x00inbound\x00" + strconv.FormatInt(item.ServerID, 10) + "\x00" + item.InboundTag)
+	defer unlock()
 	currentConfig, err := a.fetchOfficialXrayConfig(ctx, token, item.ServerID)
 	if err != nil {
 		return err
 	}
 	current := findConfigInbound(currentConfig, item.InboundTag)
-	if current == nil || hashJSON(current) != item.sourceInboundHash {
+	if current == nil {
 		return errors.New("Inbound 在生命周期计划后发生变化")
+	}
+	if hashJSON(current) != item.sourceInboundHash {
+		if item.sourceInbound == nil || accessInboundShapeHash(current) != accessInboundShapeHash(item.sourceInbound) {
+			return errors.New("Inbound 在生命周期计划后发生变化")
+		}
+		rebased := analyzeAccessInbound(item.accessUsername, item.accessEnable, currentConfig, nil, item.accessCredentials)
+		if rebased.Status == lifecycleItemFailed {
+			return errors.New(rebased.LastError)
+		}
+		item.replacementInbound = rebased.replacementInbound
+		item.sourceInboundHash = hashJSON(current)
+		if rebased.Status == lifecycleItemCompleted {
+			return nil
+		}
+	}
+	if !item.accessEnable {
+		businessRefs, err := a.accessBusinessRefs(ctx, item.ServerID, item.ServerName, item.InboundTag, item.accessUsername)
+		if err != nil {
+			return errors.New("读取业务用户关系失败，拒绝禁用")
+		}
+		defaults, err := a.accessDefaultCredentials(ctx, item.ServerID, item.InboundTag)
+		if err != nil {
+			return errors.New("核对管理员默认凭据失败，拒绝禁用")
+		}
+		if reason := accessCredentialSharingReason(current, *item, businessRefs, defaults); reason != "" {
+			return errors.New(reason)
+		}
 	}
 	body := map[string]any{"action": "replace", "tag": item.InboundTag, "inbound": item.replacementInbound}
 	path := "/api/admin/remote/inbounds?server_id=" + strconv.FormatInt(item.ServerID, 10)
@@ -645,6 +758,55 @@ func (a *app) executeAccessItem(ctx context.Context, token string, item *lifecyc
 	entries, _, err := accessInboundCredentialEntries(verified)
 	if err != nil || len(entries) == 0 {
 		return errors.New("credential 替换产生了空 Inbound")
+	}
+	return nil
+}
+
+func accessInboundShapeHash(inbound map[string]any) string {
+	shape := cloneLifecycleMap(inbound)
+	_, key, err := accessInboundCredentialEntries(shape)
+	if err != nil {
+		return hashJSON(shape)
+	}
+	settings, _ := shape["settings"].(map[string]any)
+	delete(settings, key)
+	return hashJSON(shape)
+}
+
+func (s *postgresAdminSessionStore) rememberAccessOfficialState(ctx context.Context, username string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE mmwxc_user_lifecycle SET official_was_active=(SELECT COALESCE(is_active,0)<>0 FROM users WHERE username=$1)
+		WHERE username=$1 AND desired_state='disabled' AND official_was_active IS NULL`, username)
+	return err
+}
+
+func (a *app) applyAccessOfficialState(ctx context.Context, token, username string, enable bool) error {
+	states, err := a.adminStore.(lifecycleStore).LifecycleStates(ctx)
+	if err != nil {
+		return errors.New("读取禁用前的官方账户状态失败")
+	}
+	previous := states[username].OfficialWasActive
+	if previous == nil {
+		return nil
+	}
+	expected := enable && *previous
+	store, ok := a.adminStore.(userManagementStore)
+	if !ok {
+		return errors.New("官方账户状态核对不可用")
+	}
+	current, err := store.ManagedUserState(ctx, username)
+	if err != nil || !current.Exists {
+		return errors.New("读取官方账户状态失败")
+	}
+	if current.IsActive == expected {
+		return nil
+	}
+	body := map[string]any{"op": "4b18ad3836973389", "payload": map[string]any{"username": username, "is_active": expected}}
+	if err := a.officialLifecycleJSON(ctx, token, "POST", "/api/v3", body, nil); err != nil {
+		return fmt.Errorf("设置官方账户状态失败：%w", err)
+	}
+	current, err = store.ManagedUserState(ctx, username)
+	if err != nil || !current.Exists || current.IsActive != expected {
+		return errors.New("官方账户状态未确认，请重试")
 	}
 	return nil
 }

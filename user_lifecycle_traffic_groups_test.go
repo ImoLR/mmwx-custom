@@ -140,6 +140,7 @@ func TestUserLifecycleTrafficGroupsIsolatedPostgres(t *testing.T) {
 	inbound["settings"].(map[string]any)["password"] = "server-key"
 	fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{1: lifecycleConfig(inbound)})
 	defer server.Close()
+	lifecycleStatusFixture(t, fixture, db, nil)
 	application := lifecycleTestApp(t, &lifecycleTestStore{}, server)
 	application.adminStore = store
 	application.detailedConnections = map[string]serverDetailedConnectionRecord{"1": {HelperVersion: "v0.6.8", UpdatedAt: time.Now(), Snapshot: serverDetailedConnectionSnapshot{Core: serverCoreConnectionStatus{Version: 7, Available: true, TrafficBlockSupported: true}}}}
@@ -159,16 +160,13 @@ func TestUserLifecycleTrafficGroupsIsolatedPostgres(t *testing.T) {
 		if err := application.refreshTrafficGroupsLocked(ctx, store); err != nil {
 			t.Fatal(err)
 		}
-		settings := application.trafficBlocksForHelper(defaultServerConnectionSettings(), "1", "v0.6.8")
-		if settings.BlockedIdentities == nil {
-			t.Fatal("successful evaluation omitted the Helper traffic decision")
-		}
+		identities := application.trafficGroupBlocks["1"]
 		if blocked {
-			if len(*settings.BlockedIdentities) != 1 || (*settings.BlockedIdentities)[0] != identity {
-				t.Fatalf("block changed across lifecycle: %+v; usage=%+v", *settings.BlockedIdentities, application.trafficGroupUsage[1])
+			if len(identities) != 1 || identities[0] != identity {
+				t.Fatalf("group block changed across lifecycle: %+v; usage=%+v", identities, application.trafficGroupUsage[1])
 			}
-		} else if len(*settings.BlockedIdentities) != 0 {
-			t.Fatalf("expected explicit empty Helper block list: %+v", *settings.BlockedIdentities)
+		} else if len(identities) != 0 {
+			t.Fatalf("expected empty group block list: %+v", identities)
 		}
 		var count int
 		wantCount := 0
@@ -201,8 +199,12 @@ func TestUserLifecycleTrafficGroupsIsolatedPostgres(t *testing.T) {
 			t.Fatalf("%s failed: %+v", operation, result)
 		}
 		var active int
-		if err := db.QueryRow(`SELECT is_active FROM users WHERE username=$1`, username).Scan(&active); err != nil || active != 1 {
-			t.Fatalf("%s changed official users.is_active=%d: %v", operation, active, err)
+		wantActive := 0
+		if operation == lifecycleOperationEnable {
+			wantActive = 1
+		}
+		if err := db.QueryRow(`SELECT is_active FROM users WHERE username=$1`, username).Scan(&active); err != nil || active != wantActive {
+			t.Fatalf("%s official users.is_active=%d, want %d: %v", operation, active, wantActive, err)
 		}
 		entries, _, err := inboundCredentialEntries(findConfigInbound(fixture.configs[1], "shared"))
 		if err != nil || len(entries) != 2 || entries[targetIndex]["email"] != credential["email"] || hashJSON(entries[1-targetIndex]) != hashJSON(otherCredential) {
@@ -227,12 +229,12 @@ func TestUserLifecycleTrafficGroupsIsolatedPostgres(t *testing.T) {
 			}
 		}
 	}
-	if !ownerFound {
-		t.Fatal("disabled user's node ownership disappeared")
+	if ownerFound {
+		t.Fatal("officially inactive user must remain excluded from assignable ownership")
 	}
 	_, mappings := buildManagementView(ownershipSnapshot("shared", 443, "alice-in", "bob-in"), defaultServerConnectionSettings(), ownership)
-	if len(mappings) != 2 || mappings[0].Identity.User != "alice-in" || mappings[0].Group != "alice" || mappings[1].Identity.User != "bob-in" || mappings[1].Group != "bob" {
-		t.Fatalf("disabled owner attribution changed another user's mapping: %+v", mappings)
+	if len(mappings) != 1 || mappings[0].Identity.User != "alice-in" || mappings[0].Group != "alice" {
+		t.Fatalf("official disable changed another user's mapping: %+v", mappings)
 	}
 	runAccess("bob", lifecycleOperationEnable, "enable-owner")
 	checkBlocks(true)

@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS mmwxc_user_lifecycle (
     CHECK (desired_state IN ('enabled','disabled','deleted')),
     CHECK (effective_state IN ('enabled','disabled','disabling','enabling','partially_disabled','partially_enabled','deleting','delete_partial','error','conflict','deleted'))
 );
+ALTER TABLE mmwxc_user_lifecycle ADD COLUMN IF NOT EXISTS official_was_active BOOLEAN;
 ALTER TABLE mmwxc_user_lifecycle DROP CONSTRAINT IF EXISTS mmwxc_user_lifecycle_effective_state_check;
 ALTER TABLE mmwxc_user_lifecycle ADD CONSTRAINT mmwxc_user_lifecycle_effective_state_check
     CHECK (effective_state IN ('enabled','disabled','disabling','enabling','partially_disabled','partially_enabled','deleting','delete_partial','error','conflict','deleted'));
@@ -119,16 +120,18 @@ CREATE TABLE IF NOT EXISTS mmwxc_user_disabled_credentials (
     PRIMARY KEY (username, server_id, inbound_tag, credential_key),
     FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
 );
-`
+` + persistentDisableSchema
 
 type managedUserLifecycle struct {
-	Username       string    `json:"username"`
-	DesiredState   string    `json:"desired_state"`
-	EffectiveState string    `json:"effective_state"`
-	Operation      string    `json:"operation,omitempty"`
-	PendingCount   int       `json:"pending_count"`
-	LastError      string    `json:"last_error,omitempty"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	Username          string                 `json:"username"`
+	DesiredState      string                 `json:"desired_state"`
+	EffectiveState    string                 `json:"effective_state"`
+	Operation         string                 `json:"operation,omitempty"`
+	PendingCount      int                    `json:"pending_count"`
+	LastError         string                 `json:"last_error,omitempty"`
+	UpdatedAt         time.Time              `json:"updated_at"`
+	OfficialWasActive *bool                  `json:"-"`
+	Access            []userAccessNodeStatus `json:"access,omitempty"`
 }
 
 type lifecycleCredentialRef struct {
@@ -171,8 +174,12 @@ type lifecyclePlanItem struct {
 	nonTargetHashes         []string
 	defaultCredentialHashes []string
 	sourceInboundHash       string
+	sourceInbound           map[string]any
 	replacementInbound      map[string]any
 	accessCredentials       []lifecycleCredentialBackup
+	accessEnable            bool
+	accessUsername          string
+	persistentIdentities    []serverConnectionIdentity
 }
 
 type lifecyclePackageBinding struct {
@@ -253,7 +260,7 @@ func (s *postgresAdminSessionStore) LifecycleStates(ctx context.Context) (map[st
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT username, desired_state, effective_state, operation, pending_count, last_error, updated_at
+		SELECT username, desired_state, effective_state, operation, pending_count, last_error, updated_at, official_was_active
 		FROM mmwxc_user_lifecycle`)
 	if err != nil {
 		return nil, err
@@ -262,7 +269,7 @@ func (s *postgresAdminSessionStore) LifecycleStates(ctx context.Context) (map[st
 	result := make(map[string]managedUserLifecycle)
 	for rows.Next() {
 		var item managedUserLifecycle
-		if err := rows.Scan(&item.Username, &item.DesiredState, &item.EffectiveState, &item.Operation, &item.PendingCount, &item.LastError, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.Username, &item.DesiredState, &item.EffectiveState, &item.Operation, &item.PendingCount, &item.LastError, &item.UpdatedAt, &item.OfficialWasActive); err != nil {
 			return nil, err
 		}
 		result[item.Username] = item
@@ -1011,6 +1018,7 @@ func (a *app) userLifecycleIndexHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
+	a.attachUserAccess(states)
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "users": states})
 }
 

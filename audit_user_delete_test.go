@@ -47,7 +47,7 @@ func auditUserDeleteDB(t *testing.T, id string) *sql.DB {
 	}
 	for _, statement := range []string{
 		`CREATE TABLE packages(id bigint PRIMARY KEY,name text,nodes text)`,
-		`CREATE TABLE users(username text PRIMARY KEY,role text DEFAULT 'user',email text DEFAULT '',package_id bigint REFERENCES packages(id) ON DELETE SET NULL)`,
+		`CREATE TABLE users(username text PRIMARY KEY,role text DEFAULT 'user',email text DEFAULT '',is_active bigint DEFAULT 1,package_id bigint REFERENCES packages(id) ON DELETE SET NULL)`,
 		`CREATE TABLE remote_servers(id bigint PRIMARY KEY,name text)`,
 		`CREATE TABLE user_package_assignments(id bigint PRIMARY KEY,username text REFERENCES users(username) ON DELETE CASCADE,package_id bigint REFERENCES packages(id) ON DELETE CASCADE,status text)`,
 		`CREATE TABLE package_assignment_inbound_configs(assignment_id bigint REFERENCES user_package_assignments(id) ON DELETE CASCADE,username text REFERENCES users(username) ON DELETE CASCADE,server_id bigint,inbound_tag text,protocol text,credential_json text)`,
