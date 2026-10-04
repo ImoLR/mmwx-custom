@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -511,6 +512,30 @@ func (a *app) userManagementHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if operationID == "" {
+		var conflicts []string
+		for _, item := range plan {
+			if item.Action != lifecycleActionConflict {
+				continue
+			}
+			label := fmt.Sprintf("服务器 %s（ID %d）入站 %s", item.ServerName, item.ServerID, item.InboundTag)
+			if item.ItemKind == lifecycleItemKindPackage {
+				label = fmt.Sprintf("套餐 %s（ID %d）", item.PackageName, item.PackageID)
+			} else if item.ItemKind == lifecycleItemKindNode {
+				label = fmt.Sprintf("节点 %s（ID %v）", item.ServerName, item.NodeIDs)
+			}
+			reason := item.DecisionNote
+			if reason == "" {
+				reason = item.LastError
+			}
+			if reason == "" {
+				reason = "无法确认归属，需要人工检查"
+			}
+			conflicts = append(conflicts, label+"："+reason)
+		}
+		if len(conflicts) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{"success": false, "message": "存在冲突，删除不会执行，请先处理以下项目：" + strings.Join(conflicts, "；")})
+			return
+		}
 		operationID, err = newManagedUserStatusTaskID()
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "failed to create user deletion task"})

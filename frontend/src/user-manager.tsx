@@ -303,7 +303,7 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
       {dialog?.kind === "accounts" && <AccountsDialog token={token} user={dialog.user} initial={dialog.initial} onClose={() => setDialog(null)} />}
       {dialog?.kind === "subscription" && <SubscriptionDialog token={token} user={dialog.user} pkg={dialog.user.package_id ? packageById.get(dialog.user.package_id) : undefined} onClose={() => setDialog(null)} onCopied={(client) => setNotice({ tone: "success", text: `${client} 订阅地址已复制` })} />}
       {dialog?.kind === "telegram" && <TelegramDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onChanged={async (text) => { setDialog(null); setNotice({ tone: "success", text }); await load(); }} />}
-      {dialog?.kind === "delete" && <DeleteUserDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onResult={async (result) => {
+      {dialog?.kind === "delete" && <DeleteUserDialog token={token} user={dialog.user} lifecycle={lifecycles[dialog.user.username]} onClose={() => setDialog(null)} onResult={async (result) => {
         if (result.user_deleted) {
           setDialog(null);
           setNotice({ tone: "success", text: `用户 ${dialog.user.username} 已删除，用户级关系已重新核对` });
@@ -746,7 +746,7 @@ function deletionDecision(item: ManagedUserLifecycleItem) {
   return "没有其他业务用户，删除整个 Inbound";
 }
 
-function DeleteUserDialog({ token, user, onClose, onResult }: { token: string; user: ManagedUser; onClose: () => void; onResult: (result: ManagedUserDeleteResult) => Promise<void> }) {
+function DeleteUserDialog({ token, user, lifecycle, onClose, onResult }: { token: string; user: ManagedUser; lifecycle?: ManagedUserLifecycle; onClose: () => void; onResult: (result: ManagedUserDeleteResult) => Promise<void> }) {
   const [preview, setPreview] = useState<ManagedUserDeletionPreview | null>(null);
   const [result, setResult] = useState<ManagedUserDeleteResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -762,7 +762,7 @@ function DeleteUserDialog({ token, user, onClose, onResult }: { token: string; u
   }, [token, user.username]);
 
   async function confirmDelete() {
-    if (!preview || deleting) return;
+    if (!preview || deleting || blockedByConflicts) return;
     setDeleting(true);
     setError("");
     try {
@@ -795,10 +795,13 @@ function DeleteUserDialog({ token, user, onClose, onResult }: { token: string; u
   ] : [];
 
   const plan = result?.items ?? preview?.inbound_plan ?? [];
+  const retrying = (result && !result.user_deleted) || lifecycle?.effective_state === "deleting" || lifecycle?.effective_state === "delete_partial";
+  const blockedByConflicts = !retrying && plan.some((item) => item.action === "CONFLICT");
 
-  return <DialogShell title={`删除用户 ${user.username}？`} subtitle="远程访问逐项清理；成功项保留，失败项可重试。" onClose={deleting ? () => {} : onClose} footer={<><button type="button" onClick={onClose} disabled={deleting}>取消</button><button className="danger" type="button" onClick={() => void confirmDelete()} disabled={!preview || deleting}>{deleting ? "删除中..." : result && !result.user_deleted ? "重试待清理项" : "确认删除"}</button></>}>
+  return <DialogShell title={`删除用户 ${user.username}？`} subtitle="远程访问逐项清理；成功项保留，失败项可重试。" onClose={deleting ? () => {} : onClose} footer={<><button type="button" onClick={onClose} disabled={deleting}>取消</button><button className="danger" type="button" onClick={() => void confirmDelete()} disabled={!preview || deleting || blockedByConflicts}>{deleting ? "删除中..." : retrying ? "重试待清理项" : "确认删除"}</button></>}>
     {loading ? <div className="user-empty small">正在从数据库核对关联关系...</div> : preview ? <div className="user-delete-preview">
       <p>先清理用户节点，再删除用户关联记录：</p>
+      {blockedByConflicts && <p className="user-form-error" role="alert">存在冲突，删除不会执行，请先处理以下项目</p>}
       {plan.length > 0 ? <div className="user-delete-plan">{plan.map((item) => <article key={`${item.item_kind}-${item.package_id ?? `${item.server_id}-${item.inbound_tag}`}`} className={item.status}>
         <div><strong>{item.item_kind === "package" ? item.package_name || `套餐 ${item.package_id}` : item.server_name || `Server ${item.server_id}`}</strong>{item.item_kind === "package" ? <>
           <span>该用户节点：{(item.own_nodes || []).map((node) => `${node.name || "节点"}（ID ${node.id}）`).join("、") || "无"}</span>

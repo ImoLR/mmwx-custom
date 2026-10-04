@@ -162,15 +162,19 @@ test("UA-D01 and UA-D05 deletion preview explains package actions and node owner
       { item_kind: "package", package_id: 6, package_name: "移除后为空的另一套餐", action: "DELETE_EMPTY_PACKAGE", deleted_node_ids: [10], decision_note: "删除（移除节点后为空）" },
     ],
   };
-  const states = [preview, null, false, false, ""];
+  const states: unknown[] = [preview, null, false, false, ""];
   let stateIndex = 0;
   const DeleteUserDialog = new Function("React", "useState", "useEffect", "DialogShell", `${compiled}\nreturn DeleteUserDialog;`)(
     React, () => [states[stateIndex++], () => undefined], () => undefined,
-    ({ children }: { children: unknown }) => React.createElement("div", null, children),
+    ({ children, footer }: { children: unknown; footer: unknown }) => React.createElement("div", null, children, footer),
   );
-  const html = renderToStaticMarkup(React.createElement(DeleteUserDialog, {
-    token: "test-session", user: { username: "alice" }, onClose: () => undefined, onResult: async () => undefined,
-  }));
+  const render = (lifecycle?: Record<string, unknown>) => {
+    stateIndex = 0;
+    return renderToStaticMarkup(React.createElement(DeleteUserDialog, {
+      token: "test-session", user: { username: "alice" }, lifecycle, onClose: () => undefined, onResult: async () => undefined,
+    }));
+  };
+  const html = render();
   assert.match(html, /<b>删除<\/b>/);
   assert.match(html, /Alice 外部节点/);
   assert.match(html, /该用户节点（ID 15）/);
@@ -186,4 +190,18 @@ test("UA-D01 and UA-D05 deletion preview explains package actions and node owner
   assert.match(html, /归属待确认节点：待核对节点（ID 30）/);
   assert.match(html, /<b>删除（移除节点后为空）<\/b>/);
   assert.doesNotMatch(html, /没有其他绑定用户|仍有业务绑定的套餐/);
+  assert.match(html, /role="alert">存在冲突，删除不会执行，请先处理以下项目/);
+  assert.match(html, /<button class="danger" type="button" disabled="">确认删除<\/button>/);
+  for (const effective_state of ["deleting", "delete_partial"]) {
+    const retry = render({ effective_state });
+    assert.doesNotMatch(retry, /存在冲突，删除不会执行/);
+    assert.match(retry, /<button class="danger" type="button">重试待清理项<\/button>/);
+  }
+  states[1] = { user_deleted: false, pending_count: 2, items: preview.inbound_plan };
+  assert.match(render(), /<button class="danger" type="button">重试待清理项<\/button>/);
+  assert.doesNotMatch(render(), /存在冲突，删除不会执行/);
+  states[1] = null;
+  states[0] = { ...preview, inbound_plan: preview.inbound_plan.filter((item) => item.action !== "CONFLICT") };
+  assert.doesNotMatch(render(), /存在冲突，删除不会执行/);
+  assert.match(render(), /<button class="danger" type="button">确认删除<\/button>/);
 });
