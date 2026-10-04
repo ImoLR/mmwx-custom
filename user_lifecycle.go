@@ -28,11 +28,13 @@ const (
 
 	lifecycleActionRemoveUser    = "REMOVE_USER_ONLY"
 	lifecycleActionDeleteWhole   = "DELETE_WHOLE_INBOUND"
+	lifecycleActionDeleteNode    = "DELETE_NODE"
 	lifecycleActionConflict      = "CONFLICT"
 	lifecycleActionDeletePackage = "DELETE_PACKAGE"
 	lifecycleActionKeepPackage   = "KEEP_PACKAGE"
 
 	lifecycleItemKindInbound = "inbound"
+	lifecycleItemKindNode    = "node"
 	lifecycleItemKindPackage = "package"
 
 	lifecycleItemPending   = "pending"
@@ -965,6 +967,14 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 		key := strconv.FormatInt(ref.ServerID, 10) + "\x00" + ref.InboundTag
 		grouped[key] = append(grouped[key], ref)
 	}
+	for _, node := range data.Nodes {
+		if node.Username == username && node.ServerName != "" && node.InboundTag != "" {
+			key := lifecycleInboundKey(node.ServerID, node.InboundTag)
+			if len(grouped[key]) == 0 {
+				grouped[key] = []lifecycleCredentialRef{{Username: username, ServerID: node.ServerID, ServerName: node.ServerName, InboundTag: node.InboundTag, Source: "nodes"}}
+			}
+		}
+	}
 	keys := make([]string, 0, len(grouped))
 	for key := range grouped {
 		keys = append(keys, key)
@@ -1022,6 +1032,16 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 			}
 		}
 		if item.Action != lifecycleActionDeleteWhole {
+			var retained []string
+			for _, node := range data.Nodes {
+				if node.Username == username && node.ServerName != "" && node.ServerID == item.ServerID && node.InboundTag == item.InboundTag {
+					retained = append(retained, fmt.Sprintf("%s（ID %d）", node.Name, node.ID))
+				}
+			}
+			if len(retained) > 0 {
+				sort.Strings(retained)
+				item.DecisionNote += "；保留该用户名下的服务器节点：" + strings.Join(retained, "、")
+			}
 			continue
 		}
 		for _, node := range data.Nodes {
@@ -1039,6 +1059,35 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 		if len(item.NodeIDs) > 0 {
 			item.Status = lifecycleItemPending
 		}
+	}
+	// Keep node cleanup targets after official deletion so retries still prune
+	// every package and verify any node whose ownership changed.
+	nodeItems := make(map[int64]lifecyclePlanItem)
+	for _, old := range previous {
+		if old.ItemKind == lifecycleItemKindNode {
+			for _, id := range old.NodeIDs {
+				old.Status = lifecycleItemPending
+				nodeItems[id] = old
+			}
+		}
+	}
+	for _, node := range data.Nodes {
+		if node.Username == username && (node.ServerName == "" || node.InboundTag == "") {
+			nodeItems[node.ID] = lifecyclePlanItem{ItemKind: lifecycleItemKindNode, ServerName: node.Name,
+				InboundTag: "node:" + strconv.FormatInt(node.ID, 10), Protocol: "node", Action: lifecycleActionDeleteNode,
+				Status: lifecycleItemPending, NodeIDs: []int64{node.ID}, OwnNodes: []lifecycleNodeLabel{node.lifecycleNodeLabel},
+				DecisionNote: "该用户拥有的外部节点，随用户删除"}
+		}
+	}
+	nodeIDs := make([]int64, 0, len(nodeItems))
+	for id := range nodeItems {
+		nodeIDs = append(nodeIDs, id)
+	}
+	sort.Slice(nodeIDs, func(i, j int) bool { return nodeIDs[i] < nodeIDs[j] })
+	for _, id := range nodeIDs {
+		item := nodeItems[id]
+		deleted[id] = lifecycleNodeLabel{ID: id, Name: item.ServerName}
+		items = append(items, item)
 	}
 	for _, pkg := range data.Packages {
 		affected := pkg.Bound
@@ -1539,12 +1588,15 @@ func (a *app) executeLifecycleDeleteItem(ctx context.Context, token, username st
 	if item.ItemKind == lifecycleItemKindPackage {
 		return a.executeDeletionPackage(ctx, token, username, item)
 	}
+	if item.ItemKind == lifecycleItemKindNode {
+		return a.finishLifecycleDeletedNodes(ctx, token, username, item)
+	}
 	config, err := a.fetchOfficialXrayConfig(ctx, token, item.ServerID)
 	if err != nil {
 		return err
 	}
 	if findConfigInbound(config, item.InboundTag) == nil {
-		return a.finishLifecycleDeletedNodes(ctx, token, item)
+		return a.finishLifecycleDeletedNodes(ctx, token, username, item)
 	}
 	if len(item.targetCredentials) == 0 {
 		if item.Status == lifecycleItemCompleted {
@@ -1626,7 +1678,7 @@ func (a *app) executeLifecycleDeleteItem(ctx context.Context, token, username st
 		if findConfigInbound(verified, item.InboundTag) != nil {
 			return errors.New("HTTP 成功但真实 Xray 配置仍存在该 Inbound")
 		}
-		return a.finishLifecycleDeletedNodes(ctx, token, item)
+		return a.finishLifecycleDeletedNodes(ctx, token, username, item)
 	}
 	if item.Action != lifecycleActionRemoveUser {
 		return errors.New("删除计划存在冲突，未执行远程修改")

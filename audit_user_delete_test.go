@@ -181,6 +181,16 @@ func auditDeletionApplication(t *testing.T, db *sql.DB, configs map[int64]map[st
 		return err
 	}
 	fixture.extraHandler = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/admin/nodes/") {
+			_, err := db.Exec(`DELETE FROM nodes WHERE id=$1`, strings.TrimPrefix(r.URL.Path, "/api/admin/nodes/"))
+			if err != nil {
+				t.Error(err)
+				writeJSON(w, 500, map[string]any{"success": false})
+				return true
+			}
+			writeJSON(w, 200, map[string]any{"success": true})
+			return true
+		}
 		if r.Method == http.MethodGet && r.URL.Path == "/api/admin/packages" {
 			rows, err := db.Query(`SELECT id,name,nodes,node_traffic_limits,node_name_overrides FROM packages ORDER BY id`)
 			if err != nil {
@@ -407,6 +417,125 @@ func TestAuditUAD05DeletePrunesOtherUsersPackage(t *testing.T) {
 	}
 	if findConfigInbound(fixture.configs[5], "bob") == nil {
 		t.Fatal("Bob credential lost")
+	}
+}
+
+func TestDeleteOwnedExternalNodesPrunesEveryPackagePostgres(t *testing.T) {
+	for _, failure := range []string{"none", "ignored node deletion", "package update failed"} {
+		t.Run(failure, func(t *testing.T) {
+			db := auditUserDeleteDB(t, "owned-external-nodes")
+			configs := seedDeletionNodes(t, db)
+			auditDeleteExec(t, db, `INSERT INTO nodes VALUES(15,'Alice external','alice','','','vless'),(16,'Alice unlisted external','alice','','','vless')`)
+			auditDeleteExec(t, db, `INSERT INTO packages(id,name,nodes,node_traffic_limits,node_name_overrides) VALUES
+				(1,'Alice package','[13,14,15]','{"14":3,"15":1}','{"14":"Bob","15":"Alice external"}'),
+				(2,'Bob package','[14,15]','{"14":3,"15":1}','{"14":"Bob","15":"Alice external"}')`)
+			auditDeleteExec(t, db, `UPDATE users SET package_id=CASE username WHEN 'alice' THEN 1 WHEN 'bob' THEN 2 END`)
+			auditDeleteExec(t, db, `INSERT INTO mmwxc_package_traffic_groups VALUES(1,1,'[14,15]'),(2,2,'[14,15]')`)
+			auditDeleteExec(t, db, `INSERT INTO forward_chain_nodes VALUES(15,'bob',NULL),(14,'bob',NULL)`)
+			application, fixture := auditDeletionApplication(t, db, configs)
+			original := fixture.extraHandler
+			failed := false
+			deletedIDs := make(map[string]int)
+			fixture.extraHandler = func(w http.ResponseWriter, r *http.Request) bool {
+				if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/admin/nodes/") {
+					deletedIDs[strings.TrimPrefix(r.URL.Path, "/api/admin/nodes/")]++
+					if failure == "ignored node deletion" && !failed {
+						failed = true
+						writeJSON(w, 200, map[string]any{"success": true})
+						return true
+					}
+				}
+				if r.URL.Path == "/api/v3" && failure == "package update failed" && !failed {
+					failed = true
+					writeJSON(w, 503, map[string]any{"success": false})
+					return true
+				}
+				return original(w, r)
+			}
+			plan, result := runDeletionRegression(t, application, "alice")
+			for _, item := range plan {
+				if item.ItemKind == lifecycleItemKindPackage && (len(item.OwnNodes) != 1 || item.OwnNodes[0].ID != 15 || item.Action != lifecycleActionKeepPackage) {
+					t.Fatalf("external node missing from package preview: %+v", item)
+				}
+			}
+			if failure != "none" {
+				if result.UserDeleted || result.PendingCount == 0 || result.State != lifecycleStateDeletePartial {
+					t.Fatalf("unconfirmed cleanup finalized deletion: %+v", result)
+				}
+				var count int
+				if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE username='alice'`).Scan(&count); err != nil || count != 1 {
+					t.Fatalf("user not retained: count=%d err=%v", count, err)
+				}
+				if failure == "package update failed" {
+					if err := db.QueryRow(`SELECT COUNT(*) FROM nodes WHERE username='alice'`).Scan(&count); err != nil || count != 0 {
+						t.Fatalf("nodes not deleted before package update: count=%d err=%v", count, err)
+					}
+				}
+				application = &app{adminStore: &postgresAdminSessionStore{db: db}, officialInternalTarget: application.officialInternalTarget}
+				_, result = runDeletionRegression(t, application, "alice")
+			}
+			if !result.UserDeleted || result.PendingCount != 0 {
+				t.Fatalf("external nodes delete failed: %+v", result)
+			}
+			if len(deletedIDs) != 2 || deletedIDs["15"] == 0 || deletedIDs["16"] != 1 {
+				t.Fatalf("unexpected official node DELETE calls: %v", deletedIDs)
+			}
+			for query, want := range map[string]int{
+				`SELECT COUNT(*) FROM nodes WHERE username='alice'`: 0,
+				`SELECT COUNT(*) FROM nodes WHERE id IN(13,14)`:     2,
+				`SELECT COUNT(*) FROM packages`:                     2,
+				`SELECT COUNT(*) FROM packages WHERE nodes::jsonb @> '[15]' OR node_traffic_limits::jsonb ? '15' OR node_name_overrides::jsonb ? '15'`: 0,
+				`SELECT COUNT(*) FROM mmwxc_package_traffic_groups WHERE node_ids @> '[15]'`:                                                           0,
+				`SELECT COUNT(*) FROM forward_chain_nodes WHERE node_id=15`:                                                                            0,
+			} {
+				var count int
+				if err := db.QueryRow(query).Scan(&count); err != nil || count != want {
+					t.Errorf("query %q count=%d want=%d err=%v", query, count, want, err)
+				}
+			}
+			assertDeletionPackagePruned(t, db, 2)
+		})
+	}
+}
+
+func TestDeleteOwnedExternalNodeRechecksOwnershipPostgres(t *testing.T) {
+	db := auditUserDeleteDB(t, "owned-external-node-drift")
+	configs := seedDeletionNodes(t, db)
+	auditDeleteExec(t, db, `INSERT INTO nodes VALUES(15,'External','alice','','','vless')`)
+	auditDeleteExec(t, db, `INSERT INTO packages(id,name,nodes) VALUES(2,'Bob package','[14,15]')`)
+	application, fixture := auditDeletionApplication(t, db, configs)
+	plan, err := application.buildDeletionPlan(context.Background(), "session", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := application.adminStore.(lifecycleStore)
+	if err := store.SaveDeletePlan(context.Background(), "alice", "regression-delete", plan); err != nil {
+		t.Fatal(err)
+	}
+	auditDeleteExec(t, db, `UPDATE nodes SET username='bob' WHERE id=15`)
+	original := fixture.extraHandler
+	fixture.extraHandler = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method == http.MethodDelete && r.URL.Path == "/api/admin/nodes/15" {
+			t.Error("changed node owner must prevent official deletion")
+		}
+		return original(w, r)
+	}
+	first := application.executeDeletePlan(context.Background(), "session", "alice", "regression-delete", plan)
+	_, retry := runDeletionRegression(t, application, "alice")
+	for _, result := range []lifecycleDeleteResult{first, retry} {
+		if result.UserDeleted || result.State != lifecycleStateDeletePartial || !strings.Contains(result.LastError, "节点归属已变化") {
+			t.Fatalf("changed owner was not retained: %+v", result)
+		}
+	}
+	for _, query := range []string{
+		`SELECT COUNT(*) FROM nodes WHERE id=15 AND username='bob'`,
+		`SELECT COUNT(*) FROM users WHERE username='alice'`,
+		`SELECT COUNT(*) FROM packages WHERE id=2 AND nodes::jsonb @> '[15]'`,
+	} {
+		var count int
+		if err := db.QueryRow(query).Scan(&count); err != nil || count != 1 {
+			t.Errorf("query %q count=%d err=%v", query, count, err)
+		}
 	}
 }
 

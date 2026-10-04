@@ -30,6 +30,7 @@ type lifecycleTestStore struct {
 	businessRefs    map[string][]lifecycleCredentialRef
 	defaults        map[string][]map[string]any
 	packages        []lifecyclePackageBinding
+	deletionData    lifecycleDeletionData
 	deletedPackages []int64
 	operationID     string
 	savedPlans      [][]lifecyclePlanItem
@@ -449,6 +450,48 @@ func TestDeleteLifecycleDeletesOnlyExclusivePackages(t *testing.T) {
 	}
 }
 
+func TestDeleteLifecyclePlanOwnedExternalNodesAndSharedServerNode(t *testing.T) {
+	alice := lifecycleRef(5, "shared", "vless", map[string]any{"id": "alice-secret"})
+	alice.Username = "alice"
+	bob := lifecycleRef(5, "shared", "vless", map[string]any{"id": "bob-secret"})
+	bob.Username = "bob"
+	store := &lifecycleTestStore{
+		refs: []lifecycleCredentialRef{alice}, businessRefs: map[string][]lifecycleCredentialRef{"5/shared": {bob}},
+		packages: []lifecyclePackageBinding{{ID: 1, Bound: true, NodeIDs: []int64{10, 11, 12}}},
+		deletionData: lifecycleDeletionData{
+			Nodes: map[int64]lifecycleDeletionNode{
+				10: {lifecycleNodeLabel: lifecycleNodeLabel{ID: 10, Name: "Alice external"}, Username: "alice"},
+				11: {lifecycleNodeLabel: lifecycleNodeLabel{ID: 11, Name: "Admin external"}, Username: "admin"},
+				12: {lifecycleNodeLabel: lifecycleNodeLabel{ID: 12, Name: "Shared server node"}, Username: "alice", ServerID: 5, ServerName: "server-5", InboundTag: "shared"},
+			},
+			Refs: []lifecycleCredentialRef{alice, bob},
+		},
+	}
+	_, server := newLifecycleAgentFixture(map[int64]map[string]any{5: lifecycleConfig(lifecycleInbound("shared", "vless", map[string]any{"id": "alice-secret"}, map[string]any{"id": "bob-secret"}))})
+	defer server.Close()
+	plan, err := lifecycleTestApp(t, store, server).buildDeletionPlan(context.Background(), "session", "alice")
+	if err != nil || len(plan) != 3 {
+		t.Fatalf("plan=%+v err=%v", plan, err)
+	}
+	for _, item := range plan {
+		switch item.ItemKind {
+		case lifecycleItemKindNode:
+			if item.Action != lifecycleActionDeleteNode || len(item.NodeIDs) != 1 || item.NodeIDs[0] != 10 || len(item.OwnNodes) != 1 || item.OwnNodes[0].ID != 10 {
+				t.Fatalf("external node deletion=%+v", item)
+			}
+		case lifecycleItemKindInbound:
+			if item.Action != lifecycleActionRemoveUser || len(item.NodeIDs) != 0 || !strings.Contains(item.DecisionNote, "保留该用户名下的服务器节点：Shared server node（ID 12）") {
+				t.Fatalf("owned shared server node must be preserved: %+v", item)
+			}
+		case lifecycleItemKindPackage:
+			if item.Action != lifecycleActionKeepPackage || len(item.OwnNodes) != 1 || item.OwnNodes[0].ID != 10 || len(item.DeletedNodeIDs) != 1 || item.DeletedNodeIDs[0] != 10 ||
+				len(item.NeutralNodes) != 1 || item.NeutralNodes[0].ID != 11 || len(item.OtherUserNodes) != 1 || item.OtherUserNodes[0].ID != 12 {
+				t.Fatalf("node ownership classification=%+v", item)
+			}
+		}
+	}
+}
+
 func TestDeleteLifecycleSharedPreservesOtherCredentialAndExclusiveSnellUsesWholeRemove(t *testing.T) {
 	aliceShared := map[string]any{"email": "alice__shared", "password": "alice-pass"}
 	bobShared := map[string]any{"email": "bob__shared", "password": "bob-pass"}
@@ -854,5 +897,7 @@ func TestUserLifecycleIsolatedPostgresRelationsAndFinalCleanup(t *testing.T) {
 }
 
 func (s *lifecycleTestStore) LifecycleDeletionData(context.Context, string) (lifecycleDeletionData, error) {
-	return lifecycleDeletionData{Packages: s.packages}, nil
+	data := s.deletionData
+	data.Packages = s.packages
+	return data, nil
 }

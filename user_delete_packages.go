@@ -25,6 +25,7 @@ type lifecycleNodeLabel struct {
 
 type lifecycleDeletionNode struct {
 	lifecycleNodeLabel
+	Username   string
 	ServerID   int64
 	ServerName string
 	InboundTag string
@@ -83,13 +84,13 @@ func readLifecycleDeletionData(ctx context.Context, db lifecycleQueryer, usernam
 		}
 	}
 	if hasLifecycleColumns(columns, "nodes", "id", "original_server", "inbound_tag") {
-		rows, err := db.QueryContext(ctx, `SELECT n.id,COALESCE(to_jsonb(n)->>'node_name',to_jsonb(n)->>'name',''),COALESCE(s.id,0),COALESCE(n.original_server,''),COALESCE(n.inbound_tag,'') FROM nodes n LEFT JOIN remote_servers s ON s.name=n.original_server ORDER BY n.id`)
+		rows, err := db.QueryContext(ctx, `SELECT n.id,COALESCE(to_jsonb(n)->>'node_name',to_jsonb(n)->>'name',''),COALESCE(to_jsonb(n)->>'username',''),COALESCE(s.id,0),COALESCE(n.original_server,''),COALESCE(n.inbound_tag,'') FROM nodes n LEFT JOIN remote_servers s ON s.name=n.original_server ORDER BY n.id`)
 		if err != nil {
 			return data, err
 		}
 		for rows.Next() {
 			var node lifecycleDeletionNode
-			if err := rows.Scan(&node.ID, &node.Name, &node.ServerID, &node.ServerName, &node.InboundTag); err != nil {
+			if err := rows.Scan(&node.ID, &node.Name, &node.Username, &node.ServerID, &node.ServerName, &node.InboundTag); err != nil {
 				rows.Close()
 				return data, err
 			}
@@ -440,8 +441,8 @@ func containsLifecycleNode(ids []int64, id int64) bool {
 	return false
 }
 
-func (a *app) finishLifecycleDeletedNodes(ctx context.Context, token string, item *lifecyclePlanItem) error {
-	if item.Action != lifecycleActionDeleteWhole || len(item.NodeIDs) == 0 {
+func (a *app) finishLifecycleDeletedNodes(ctx context.Context, token, username string, item *lifecyclePlanItem) error {
+	if (item.Action != lifecycleActionDeleteWhole && item.Action != lifecycleActionDeleteNode) || len(item.NodeIDs) == 0 {
 		return nil
 	}
 	store := a.adminStore.(lifecycleStore)
@@ -451,7 +452,11 @@ func (a *app) finishLifecycleDeletedNodes(ctx context.Context, token string, ite
 	}
 	for _, id := range item.NodeIDs {
 		if node, exists := data.Nodes[id]; exists {
-			if node.ServerID != item.ServerID || node.InboundTag != item.InboundTag {
+			if item.ItemKind == lifecycleItemKindNode {
+				if node.Username != username || (node.ServerName != "" && node.InboundTag != "") {
+					return errors.New("节点归属已变化，未删除节点记录")
+				}
+			} else if node.ServerID != item.ServerID || node.InboundTag != item.InboundTag {
 				return errors.New("节点归属已变化，未删除节点记录")
 			}
 			if err := a.officialLifecycleJSON(ctx, token, http.MethodDelete, "/api/admin/nodes/"+strconv.FormatInt(id, 10), nil, nil); err != nil {
@@ -465,7 +470,7 @@ func (a *app) finishLifecycleDeletedNodes(ctx context.Context, token string, ite
 	}
 	for _, id := range item.NodeIDs {
 		if _, exists := data.Nodes[id]; exists {
-			return errors.New("入站已清理，但官方节点记录仍存在")
+			return errors.New("官方节点记录仍存在，节点清理未完成")
 		}
 	}
 	if cleanup, ok := store.(interface {

@@ -481,10 +481,11 @@ function TelegramDialog({ token, user, onClose, onChanged }: { token: string; us
 }
 
 function deletionDecision(item: ManagedUserLifecycleItem) {
+  if (item.action === "DELETE_NODE") return item.decision_note || "该用户拥有的外部节点，随用户删除";
   if (item.action === "DELETE_PACKAGE") return "删除";
   if (item.action === "KEEP_PACKAGE") return `保留（移除 ${item.deleted_node_ids?.length ?? 0} 个该用户节点）`;
   if (item.action === "CONFLICT") return `冲突：${item.decision_note || `发现 ${item.unknown_credentials || 1} 个无法确认来源的凭据，需要人工检查`}`;
-  if (item.action === "REMOVE_USER_ONLY") return `还有 ${item.remaining_users} 个业务用户使用，保留 Inbound`;
+  if (item.action === "REMOVE_USER_ONLY") return item.decision_note || `还有 ${item.remaining_users} 个业务用户使用，保留 Inbound`;
   if (item.default_credentials > 0) return "仅存在创建时管理员 credential，不视为业务共享";
   return "没有其他业务用户，删除整个 Inbound";
 }
@@ -547,7 +548,7 @@ function DeleteUserDialog({ token, user, onClose, onResult }: { token: string; u
           <span>该用户节点：{(item.own_nodes || []).map((node) => `${node.name || "节点"}（ID ${node.id}）`).join("、") || "无"}</span>
           <span>其他用户节点：{(item.other_user_nodes || []).map((node) => `${node.name || "节点"}（ID ${node.id}）`).join("、") || "无"}</span>
           {(item.unknown_nodes?.length ?? 0) > 0 && <span>归属待确认节点：{item.unknown_nodes?.map((node) => `${node.name || "节点"}（ID ${node.id}）`).join("、")}</span>}
-        </> : <span>{item.inbound_tag} · {item.protocol || "未知协议"}</span>}</div>
+        </> : item.item_kind === "node" ? <span>该用户节点（ID {item.node_ids?.join("、")}）</span> : <span>{item.inbound_tag} · {item.protocol || "未知协议"}</span>}</div>
         <b>{deletionDecision(item)}</b>
         {item.item_kind === "package" && item.action !== "CONFLICT" && item.decision_note && <p>{item.decision_note}</p>}
         {item.last_error && <p>{item.last_error}</p>}

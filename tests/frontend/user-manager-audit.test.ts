@@ -132,6 +132,8 @@ test("UA-D01 and UA-D05 deletion preview explains package actions and node owner
     subaccounts: 0, inbound_bindings: 0, private_nodes: 2, routed_relations: 0,
     user_limits: 0, custom_assignments: 0, traffic_records: 0, other_private: 0,
     inbound_plan: [
+      { item_kind: "node", server_id: 0, server_name: "Alice 外部节点", inbound_tag: "node:15", action: "DELETE_NODE", node_ids: [15], decision_note: "该用户拥有的外部节点，随用户删除" },
+      { item_kind: "inbound", server_id: 5, server_name: "server-5", inbound_tag: "shared", action: "REMOVE_USER_ONLY", remaining_users: 1, decision_note: "还有 1 个业务用户使用，保留 Inbound；保留该用户名下的服务器节点：共享节点（ID 16）" },
       { item_kind: "package", package_id: 1, package_name: "只有自己的套餐", action: "DELETE_PACKAGE", own_nodes: [{ id: 10, name: "Alice 节点" }], other_user_nodes: [], decision_note: "没有其他用户的节点，随用户删除" },
       { item_kind: "package", package_id: 2, package_name: "混合节点套餐", action: "KEEP_PACKAGE", deleted_node_ids: [10, 11], own_nodes: [{ id: 10, name: "Alice 节点" }, { id: 11, name: "Alice 管理员共同节点" }], other_user_nodes: [{ id: 20, name: "Bob 节点" }] },
       { item_kind: "package", package_id: 3, package_name: "Bob 的套餐", action: "KEEP_PACKAGE", deleted_node_ids: [10], own_nodes: [{ id: 10, name: "Alice 节点" }], other_user_nodes: [{ id: 20, name: "Bob 节点" }] },
@@ -149,6 +151,10 @@ test("UA-D01 and UA-D05 deletion preview explains package actions and node owner
     token: "test-session", user: { username: "alice" }, onClose: () => undefined, onResult: async () => undefined,
   }));
   assert.match(html, /<b>删除<\/b>/);
+  assert.match(html, /Alice 外部节点/);
+  assert.match(html, /该用户节点（ID 15）/);
+  assert.match(html, /该用户拥有的外部节点，随用户删除/);
+  assert.match(html, /保留该用户名下的服务器节点：共享节点（ID 16）/);
   assert.match(html, /保留（移除 2 个该用户节点）/);
   assert.match(html, /保留（移除 1 个该用户节点）/);
   assert.match(html, /该用户节点：Alice 节点（ID 10）/);

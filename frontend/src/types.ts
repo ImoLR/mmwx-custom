@@ -1077,12 +1077,12 @@ export type ManagedUserDeletionPreviewResponse = {
 };
 
 export type ManagedUserLifecycleItem = {
-  item_kind: "inbound" | "package";
+  item_kind: "inbound" | "node" | "package";
   server_id: number;
   server_name: string;
   inbound_tag: string;
   protocol: string;
-  action: "REMOVE_USER_ONLY" | "DELETE_WHOLE_INBOUND" | "REPLACE_CREDENTIAL" | "CONFLICT" | "DELETE_PACKAGE" | "KEEP_PACKAGE";
+  action: "REMOVE_USER_ONLY" | "DELETE_WHOLE_INBOUND" | "DELETE_NODE" | "REPLACE_CREDENTIAL" | "CONFLICT" | "DELETE_PACKAGE" | "KEEP_PACKAGE";
   status: "pending" | "completed" | "failed";
   remaining_users: number;
   default_credentials: number;
