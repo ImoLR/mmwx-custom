@@ -91,8 +91,11 @@ func (s *lifecycleTestStore) SaveAccessPlan(_ context.Context, _, _, operationID
 	}
 	return nil
 }
-func (s *lifecycleTestStore) FinishAccessAttempt(_ context.Context, _, _, _ string, pending int, _ string) error {
+func (s *lifecycleTestStore) FinishAccessAttempt(_ context.Context, _, _, operation string, pending int, _ string) error {
 	s.finishedPending = pending
+	if operation == lifecycleOperationEnable && pending == 0 {
+		s.backups = nil
+	}
 	return nil
 }
 func (s *lifecycleTestStore) LifecycleInboundBusinessRefs(_ context.Context, serverID int64, _ string, tag, _ string) ([]lifecycleCredentialRef, error) {

@@ -156,6 +156,11 @@ func (s *postgresAdminSessionStore) FinishAccessAttempt(ctx context.Context, use
 		username, desired, state, operation, pending, lastError); err != nil {
 		return err
 	}
+	if operation == lifecycleOperationEnable && pending == 0 {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM mmwxc_user_disabled_credentials WHERE username=$1`, username); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -214,9 +219,70 @@ func (a *app) buildAccessPlan(ctx context.Context, token, username string, enabl
 			}
 			configs[serverID] = config
 		}
-		items = append(items, analyzeAccessInbound(username, enable, config, group.refs, group.backups))
+		item := analyzeAccessInbound(username, enable, config, group.refs, group.backups)
+		if !enable && item.Status != lifecycleItemFailed {
+			businessRefs, businessErr := store.LifecycleInboundBusinessRefs(ctx, serverID, serverName, inboundTag, username)
+			defaultCredentials, defaultErr := store.LifecycleDefaultAdminCredentials(ctx, serverID, inboundTag)
+			message := ""
+			switch {
+			case businessErr != nil:
+				message = "读取业务用户关系失败，拒绝禁用"
+			case defaultErr != nil:
+				message = "核对管理员默认凭据失败，拒绝禁用"
+			default:
+				message = accessCredentialSharingReason(findConfigInbound(config, inboundTag), item, businessRefs, defaultCredentials)
+			}
+			if message != "" {
+				item.Action, item.Status, item.LastError = lifecycleActionConflict, lifecycleItemFailed, message
+				item.DecisionNote = message
+				item.replacementInbound, item.accessCredentials = nil, nil
+			}
+		}
+		items = append(items, item)
 	}
 	return items, nil
+}
+
+func accessCredentialSharingReason(inbound map[string]any, item lifecyclePlanItem, businessRefs []lifecycleCredentialRef, defaultCredentials []map[string]any) string {
+	_, key, _ := accessInboundCredentialEntries(inbound)
+	for _, ref := range businessRefs {
+		if key == "password" || (strings.TrimSpace(ref.CredentialRaw) == "" && strings.TrimSpace(ref.Identity) == "") {
+			return "该端口还有其他用户、子账户或套餐绑定使用，无法单独禁用此用户"
+		}
+		for _, backup := range item.accessCredentials {
+			if lifecycleEntryMatchesRefs(backup.OriginalCredential, inbound, item.Protocol, []lifecycleCredentialRef{ref}) ||
+				lifecycleEntryMatchesRefs(backup.DisabledCredential, inbound, item.Protocol, []lifecycleCredentialRef{ref}) {
+				return "该认证凭据被其他用户、子账户或套餐绑定共用，拒绝替换"
+			}
+		}
+	}
+	for _, credential := range defaultCredentials {
+		for _, backup := range item.accessCredentials {
+			if credentialsMatch(backup.OriginalCredential, credential, item.Protocol) || credentialsMatch(backup.DisabledCredential, credential, item.Protocol) {
+				return "该认证凭据与管理员默认凭据共用，拒绝替换"
+			}
+		}
+	}
+	return ""
+}
+
+func accessInboundCredentialEntries(inbound map[string]any) ([]map[string]any, string, error) {
+	settings, _ := inbound["settings"].(map[string]any)
+	protocol, _ := inbound["protocol"].(string)
+	if (protocol == "shadowsocks" || protocol == "ss") && nonEmptyCredentialValue(settings, "password") {
+		clients, exists := settings["clients"]
+		entries, array := clients.([]any)
+		if !exists || (array && len(entries) == 0) {
+			credential := map[string]any{"password": settings["password"]}
+			for _, key := range []string{"email", "level"} {
+				if value, ok := settings[key]; ok {
+					credential[key] = value
+				}
+			}
+			return []map[string]any{credential}, "password", nil
+		}
+	}
+	return inboundCredentialEntries(inbound)
 }
 
 func analyzeAccessInbound(username string, enable bool, config map[string]any, refs []lifecycleCredentialRef, backups []lifecycleCredentialBackup) lifecyclePlanItem {
@@ -235,7 +301,12 @@ func analyzeAccessInbound(username string, enable bool, config map[string]any, r
 		return item
 	}
 	item.Protocol = strings.ToLower(strings.TrimSpace(fmt.Sprint(inbound["protocol"])))
-	entries, key, err := inboundCredentialEntries(inbound)
+	settings, _ := inbound["settings"].(map[string]any)
+	if item.Protocol == "socks" && strings.TrimSpace(fmt.Sprint(settings["auth"])) != "password" {
+		item.Status, item.LastError = lifecycleItemFailed, "匿名 SOCKS 端口无法单独禁用或启用用户"
+		return item
+	}
+	entries, key, err := accessInboundCredentialEntries(inbound)
 	if err != nil {
 		item.Status, item.LastError = lifecycleItemFailed, err.Error()
 		return item
@@ -255,7 +326,7 @@ func analyzeAccessInbound(username string, enable bool, config map[string]any, r
 		var credential map[string]any
 		if json.Unmarshal([]byte(ref.CredentialRaw), &credential) != nil || len(credential) == 0 {
 			var rawValues []string
-			if lifecycleInboundSS2022ServerKey(inbound) == "" || json.Unmarshal([]byte(ref.CredentialRaw), &rawValues) != nil {
+			if (key != "password" && lifecycleInboundSS2022ServerKey(inbound) == "") || json.Unmarshal([]byte(ref.CredentialRaw), &rawValues) != nil {
 				continue
 			}
 			for _, actual := range entries {
@@ -366,7 +437,7 @@ func analyzeAccessInbound(username string, enable bool, config map[string]any, r
 		return item
 	}
 	replacement := cloneLifecycleMap(inbound)
-	settings, _ := replacement["settings"].(map[string]any)
+	settings, _ = replacement["settings"].(map[string]any)
 	rawEntries := make([]any, 0, len(entries))
 	for index, entry := range entries {
 		if changed := replacements[index]; changed != nil {
@@ -379,7 +450,11 @@ func analyzeAccessInbound(username string, enable bool, config map[string]any, r
 		item.Status, item.LastError = lifecycleItemFailed, "credential 替换不得产生空 Inbound"
 		return item
 	}
-	settings[key] = rawEntries
+	if key == "password" {
+		settings[key] = rawEntries[0].(map[string]any)[key]
+	} else {
+		settings[key] = rawEntries
+	}
 	item.sourceInboundHash = hashJSON(inbound)
 	item.replacementInbound = replacement
 	return item
@@ -494,6 +569,10 @@ func (a *app) executeAccessPlan(ctx context.Context, token, username, operationI
 		if item.Status == lifecycleItemCompleted {
 			continue
 		}
+		if item.Status == lifecycleItemFailed && item.replacementInbound == nil {
+			lastError = item.LastError
+			continue
+		}
 		attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := a.executeAccessItem(attemptCtx, token, item)
 		cancel()
@@ -557,7 +636,7 @@ func (a *app) executeAccessItem(ctx context.Context, token string, item *lifecyc
 	if verified == nil || hashJSON(verified) != hashJSON(item.replacementInbound) {
 		return errors.New("HTTP 成功但真实 Agent 配置未变化")
 	}
-	entries, _, err := inboundCredentialEntries(verified)
+	entries, _, err := accessInboundCredentialEntries(verified)
 	if err != nil || len(entries) == 0 {
 		return errors.New("credential 替换产生了空 Inbound")
 	}
