@@ -235,7 +235,7 @@ func seedDeletionNodes(t *testing.T, db *sql.DB) map[int64]map[string]any {
 	t.Helper()
 	for _, statement := range []string{
 		`ALTER TABLE packages ADD COLUMN node_traffic_limits text DEFAULT '{}', ADD COLUMN node_name_overrides text DEFAULT '{}'`,
-		`CREATE TABLE nodes(id bigint PRIMARY KEY,name text,username text,original_server text,inbound_tag text,protocol text)`,
+		`CREATE TABLE nodes(id bigint PRIMARY KEY,node_name text,username text,original_server text,inbound_tag text,protocol text)`,
 		`CREATE TABLE user_inbound_configs(username text,server_id bigint,inbound_tag text,protocol text,credential_json text)`,
 		`CREATE TABLE server_xray_config_snapshots(id bigint,server_id bigint,config_json text,source text,created_at timestamptz DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE TABLE mmwxc_package_traffic_groups(id bigint PRIMARY KEY,package_id bigint REFERENCES packages(id) ON DELETE CASCADE,node_ids jsonb)`,
@@ -314,7 +314,7 @@ func TestAuditUAD01DeletePackageFollowsNodeOwnership(t *testing.T) {
 			if test.conflict {
 				want = lifecycleActionConflict
 			}
-			if pkg.Action != want || len(pkg.OwnNodes) != 2 {
+			if pkg.Action != want || len(pkg.OwnNodes) != 2 || pkg.OwnNodes[0].Name == "" {
 				t.Fatalf("package classification=%+v", pkg)
 			}
 			if test.conflict {
@@ -396,5 +396,113 @@ func TestAuditUAD05DeletePrunesOtherUsersPackage(t *testing.T) {
 	}
 	if findConfigInbound(fixture.configs[5], "bob") == nil {
 		t.Fatal("Bob credential lost")
+	}
+}
+
+func TestDeletePackageRechecksOwnershipAndBindings(t *testing.T) {
+	for _, change := range []string{"other node", "unknown node", "second binding"} {
+		t.Run(change, func(t *testing.T) {
+			db := auditUserDeleteDB(t, "UA-D01")
+			configs := seedDeletionNodes(t, db)
+			auditDeleteExec(t, db, `INSERT INTO packages(id,name,nodes) VALUES(1,'Alice','[13]')`)
+			auditDeleteExec(t, db, `UPDATE users SET package_id=1 WHERE username='alice'`)
+			application, _ := auditDeletionApplication(t, db, configs)
+			plan, err := application.buildDeletionPlan(context.Background(), "session", "alice")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var item lifecyclePlanItem
+			for _, candidate := range plan {
+				if candidate.PackageID == 1 {
+					item = candidate
+				}
+			}
+			if item.Action != lifecycleActionDeletePackage {
+				t.Fatalf("initial plan=%+v", item)
+			}
+			switch change {
+			case "other node":
+				auditDeleteExec(t, db, `UPDATE packages SET nodes='[13,14]' WHERE id=1`)
+			case "unknown node":
+				auditDeleteExec(t, db, `INSERT INTO nodes VALUES(15,'Unknown','admin','missing-server','tag','vless')`)
+				auditDeleteExec(t, db, `UPDATE packages SET nodes='[13,15]' WHERE id=1`)
+			case "second binding":
+				auditDeleteExec(t, db, `INSERT INTO user_package_assignments VALUES(2,'bob',1,'inactive')`)
+			}
+			if err := application.executeLifecycleDeleteItem(context.Background(), "session", "alice", &item); err == nil {
+				t.Fatal("changed ownership/binding was not rejected inside delete transaction")
+			}
+			var count int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM packages WHERE id=1`).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("package removed: count=%d err=%v", count, err)
+			}
+		})
+	}
+}
+
+func TestDeleteRetryPrunesPackageAfterOfficialAlreadyRemovedNodes(t *testing.T) {
+	db := auditUserDeleteDB(t, "UA-D02/UA-D05")
+	configs := seedDeletionNodes(t, db)
+	auditDeleteExec(t, db, `INSERT INTO packages(id,name,nodes,node_traffic_limits,node_name_overrides) VALUES(2,'Bob package','[10,11,14]','{"10":1,"11":2,"14":3}','{"10":"own","14":"other"}')`)
+	auditDeleteExec(t, db, `UPDATE users SET package_id=2 WHERE username='bob'`)
+	auditDeleteExec(t, db, `INSERT INTO mmwxc_package_traffic_groups VALUES(2,2,'[10,11,14]')`)
+	application, fixture := auditDeletionApplication(t, db, configs)
+	original := fixture.extraHandler
+	failed := false
+	fixture.extraHandler = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path == "/api/v3" && !failed {
+			failed = true
+			writeJSON(w, 503, map[string]any{"success": false})
+			return true
+		}
+		return original(w, r)
+	}
+	_, first := runDeletionRegression(t, application, "alice")
+	if first.UserDeleted || first.PendingCount != 1 {
+		t.Fatalf("first=%+v", first)
+	}
+	// Official remove prunes its node JSON before Custom finishes traffic groups.
+	auditDeleteExec(t, db, `UPDATE packages SET nodes='[14]' WHERE id=2`)
+	plan, second := runDeletionRegression(t, application, "alice")
+	if !second.UserDeleted {
+		t.Fatalf("retry=%+v", second)
+	}
+	for _, item := range plan {
+		if item.PackageID == 2 && len(item.DeletedNodeIDs) != 2 {
+			t.Fatalf("cleanup snapshot lost: %+v", item)
+		}
+	}
+	assertDeletionPackagePruned(t, db, 2)
+}
+
+func TestDeleteDoesNotFinalizeUnconfirmedPackageCleanup(t *testing.T) {
+	for _, failure := range []string{"ignored package update", "credential restored during package update"} {
+		t.Run(failure, func(t *testing.T) {
+			db := auditUserDeleteDB(t, "UA-D02/UA-D05")
+			configs := seedDeletionNodes(t, db)
+			auditDeleteExec(t, db, `INSERT INTO packages(id,name,nodes) VALUES(2,'Bob package','[10,11,14]')`)
+			auditDeleteExec(t, db, `UPDATE users SET package_id=2 WHERE username='bob'`)
+			application, fixture := auditDeletionApplication(t, db, configs)
+			original := fixture.extraHandler
+			fixture.extraHandler = func(w http.ResponseWriter, r *http.Request) bool {
+				if r.URL.Path == "/api/v3" {
+					if failure == "ignored package update" {
+						writeJSON(w, 200, map[string]any{"success": true})
+						return true
+					}
+					inbounds := fixture.configs[5]["inbounds"].([]any)
+					fixture.configs[5]["inbounds"] = append(inbounds, lifecycleInbound("alice", "vless", map[string]any{"id": "alice-secret", "email": "alice@example.test"}))
+				}
+				return original(w, r)
+			}
+			_, result := runDeletionRegression(t, application, "alice")
+			if result.UserDeleted || result.PendingCount == 0 || result.State != lifecycleStateDeletePartial {
+				t.Fatalf("unconfirmed cleanup finalized user: %+v", result)
+			}
+			var count int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE username='alice'`).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("user deleted: count=%d err=%v", count, err)
+			}
+		})
 	}
 }

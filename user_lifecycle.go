@@ -986,12 +986,16 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 		}
 		businessRefs, businessErr := store.LifecycleInboundBusinessRefs(ctx, first.ServerID, first.ServerName, first.InboundTag, username)
 		if businessErr != nil {
-			items = append(items, failedPlanItem(first, "读取业务用户关系失败"))
+			failed := failedPlanItem(first, "读取业务用户关系失败")
+			failed.deleteRefs = refs
+			items = append(items, failed)
 			continue
 		}
 		defaultCredentials, defaultErr := store.LifecycleDefaultAdminCredentials(ctx, first.ServerID, first.InboundTag)
 		if defaultErr != nil {
-			items = append(items, failedPlanItem(first, "核对创建时管理员 credential 失败"))
+			failed := failedPlanItem(first, "核对创建时管理员 credential 失败")
+			failed.deleteRefs = refs
+			items = append(items, failed)
 			continue
 		}
 		businessRefs = deletionBusinessRefs(findConfigInbound(config, first.InboundTag), username, data, businessRefs)
@@ -1061,6 +1065,9 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 					item.Status = lifecycleItemPending
 				}
 			}
+		}
+		if item.Action == lifecycleActionKeepPackage {
+			item.DecisionNote = fmt.Sprintf("保留套餐，移除 %d 个该用户节点", len(item.DeletedNodeIDs))
 		}
 		items = append(items, item)
 	}
@@ -1453,6 +1460,39 @@ func (a *app) executeDeletePlan(ctx context.Context, token, username, operationI
 			lastError = item.LastError
 		}
 	}
+	allCompleted := true
+	for _, item := range result.Items {
+		if item.Status != lifecycleItemCompleted {
+			allCompleted = false
+		}
+	}
+	if allCompleted {
+		// Package updates can cause official configuration writes. Verify the
+		// removed runtime credentials again before deleting their source rows.
+		configs := make(map[int64]map[string]any)
+		for index := range result.Items {
+			item := &result.Items[index]
+			if item.ItemKind != lifecycleItemKindInbound || (len(item.targetCredentials) == 0 && item.Action != lifecycleActionDeleteWhole) {
+				continue
+			}
+			config := configs[item.ServerID]
+			var verifyErr error
+			if config == nil {
+				config, verifyErr = a.fetchOfficialXrayConfig(ctx, token, item.ServerID)
+				configs[item.ServerID] = config
+			}
+			if verifyErr == nil {
+				verifyErr = verifyLifecycleDeletedCredential(config, *item)
+			}
+			if verifyErr != nil {
+				item.Status, item.LastError = lifecycleItemFailed, lifecycleSafeError(verifyErr)
+				lastError = item.LastError
+				persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = store.MarkLifecycleItem(persistCtx, operationID, *item)
+				cancel()
+			}
+		}
+	}
 	for _, item := range result.Items {
 		if item.Status != lifecycleItemCompleted {
 			result.PendingCount++
@@ -1647,4 +1687,26 @@ func lifecycleSafeError(err error) string {
 		message = message[:240]
 	}
 	return message
+}
+
+func verifyLifecycleDeletedCredential(config map[string]any, item lifecyclePlanItem) error {
+	inbound := findConfigInbound(config, item.InboundTag)
+	if inbound == nil {
+		return nil
+	}
+	if item.Action == lifecycleActionDeleteWhole {
+		return errors.New("套餐处理后入站仍存在，用户删除未完成")
+	}
+	entries, _, err := accessInboundCredentialEntries(inbound)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		for _, target := range item.targetCredentials {
+			if credentialsMatch(entry, target, item.Protocol) {
+				return errors.New("套餐处理后旧用户凭据仍存在，用户删除未完成")
+			}
+		}
+	}
+	return nil
 }

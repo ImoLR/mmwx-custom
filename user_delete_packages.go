@@ -83,7 +83,7 @@ func readLifecycleDeletionData(ctx context.Context, db lifecycleQueryer, usernam
 		}
 	}
 	if hasLifecycleColumns(columns, "nodes", "id", "original_server", "inbound_tag") {
-		rows, err := db.QueryContext(ctx, `SELECT n.id,COALESCE(to_jsonb(n)->>'name',''),COALESCE(s.id,0),COALESCE(n.original_server,''),COALESCE(n.inbound_tag,'') FROM nodes n LEFT JOIN remote_servers s ON s.name=n.original_server ORDER BY n.id`)
+		rows, err := db.QueryContext(ctx, `SELECT n.id,COALESCE(to_jsonb(n)->>'node_name',to_jsonb(n)->>'name',''),COALESCE(s.id,0),COALESCE(n.original_server,''),COALESCE(n.inbound_tag,'') FROM nodes n LEFT JOIN remote_servers s ON s.name=n.original_server ORDER BY n.id`)
 		if err != nil {
 			return data, err
 		}
@@ -316,7 +316,12 @@ func (a *app) executeDeletionPackage(ctx context.Context, token, username string
 		}
 	}
 	if payload == nil {
-		return nil
+		if cleanup, ok := store.(interface {
+			PruneLifecycleNodeRelations(context.Context, int64, []int64) error
+		}); ok {
+			return cleanup.PruneLifecycleNodeRelations(ctx, item.PackageID, item.DeletedNodeIDs)
+		}
+		return errors.New("未找到需要清理的官方套餐")
 	}
 	deleted := make(map[string]bool)
 	for _, id := range item.DeletedNodeIDs {
@@ -371,6 +376,46 @@ func (s *postgresAdminSessionStore) PruneLifecycleNodeRelations(ctx context.Cont
 		return err
 	}
 	defer tx.Rollback()
+	if packageID > 0 {
+		var raw []byte
+		err := tx.QueryRowContext(ctx, `SELECT to_jsonb(p) FROM packages p WHERE id=$1`, packageID).Scan(&raw)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			var pkg map[string]any
+			if json.Unmarshal(raw, &pkg) != nil {
+				return errors.New("无法复核套餐节点清理结果")
+			}
+			for key, value := range pkg {
+				if key != "nodes" && !strings.HasPrefix(key, "node_") {
+					continue
+				}
+				if text, ok := value.(string); ok {
+					var decoded any
+					if json.Unmarshal([]byte(text), &decoded) == nil {
+						value = decoded
+					}
+				}
+				for _, id := range nodeIDs {
+					if values, ok := value.(map[string]any); ok {
+						if _, exists := values[strconv.FormatInt(id, 10)]; exists {
+							return errors.New("官方套餐仍有已删除节点的数据，清理未完成")
+						}
+					}
+					if key == "nodes" {
+						if values, ok := value.([]any); ok {
+							for _, nodeID := range values {
+								if fmt.Sprint(nodeID) == strconv.FormatInt(id, 10) {
+									return errors.New("官方套餐仍引用已删除节点，清理未完成")
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 	for _, id := range nodeIDs {
 		if hasLifecycleColumns(columns, "forward_chain_nodes", "node_id") {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM forward_chain_nodes WHERE node_id=$1`, id); err != nil {
@@ -378,7 +423,7 @@ func (s *postgresAdminSessionStore) PruneLifecycleNodeRelations(ctx context.Cont
 			}
 		}
 		if hasLifecycleColumns(columns, "mmwxc_package_traffic_groups", "package_id", "node_ids") {
-			if _, err := tx.ExecContext(ctx, `UPDATE mmwxc_package_traffic_groups SET node_ids=COALESCE((SELECT jsonb_agg(n) FROM jsonb_array_elements(node_ids) n WHERE n<>to_jsonb($2::bigint)),'[]'::jsonb) WHERE package_id=$1`, packageID, id); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE mmwxc_package_traffic_groups SET node_ids=COALESCE((SELECT jsonb_agg(n) FROM jsonb_array_elements(node_ids) n WHERE n<>to_jsonb($2::bigint)),'[]'::jsonb) WHERE (package_id=$1 OR $1=0)`, packageID, id); err != nil {
 				return err
 			}
 		}
