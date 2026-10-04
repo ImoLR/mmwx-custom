@@ -1,5 +1,5 @@
 import fs from 'fs';
-const s = fs.readFileSync('/tmp/mmwx-sync/fe-v0.5.5/assets/index-DKBDDJNu.js', 'utf8');
+const s = fs.readFileSync('/root/mmwx-custom-artifacts/user-manager-audit/official/assets/assets/index-DKBDDJNu.js', 'utf8');
 function objAt(i) { // s[i] === '{'
   let depth = 0, q = null;
   for (let j = i; j < s.length; j++) {
