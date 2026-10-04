@@ -1445,12 +1445,20 @@ func (a *app) officialLifecycleJSON(ctx context.Context, token, method, path str
 		return err
 	}
 	var reader io.Reader
+	contentType := "text/plain; charset=utf-8"
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		reader = strings.NewReader(base64.StdEncoding.EncodeToString(channel.encrypt(raw)))
+		if method == http.MethodDelete {
+			// Official secure-channel middleware decrypts POST/PUT/PATCH only;
+			// DELETE assignment requests still require a plain JSON body.
+			reader = strings.NewReader(string(raw))
+			contentType = "application/json"
+		} else {
+			reader = strings.NewReader(base64.StdEncoding.EncodeToString(channel.encrypt(raw)))
+		}
 	}
 	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), reader)
 	if err != nil {
@@ -1461,7 +1469,7 @@ func (a *app) officialLifecycleJSON(ctx context.Context, token, method, path str
 	request.Header.Set("X-Secure-Channel", officialSecureChannelVersion)
 	request.Header.Set("X-Session-Id", channel.sessionID)
 	if body != nil {
-		request.Header.Set("Content-Type", "text/plain; charset=utf-8")
+		request.Header.Set("Content-Type", contentType)
 	}
 	response, err := client.Do(request)
 	if err != nil {

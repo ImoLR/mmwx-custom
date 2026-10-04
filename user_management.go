@@ -361,6 +361,10 @@ func (a *app) userManagementHandler(w http.ResponseWriter, r *http.Request) {
 	const prefix = "/api/custom/users/"
 	path := strings.TrimPrefix(r.URL.Path, prefix)
 	parts := strings.Split(path, "/")
+	if len(parts) == 3 && parts[1] == "features" {
+		a.userFeatureHandler(w, r, parts[0], parts[2])
+		return
+	}
 	if len(parts) != 2 || parts[0] == "" || (parts[1] != "state" && parts[1] != "deletion-preview" && parts[1] != "delete" && parts[1] != "access") {
 		writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "not found"})
 		return
@@ -394,6 +398,17 @@ func (a *app) userManagementHandler(w http.ResponseWriter, r *http.Request) {
 	if writeAction {
 		unlock = a.lockUserLifecycle(username)
 		defer unlock()
+	}
+	if parts[1] == "delete" {
+		if imports, ok := a.adminStore.(interface {
+			importedNodeCleanupSnapshot(context.Context, string) (string, importedNodeCleanupSnapshot, error)
+		}); ok {
+			pending, _, err := imports.importedNodeCleanupSnapshot(r.Context(), username)
+			if err != nil || pending != "" {
+				writeJSON(w, http.StatusConflict, map[string]any{"success": false, "message": "导入节点套餐清理未完成，请先重试清空导入节点"})
+				return
+			}
+		}
 	}
 	if parts[1] == "access" {
 		state, err := store.ManagedUserState(r.Context(), username)

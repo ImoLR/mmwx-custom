@@ -52,6 +52,10 @@ import type {
   ManagedUserAccessResponse,
   ManagedUserLifecycleResponse,
   ManagedUserPackageAssignmentsResponse,
+  ManagedUserPackageInput,
+  ManagedUserPackageAssignmentInput,
+  ManagedUserImportedNode,
+  ManagedUserCredentialResult,
   UserSubaccountsResponse,
   PackageForwardChainsResponse,
   PackageMutationResponse,
@@ -1315,9 +1319,7 @@ export function fetchManagedUsers(token: string) {
 }
 
 export function fetchManagedUserPackageAssignments(token: string, username: string) {
-  return requestOperation<ManagedUserPackageAssignmentsResponse>(token, "3ce51fdef44f9502", null, {
-    query: `username=${encodeURIComponent(username)}`,
-  });
+  return request<ManagedUserPackageAssignmentsResponse>(joinUrl(MMWX_API_BASE_URL, `/api/admin/package-assignments?username=${encodeURIComponent(username)}`), token);
 }
 
 export function fetchManagedUserState(token: string, username: string) {
@@ -1414,20 +1416,70 @@ export function updateManagedUserShortCode(token: string, username: string, shor
   return requestOperation<{ status?: string }>(token, "5b0a2c194b3903a6", { username, short_code: shortCode });
 }
 
-export function extendManagedUserPackage(token: string, username: string, days: number) {
-  return requestOperation<{ success?: boolean; end_date?: string; warnings?: string[] }>(token, "aa38511ef347e5c4", { username, days });
+function managedUserFeature<T>(token: string, username: string, action: string, body: unknown) {
+  return requestCustomOperator<T>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/users/${encodeURIComponent(username)}/features/${action}`), token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
-export function assignManagedUserPackage(token: string, body: { username: string; package_id: number; start_date: string; expire_date: string; is_reset?: boolean; reset_day?: number }) {
-  return requestOperation<{ success?: boolean; warnings?: string[]; message?: string }>(token, "4f61a1544c43c7c6", body);
+export function extendManagedUserPackage(token: string, username: string, days: number, confirmDisabled = false) {
+  return managedUserFeature<{ success?: boolean; end_date?: string; warnings?: string[] }>(token, username, "renew", { username, days, confirm_disabled: confirmDisabled });
+}
+
+export function assignManagedUserPackage(token: string, body: ManagedUserPackageInput) {
+  return managedUserFeature<{ success?: boolean; warnings?: string[]; message?: string }>(token, body.username, "assign-package", body);
 }
 
 export function unassignManagedUserPackage(token: string, username: string) {
-  return requestOperation<{ message?: string }>(token, "8705af3cb27b208b", { username });
+  return managedUserFeature<{ message?: string }>(token, username, "unassign-package", { username });
+}
+
+export function fetchManagedUserAvailablePackages(token: string, username: string) {
+  return requestCustomOperator<{ package_ids: number[] }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/users/${encodeURIComponent(username)}/features/available-packages`), token);
+}
+
+export function addManagedUserPackageAssignment(token: string, body: ManagedUserPackageInput) {
+  return managedUserFeature<{ success?: boolean; warnings?: string[]; message?: string }>(token, body.username, "add-assignment", body);
+}
+
+export function updateManagedUserPackageAssignment(token: string, body: ManagedUserPackageAssignmentInput) {
+  return managedUserFeature<{ success?: boolean; warnings?: string[]; message?: string }>(token, body.username, "edit-assignment", body);
+}
+
+export function deleteManagedUserPackageAssignment(token: string, username: string, assignmentId: number) {
+  return managedUserFeature<{ success?: boolean; message?: string }>(token, username, "unbind-assignment", { username, assignment_id: assignmentId });
+}
+
+export function updateManagedUserNickname(token: string, username: string, nickname: string) {
+  return request<{ status?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/users/update-nickname"), token, {
+    method: "POST",
+    body: JSON.stringify({ username, nickname }),
+  });
+}
+
+export function fetchManagedUserImportedNodes(token: string, username: string) {
+  return requestCustomOperator<{ nodes?: ManagedUserImportedNode[]; cleanup_pending?: boolean }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/users/${encodeURIComponent(username)}/features/imported-nodes`), token);
+}
+
+export function clearManagedUserImportedNodes(token: string, username: string) {
+  return managedUserFeature<{ success?: boolean; deleted_count?: number; message?: string }>(token, username, "clear-imported-nodes", { username });
+}
+
+export function replaceAdminCredentials(token: string, username: string, confirmDisabled = false) {
+  return managedUserFeature<ManagedUserCredentialResult>(token, username, "replace-credentials", { confirm_disabled: confirmDisabled });
+}
+
+export function repairAdminCredentials(token: string, username: string, confirmDisabled = false) {
+  return managedUserFeature<ManagedUserCredentialResult>(token, username, "repair-credentials", { confirm_disabled: confirmDisabled });
 }
 
 export function updateManagedUserLimits(token: string, body: { username: string; speed_limit_override: number | null; device_limit_override: number | null; ip_limit_override: number | null; ip_over_limit_action_override: string | null }) {
-  return requestOperation<{ success?: boolean; message?: string }>(token, "06172be9ae18a289", body);
+  return request<{ success?: boolean; message?: string }>(joinUrl(MMWX_API_BASE_URL, "/api/admin/users/limits"), token, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
 }
 
 export function updateManagedUserNodeLimits(token: string, body: { username: string; node_speed_overrides: Record<number, number>; node_device_overrides: Record<number, number> }) {

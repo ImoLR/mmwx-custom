@@ -1016,6 +1016,53 @@ export type ManagedUserPackageAssignment = {
   package_name?: string;
   short_code?: string;
   is_primary?: boolean;
+  username?: string;
+  status?: string;
+  legacy_source?: boolean | number;
+  package_start_date?: string | null;
+  package_end_date?: string | null;
+  is_reset?: boolean;
+  reset_day?: number;
+  traffic_limit_override?: number | null;
+  traffic_limit_bytes?: number;
+  used_total?: number;
+};
+
+export type ManagedUserPackageInput = {
+  username: string;
+  package_id: number;
+  start_date?: string;
+  expire_date: string;
+  permanent?: boolean;
+  is_reset?: boolean;
+  reset_day?: number;
+  inherit_expire_date?: boolean;
+  inherit_traffic?: boolean;
+  traffic_limit_override_gb?: number | null;
+  confirm_disabled?: boolean;
+};
+
+export type ManagedUserPackageAssignmentInput = Omit<ManagedUserPackageInput, "package_id" | "inherit_expire_date" | "inherit_traffic"> & {
+  assignment_id: number;
+};
+
+export type ManagedUserImportedNode = {
+  id: number;
+  node_name?: string;
+  node_type?: string;
+  original_server?: string;
+  server_name?: string;
+};
+
+export type ManagedUserCredentialResult = {
+  success?: boolean;
+  credentials_updated?: number;
+  nodes_updated?: number;
+  nodes_repaired?: number;
+  credentials_pushed?: number;
+  nodes_unchanged?: number;
+  records_unmatched?: number;
+  push_failed?: number;
 };
 
 export type ManagedUserPackageAssignmentsResponse = {
@@ -1082,7 +1129,7 @@ export type ManagedUserLifecycleItem = {
   server_name: string;
   inbound_tag: string;
   protocol: string;
-  action: "REMOVE_USER_ONLY" | "DELETE_WHOLE_INBOUND" | "DELETE_NODE" | "REPLACE_CREDENTIAL" | "CONFLICT" | "DELETE_PACKAGE" | "KEEP_PACKAGE";
+  action: "REMOVE_USER_ONLY" | "DELETE_WHOLE_INBOUND" | "DELETE_NODE" | "REPLACE_CREDENTIAL" | "CONFLICT" | "DELETE_PACKAGE" | "DELETE_EMPTY_PACKAGE" | "KEEP_PACKAGE";
   status: "pending" | "completed" | "failed";
   remaining_users: number;
   default_credentials: number;
@@ -1495,6 +1542,11 @@ export type NodeConnectionsResponse = {
 export type UserConnectionsResponse = {
   success: boolean;
   connections?: Record<string, number>;
+  ips?: Record<string, Record<string, number>>;
+  geo?: Record<string, { country?: string; province?: string; city?: string; isp?: string }> | null;
+  geo_available?: boolean;
+  connection_count_ready?: boolean;
+  excluded_server_names?: string[];
 };
 
 export type HelperUserConnectionsResponse = UserConnectionsResponse & {
