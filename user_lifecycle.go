@@ -694,44 +694,78 @@ func lifecycleDefaultAdminCredentials(ctx context.Context, db lifecycleQueryer, 
 	if len(admins) == 0 {
 		return current, nil
 	}
-	rows, err = db.QueryContext(ctx, `
-		SELECT config_json::text,COALESCE(source,'')
-		FROM server_xray_config_snapshots
-		WHERE server_id=$1 AND config_json::text LIKE $2
-		ORDER BY created_at,id
-		LIMIT 200`, serverID, "%"+inboundTag+"%")
+	inbound, source, err := lifecycleInboundCreationSnapshot(ctx, db, serverID, inboundTag)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var raw, source string
-		if err := rows.Scan(&raw, &source); err != nil {
-			return nil, err
-		}
-		var config map[string]any
-		if json.Unmarshal([]byte(raw), &config) != nil {
-			continue
-		}
-		inbound := findConfigInbound(config, inboundTag)
-		if inbound == nil {
-			continue
-		}
-		if source != "master_write" {
-			return current, nil
-		}
-		entries, _, err := accessInboundCredentialEntries(inbound)
-		if err != nil {
-			return current, nil
-		}
-		for _, entry := range entries {
-			if credentialMatchesAdmin(entry, admins) {
-				current = append(current, entry)
-			}
-		}
+	if inbound == nil || source != "master_write" {
 		return current, nil
 	}
-	return current, rows.Err()
+	entries, _, err := accessInboundCredentialEntries(inbound)
+	if err != nil {
+		return current, nil
+	}
+	for _, entry := range entries {
+		if credentialMatchesAdmin(entry, admins) {
+			current = append(current, entry)
+		}
+	}
+	return current, nil
+}
+
+func lifecycleInboundCreationSnapshot(ctx context.Context, db lifecycleQueryer, serverID int64, inboundTag string) (map[string]any, string, error) {
+	const batchSize = 128
+	var creation map[string]any
+	var source string
+	var beforeTime time.Time
+	var beforeID int64
+	first := true
+	for {
+		query := `SELECT id,created_at,config_json::text,COALESCE(source,'') FROM server_xray_config_snapshots WHERE server_id=$1`
+		args := []any{serverID}
+		if !first {
+			query += ` AND (created_at,id)<($2,$3)`
+			args = append(args, beforeTime, beforeID)
+		}
+		query += ` ORDER BY created_at DESC,id DESC LIMIT 128`
+		rows, err := db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, "", err
+		}
+		count, boundary := 0, false
+		for rows.Next() {
+			var raw, snapshotSource string
+			if err := rows.Scan(&beforeID, &beforeTime, &raw, &snapshotSource); err != nil {
+				rows.Close()
+				return nil, "", err
+			}
+			count++
+			var config map[string]any
+			if json.Unmarshal([]byte(raw), &config) != nil {
+				rows.Close()
+				return nil, "", nil
+			}
+			inbound := findConfigInbound(config, inboundTag)
+			if inbound == nil {
+				boundary = true
+				break
+			}
+			creation, source = inbound, snapshotSource
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, "", err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, "", err
+		}
+		// A missing tag ends the current incarnation. Keyset batches avoid loading
+		// the server's entire configuration history or skipping deletion gaps.
+		if boundary || count < batchSize {
+			return creation, source, nil
+		}
+		first = false
+	}
 }
 
 func credentialMatchesAdmin(credential map[string]any, admins map[string]bool) bool {
