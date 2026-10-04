@@ -212,6 +212,23 @@ ignored = {p for p in single if all_bound[p] - bound[p]}
 
 constraints = rows("SELECT c.conrelid::regclass::text AS table_name,c.conname,pg_get_constraintdef(c.oid) AS definition FROM pg_constraint c WHERE c.contype='f' AND c.conrelid::regclass::text IN ('mmwxc_user_disabled_credentials','mmwxc_user_lifecycle','mmwxc_user_lifecycle_operations') ORDER BY 1,2")
 group_counts = optional('mmwxc_package_traffic_groups', 'SELECT package_id,COUNT(*) AS count FROM mmwxc_package_traffic_groups GROUP BY package_id')
+node_owners = rows('SELECT id,username FROM nodes')
+explicit_shared_nodes = set()
+implicit_shared_nodes = set()
+for package in packages:
+    member_ids = obj(package['nodes'])
+    if not isinstance(member_ids, list):
+        continue
+    for node in node_owners:
+        if user_by_name.get(node['username'], {}).get('role') == 'admin':
+            continue
+        if not (bound[package['id']] - {node['username']}):
+            continue
+        if node['id'] in member_ids:
+            explicit_shared_nodes.add(node['id'])
+        elif not member_ids:
+            implicit_shared_nodes.add(node['id'])
+forward_orphans = optional('forward_chain_nodes', "SELECT count(*) AS rows_with_missing_owner FROM forward_chain_nodes f WHERE COALESCE(f.owner_username,'')<>'' AND NOT EXISTS(SELECT 1 FROM users u WHERE u.username=f.owner_username)")
 
 result = {
     'captured_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -227,6 +244,8 @@ result = {
     'sharing_with_owned_nodes': {'owned_node_matching': dict(node_counts), 'cross_username_auth_groups': len(all_shared), 'cross_username_users': len(set().union(*all_shared.values())) if all_shared else 0, 'admin_default_shared_auth_groups': len(all_admin_shared), 'scope': 'Adds owned-node parsed/clash authentication only if matching latest stored snapshot; includes SS2022 server-key validation. Empty/all-node package entitlements or subscription-time transformations are not inferred.'},
     'snapshot_evidence': {'servers': len(snapshots), 'inbounds': len(current), 'oldest_latest_snapshot': str(min((s['created_at'] for s in snapshots), default='')), 'newest_latest_snapshot': str(max((s['created_at'] for s in snapshots), default=''))},
     'actual_user_cascade_constraints': constraints,
+    'shared_private_nodes': {'nonadmin_owned_nodes': sum(user_by_name.get(n['username'], {}).get('role') != 'admin' for n in node_owners), 'explicitly_referenced_by_other_bound_user_packages': len(explicit_shared_nodes), 'implicitly_referenced_via_empty_all_nodes_packages': len(implicit_shared_nodes), 'scope': 'Other active assignment or legacy binding; explicit JSON node membership separated from empty/all-node semantics.'},
+    'forward_chain_owner_orphans': forward_orphans,
 }
 logs = subprocess.run(['journalctl', '-u', 'mmwx-custom.service', '--since', '2026-10-03 00:00:00 UTC', '-n', '10000', '--no-pager', '-o', 'cat'], text=True, capture_output=True)
 patterns = ['lifecycle', 'access', 'delete_partial', 'partially_disabled', 'partially_enabled', '配置已发生漂移', '找不到', 'disabled', 'failed']
