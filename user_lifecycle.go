@@ -95,6 +95,7 @@ ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS node_ids JSONB N
 ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS default_credentials INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS unknown_credentials INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS decision_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE mmwxc_user_lifecycle_items ADD COLUMN IF NOT EXISTS deletion_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
 CREATE TABLE IF NOT EXISTS mmwxc_user_disabled_credentials (
     username TEXT NOT NULL,
     server_id BIGINT NOT NULL,
@@ -153,6 +154,7 @@ type lifecyclePlanItem struct {
 	LastError          string     `json:"last_error,omitempty"`
 	LastCheckedAt      *time.Time `json:"last_checked_at,omitempty"`
 
+	deleteRefs              []lifecycleCredentialRef
 	targetCredentials       []map[string]any
 	nonTargetHashes         []string
 	defaultCredentialHashes []string
@@ -811,22 +813,26 @@ func (s *postgresAdminSessionStore) SaveDeletePlan(ctx context.Context, username
 		if item.Status != lifecycleItemCompleted {
 			pending++
 		}
+		snapshot, marshalErr := json.Marshal(lifecycleDeletionSnapshot{Item: item, Refs: item.deleteRefs, Targets: item.targetCredentials, NonTargetHashes: item.nonTargetHashes, DefaultHashes: item.defaultCredentialHashes})
+		if marshalErr != nil {
+			return marshalErr
+		}
 		nodeIDs, marshalErr := json.Marshal(item.NodeIDs)
 		if marshalErr != nil {
 			return marshalErr
 		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO mmwxc_user_lifecycle_items(operation_id,server_id,server_name,inbound_tag,protocol,action,status,remaining_users,last_error,last_checked_at,item_kind,package_id,package_name,node_ids,default_credentials,unknown_credentials,decision_note)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			INSERT INTO mmwxc_user_lifecycle_items(operation_id,server_id,server_name,inbound_tag,protocol,action,status,remaining_users,last_error,last_checked_at,item_kind,package_id,package_name,node_ids,default_credentials,unknown_credentials,decision_note,deletion_snapshot)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 			ON CONFLICT(operation_id,server_id,inbound_tag) DO UPDATE SET
 			server_name=EXCLUDED.server_name,protocol=EXCLUDED.protocol,action=EXCLUDED.action,status=EXCLUDED.status,
 			remaining_users=EXCLUDED.remaining_users,last_error=EXCLUDED.last_error,
 			last_checked_at=COALESCE(EXCLUDED.last_checked_at,mmwxc_user_lifecycle_items.last_checked_at),item_kind=EXCLUDED.item_kind,
 			package_id=EXCLUDED.package_id,package_name=EXCLUDED.package_name,node_ids=EXCLUDED.node_ids,
 			default_credentials=EXCLUDED.default_credentials,unknown_credentials=EXCLUDED.unknown_credentials,
-			decision_note=EXCLUDED.decision_note,updated_at=CURRENT_TIMESTAMP`,
+			decision_note=EXCLUDED.decision_note,deletion_snapshot=EXCLUDED.deletion_snapshot,updated_at=CURRENT_TIMESTAMP`,
 			operationID, item.ServerID, item.ServerName, item.InboundTag, item.Protocol, item.Action, item.Status, item.RemainingUsers, item.LastError, item.LastCheckedAt,
-			item.ItemKind, item.PackageID, item.PackageName, string(nodeIDs), item.DefaultCredentials, item.UnknownCredentials, item.DecisionNote)
+			item.ItemKind, item.PackageID, item.PackageName, string(nodeIDs), item.DefaultCredentials, item.UnknownCredentials, item.DecisionNote, string(snapshot))
 		if err != nil {
 			return err
 		}
@@ -926,6 +932,22 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 	if err != nil {
 		return nil, err
 	}
+	var previous []lifecyclePlanItem
+	if saved, ok := store.(interface {
+		LifecycleDeleteItems(context.Context, string) ([]lifecyclePlanItem, error)
+	}); ok {
+		previous, err = saved.LifecycleDeleteItems(ctx, username)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range previous {
+			refs = append(refs, item.deleteRefs...)
+			for _, credential := range item.targetCredentials {
+				raw, _ := json.Marshal(credential)
+				refs = append(refs, lifecycleCredentialRef{Username: username, ServerID: item.ServerID, ServerName: item.ServerName, InboundTag: item.InboundTag, Protocol: item.Protocol, CredentialRaw: string(raw), Source: "delete_snapshot"})
+			}
+		}
+	}
 	backups, err := store.LifecycleDisabledCredentials(ctx, username)
 	if err != nil {
 		return nil, err
@@ -981,7 +1003,9 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 			items = append(items, failedPlanItem(first, "核对创建时管理员 credential 失败"))
 			continue
 		}
-		items = append(items, analyzeLifecycleInbound(config, refs, businessRefs, defaultCredentials))
+		item := analyzeLifecycleInbound(config, refs, businessRefs, defaultCredentials)
+		item.deleteRefs = refs
+		items = append(items, item)
 	}
 	for _, pkg := range packages {
 		action, status := lifecycleActionDeletePackage, lifecycleItemPending
@@ -1001,7 +1025,7 @@ func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]
 }
 
 func failedPlanItem(ref lifecycleCredentialRef, message string) lifecyclePlanItem {
-	return lifecyclePlanItem{ItemKind: lifecycleItemKindInbound, ServerID: ref.ServerID, ServerName: ref.ServerName, InboundTag: ref.InboundTag, Protocol: ref.Protocol, Action: lifecycleActionConflict, Status: lifecycleItemFailed, LastError: message, DecisionNote: message}
+	return lifecyclePlanItem{deleteRefs: []lifecycleCredentialRef{ref}, ItemKind: lifecycleItemKindInbound, ServerID: ref.ServerID, ServerName: ref.ServerName, InboundTag: ref.InboundTag, Protocol: ref.Protocol, Action: lifecycleActionConflict, Status: lifecycleItemFailed, LastError: message, DecisionNote: message}
 }
 
 func analyzeLifecycleInbound(config map[string]any, refs, businessRefs []lifecycleCredentialRef, defaultCredentials []map[string]any) lifecyclePlanItem {
@@ -1327,10 +1351,26 @@ func (a *app) executeDeletePlan(ctx context.Context, token, username, operationI
 	store := a.adminStore.(lifecycleStore)
 	result := lifecycleDeleteResult{Username: username, OperationID: operationID, State: lifecycleStateDeleting, Items: items}
 	lastError := ""
+	sort.SliceStable(result.Items, func(i, j int) bool {
+		return result.Items[i].ItemKind != lifecycleItemKindPackage && result.Items[j].ItemKind == lifecycleItemKindPackage
+	})
 	for index := range result.Items {
 		item := &result.Items[index]
 		if item.Status == lifecycleItemCompleted {
 			continue
+		}
+		if item.ItemKind == lifecycleItemKindPackage {
+			blocked := false
+			for _, inbound := range result.Items {
+				if inbound.ItemKind != lifecycleItemKindPackage && inbound.Status != lifecycleItemCompleted {
+					blocked = true
+					break
+				}
+			}
+			if blocked {
+				item.LastError = "等待该用户节点清理完成，再处理套餐"
+				continue
+			}
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := a.executeLifecycleDeleteItem(attemptCtx, token, username, item)

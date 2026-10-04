@@ -399,6 +399,16 @@ func (a *app) userManagementHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "administrator access cannot be managed"})
 			return
 		}
+		states, err := lifecycle.LifecycleStates(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "读取用户删除状态失败"})
+			return
+		}
+		current := states[username]
+		if current.DesiredState == lifecycleStateDeleted || current.EffectiveState == lifecycleStateDeleting || current.EffectiveState == lifecycleStateDeletePartial {
+			writeJSON(w, http.StatusConflict, map[string]any{"success": false, "message": "用户正在删除或删除未完成，请先完成删除，不能更改访问状态"})
+			return
+		}
 		var request struct {
 			Enabled *bool `json:"enabled"`
 		}

@@ -15,12 +15,10 @@ import (
 // the audited implementation. They never use the public schema or production.
 func auditUserDeleteDB(t *testing.T, id string) *sql.DB {
 	t.Helper()
-	if os.Getenv("MMWXC_RUN_USER_AUDIT") != "1" {
-		t.Skip("audit: " + id)
-	}
+
 	dsn := os.Getenv("MMWXC_TEST_POSTGRES_DSN")
 	if dsn == "" {
-		t.Fatal("set MMWXC_TEST_POSTGRES_DSN to the disposable local harness")
+		t.Skip("MMWXC_TEST_POSTGRES_DSN is not configured")
 	}
 	parsed, err := url.Parse(dsn)
 	if err != nil || (parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "localhost") {
@@ -123,8 +121,8 @@ func TestAuditUAD02DeleteRetryRetainsFailedInboundAfterPackageCascade(t *testing
 		t.Fatal(err)
 	}
 	first := application.executeDeletePlan(ctx, "session", "alice", "audit-delete-retry", plan)
-	if first.UserDeleted || first.PendingCount != 1 {
-		t.Fatalf("expected a single failed remote item: %+v", first)
+	if first.UserDeleted || first.PendingCount != 2 {
+		t.Fatalf("expected failed inbound and waiting package: %+v", first)
 	}
 	var configs, assignments int
 	var packageID sql.NullInt64
@@ -137,6 +135,13 @@ func TestAuditUAD02DeleteRetryRetainsFailedInboundAfterPackageCascade(t *testing
 	if err := db.QueryRow(`SELECT package_id FROM users WHERE username='alice'`).Scan(&packageID); err != nil {
 		t.Fatal(err)
 	}
+	if configs != 1 || assignments != 1 || !packageID.Valid {
+		t.Fatalf("business relations removed before inbound: configs=%d assignments=%d package=%v", configs, assignments, packageID)
+	}
+	// Simulate another writer removing the binding; the persisted credential
+	// snapshot must still drive the retry after a process restart.
+	auditDeleteExec(t, db, `DELETE FROM packages WHERE id=1`)
+	application = &app{adminStore: &postgresAdminSessionStore{db: db}, officialInternalTarget: target}
 	plan, err = application.buildDeletionPlan(ctx, "session", "alice")
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +151,7 @@ func TestAuditUAD02DeleteRetryRetainsFailedInboundAfterPackageCascade(t *testing
 		t.Fatal(err)
 	}
 	second := application.executeDeletePlan(ctx, "session", "alice", "audit-delete-retry", plan)
-	if second.UserDeleted && findConfigInbound(fixture.configs[5], "assignment-inbound") != nil {
+	if !second.UserDeleted || findConfigInbound(fixture.configs[5], "assignment-inbound") != nil {
 		t.Fatal("UA-D02: retry deleted the user while its original working credential remains on the server")
 	}
 }
