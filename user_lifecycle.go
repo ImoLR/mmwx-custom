@@ -696,6 +696,10 @@ func lifecycleDefaultAdminCredentials(ctx context.Context, db lifecycleQueryer, 
 	}
 	inbound, source, err := lifecycleInboundCreationSnapshot(ctx, db, serverID, inboundTag)
 	if err != nil {
+		var sqlError interface{ SQLState() string }
+		if errors.As(err, &sqlError) && sqlError.SQLState() == "22P02" {
+			return current, nil
+		}
 		return nil, err
 	}
 	if inbound == nil || source != "master_write" {
@@ -715,42 +719,44 @@ func lifecycleDefaultAdminCredentials(ctx context.Context, db lifecycleQueryer, 
 
 func lifecycleInboundCreationSnapshot(ctx context.Context, db lifecycleQueryer, serverID int64, inboundTag string) (map[string]any, string, error) {
 	const batchSize = 128
-	var creation map[string]any
-	var source string
+	// Match strings.TrimSpace in findConfigInbound, including Unicode whitespace.
+	const tagWhitespace = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+	var creationID int64
+	var creationTime time.Time
+	found := false
 	var beforeTime time.Time
 	var beforeID int64
 	first := true
 	for {
-		query := `SELECT id,created_at,config_json::text,COALESCE(source,'') FROM server_xray_config_snapshots WHERE server_id=$1`
-		args := []any{serverID}
+		query := `SELECT id,created_at,config_json FROM server_xray_config_snapshots WHERE server_id=$1`
+		args := []any{serverID, inboundTag, tagWhitespace}
 		if !first {
-			query += ` AND (created_at,id)<($2,$3)`
+			query += ` AND (created_at,id)<($4,$5)`
 			args = append(args, beforeTime, beforeID)
 		}
 		query += ` ORDER BY created_at DESC,id DESC LIMIT 128`
+		query = `SELECT snapshot.id,snapshot.created_at,EXISTS(
+			SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(snapshot.config_json::jsonb->'inbounds')='array'
+				THEN snapshot.config_json::jsonb->'inbounds' ELSE '[]'::jsonb END) inbound
+			WHERE btrim(inbound->>'tag',$3::text)=$2
+		) FROM (` + query + `) snapshot ORDER BY snapshot.created_at DESC,snapshot.id DESC`
 		rows, err := db.QueryContext(ctx, query, args...)
 		if err != nil {
 			return nil, "", err
 		}
 		count, boundary := 0, false
 		for rows.Next() {
-			var raw, snapshotSource string
-			if err := rows.Scan(&beforeID, &beforeTime, &raw, &snapshotSource); err != nil {
+			var present bool
+			if err := rows.Scan(&beforeID, &beforeTime, &present); err != nil {
 				rows.Close()
 				return nil, "", err
 			}
 			count++
-			var config map[string]any
-			if json.Unmarshal([]byte(raw), &config) != nil {
-				rows.Close()
-				return nil, "", nil
-			}
-			inbound := findConfigInbound(config, inboundTag)
-			if inbound == nil {
+			if !present {
 				boundary = true
 				break
 			}
-			creation, source = inbound, snapshotSource
+			creationID, creationTime, found = beforeID, beforeTime, true
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -759,13 +765,25 @@ func lifecycleInboundCreationSnapshot(ctx context.Context, db lifecycleQueryer, 
 		if err := rows.Close(); err != nil {
 			return nil, "", err
 		}
-		// A missing tag ends the current incarnation. Keyset batches avoid loading
-		// the server's entire configuration history or skipping deletion gaps.
+		// A missing tag ends the current incarnation. Only metadata crosses these
+		// keyset batches; fetch the full creation configuration once below.
 		if boundary || count < batchSize {
-			return creation, source, nil
+			break
 		}
 		first = false
 	}
+	if !found {
+		return nil, "", nil
+	}
+	var raw, source string
+	if err := db.QueryRowContext(ctx, `SELECT config_json::text,COALESCE(source,'') FROM server_xray_config_snapshots WHERE server_id=$1 AND id=$2 AND created_at=$3`, serverID, creationID, creationTime).Scan(&raw, &source); err != nil {
+		return nil, "", err
+	}
+	var config map[string]any
+	if json.Unmarshal([]byte(raw), &config) != nil {
+		return nil, "", nil
+	}
+	return findConfigInbound(config, inboundTag), source, nil
 }
 
 func credentialMatchesAdmin(credential map[string]any, admins map[string]bool) bool {

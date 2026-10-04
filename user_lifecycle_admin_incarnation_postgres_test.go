@@ -41,6 +41,7 @@ func TestLifecycleDefaultAdminCredentialsCurrentIncarnationPostgres(t *testing.T
 		{"first current snapshot not master write", []historyEntry{master(oldAdmin), missing, {snapshot(newAdmin), "agent_sync"}, master(newAdmin)}, nil},
 		{"no fallback to later admin email", []historyEntry{master(oldAdmin), missing, master(other), master(newAdmin)}, nil},
 		{"exact tag gap", []historyEntry{master(oldAdmin), {`{"inbounds":[{"tag":"coowned-extra"}],"remark":"coowned"}`, "master_write"}, master(newAdmin)}, []map[string]any{newAdmin}},
+		{"tag whitespace matches inbound lookup", []historyEntry{{`{"inbounds":[{"tag":"\u00a0 coowned \u3000","protocol":"vless","settings":{"clients":[{"id":"old-admin","email":"admin__coowned"}]}}]}`, "master_write"}, master(newAdmin)}, []map[string]any{oldAdmin}},
 		{"latest snapshot has no tag", []historyEntry{master(oldAdmin), missing}, nil},
 		{"invalid snapshot refuses history", []historyEntry{master(oldAdmin), {`invalid json`, "master_write"}, master(newAdmin)}, nil},
 		{"creation beyond first batch", batched, []map[string]any{newAdmin}},
@@ -65,6 +66,14 @@ func TestLifecycleDefaultAdminCredentialsCurrentIncarnationPostgres(t *testing.T
 				item := analyzeLifecycleInbound(config, []lifecycleCredentialRef{lifecycleRef(5, "coowned", "vless", alice)}, nil, defaults)
 				if item.Action != lifecycleActionConflict || item.UnknownCredentials != 1 {
 					t.Fatalf("non-master creation trusted admin: %+v", item)
+				}
+			}
+			if test.name == "invalid snapshot refuses history" {
+				raw, _ := json.Marshal(newAdmin)
+				auditDeleteExec(t, db, `INSERT INTO user_inbound_configs VALUES('admin',5,'coowned','vless',$1)`, string(raw))
+				defaults, err = lifecycleDefaultAdminCredentials(context.Background(), db, 5, "coowned")
+				if err != nil || !reflect.DeepEqual(defaults, []map[string]any{newAdmin}) {
+					t.Fatalf("invalid history lost current admin binding: defaults=%+v err=%v", defaults, err)
 				}
 			}
 		})
