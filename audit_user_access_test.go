@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -309,6 +310,127 @@ func TestAuditUA_A05_SocksNoAuthCannotReportSuccessfulDisable(t *testing.T) {
 				t.Fatalf("UA-A05: anonymous SOCKS must be refused with a clear reason and no replacement: %+v", item)
 			}
 		})
+	}
+}
+
+func TestAccessAnonymousSocksEnableWithoutBackupNeedsNoRestore(t *testing.T) {
+	for _, auth := range []string{"noauth", "", "missing"} {
+		t.Run(auth, func(t *testing.T) {
+			settings := map[string]any{"auth": auth}
+			if auth == "missing" {
+				delete(settings, "auth")
+			}
+			inbound := map[string]any{"tag": "socks", "protocol": "socks", "settings": settings}
+			ref := lifecycleRef(5, "socks", "socks", map[string]any{"user": "alice", "pass": "synthetic-secret"})
+			item := analyzeAccessInbound("alice", true, lifecycleConfig(inbound), []lifecycleCredentialRef{ref}, nil)
+			if item.Status != lifecycleItemCompleted || item.DecisionNote != "匿名 SOCKS 端口无需恢复" || item.LastError != "" ||
+				item.replacementInbound != nil || len(item.accessCredentials) != 0 {
+				t.Fatalf("anonymous SOCKS without backups should need no restoration: %+v", item)
+			}
+		})
+	}
+}
+
+func TestAccessAnonymousSocksEnableRestoresLegacyBackup(t *testing.T) {
+	account := map[string]any{"user": "alice", "pass": "synthetic-secret"}
+	ref := lifecycleRef(5, "socks", "socks", account)
+	inbound := map[string]any{"tag": "socks", "protocol": "socks", "settings": map[string]any{"auth": "password", "accounts": []any{account}}}
+	disabled := analyzeAccessInbound("alice", false, lifecycleConfig(inbound), []lifecycleCredentialRef{ref}, nil)
+	if disabled.Status != lifecycleItemPending || len(disabled.accessCredentials) != 1 {
+		t.Fatalf("legacy backup setup failed: %+v", disabled)
+	}
+	for _, restored := range []bool{false, true} {
+		t.Run(fmt.Sprintf("already_restored_%v", restored), func(t *testing.T) {
+			current := cloneLifecycleMap(disabled.replacementInbound)
+			if restored {
+				current = cloneLifecycleMap(inbound)
+			}
+			current["settings"].(map[string]any)["auth"] = "noauth"
+			store := &lifecycleTestStore{refs: []lifecycleCredentialRef{ref}, backups: disabled.accessCredentials}
+			fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{5: lifecycleConfig(current)})
+			defer server.Close()
+			result := auditAccessRun(t, lifecycleTestApp(t, store, server), store, true)
+			if result.PendingCount != 0 || result.State != lifecycleStateEnabled || len(store.backups) != 0 {
+				t.Fatalf("legacy SOCKS backup was not restored and retired: %+v backups=%d", result, len(store.backups))
+			}
+			settings := findConfigInbound(fixture.configs[5], "socks")["settings"].(map[string]any)
+			if settings["auth"] != "noauth" || hashJSON(settings["accounts"]) != hashJSON([]any{account}) {
+				t.Fatal("legacy restoration did not preserve anonymous auth and restore the original account")
+			}
+			wantActions := 1
+			if restored {
+				wantActions = 0
+			}
+			if len(fixture.actions) != wantActions {
+				t.Fatalf("legacy restoration dispatched %d actions, want %d", len(fixture.actions), wantActions)
+			}
+		})
+	}
+}
+
+func TestAccessAnonymousSocksEnableAfterPartialDisablePostgres(t *testing.T) {
+	db := auditUserDeleteDB(t, "UA-A05-enable")
+	auditDeleteExec(t, db, `INSERT INTO users(username) VALUES('alice')`)
+	auditDeleteExec(t, db, `INSERT INTO remote_servers VALUES(5,'server-5')`)
+	account := map[string]any{"user": "alice", "pass": "synthetic-secret"}
+	credential := map[string]any{"email": "alice-in", "id": "11111111-1111-4111-8111-111111111111"}
+	for _, ref := range []lifecycleCredentialRef{lifecycleRef(5, "socks", "socks", account), lifecycleRef(5, "normal", "vless", credential)} {
+		auditDeleteExec(t, db, `INSERT INTO package_assignment_inbound_configs(username,server_id,inbound_tag,protocol,credential_json) VALUES('alice',$1,$2,$3,$4)`,
+			ref.ServerID, ref.InboundTag, ref.Protocol, ref.CredentialRaw)
+	}
+	socks := map[string]any{"tag": "socks", "protocol": "socks", "settings": map[string]any{"auth": "noauth"}}
+	fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{5: lifecycleConfig(socks, lifecycleInbound("normal", "vless", credential))})
+	defer server.Close()
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &postgresAdminSessionStore{db: db}
+	application := &app{adminStore: store, officialInternalTarget: target}
+	ctx := context.Background()
+	for _, enable := range []bool{false, true} {
+		operation := lifecycleOperationDisable
+		wantPending, wantBackups := 1, 1
+		wantState, wantSocksStatus := lifecycleStatePartiallyDisabled, lifecycleItemFailed
+		if enable {
+			operation = lifecycleOperationEnable
+			wantPending, wantBackups = 0, 0
+			wantState, wantSocksStatus = lifecycleStateEnabled, lifecycleItemCompleted
+		}
+		plan, err := application.buildAccessPlan(ctx, "session", "alice", enable)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveAccessPlan(ctx, "alice", operation, operation, plan); err != nil {
+			t.Fatal(err)
+		}
+		result := application.executeAccessPlan(ctx, "session", "alice", operation, operation, plan)
+		if result.PendingCount != wantPending || result.State != wantState || len(result.Items) != 2 {
+			t.Fatalf("access enable=%v: %+v", enable, result)
+		}
+		for _, item := range result.Items {
+			if item.InboundTag == "socks" && (item.Status != wantSocksStatus || (enable && item.DecisionNote != "匿名 SOCKS 端口无需恢复")) {
+				t.Fatalf("anonymous SOCKS enable=%v: %+v", enable, item)
+			}
+		}
+		backups, err := store.LifecycleDisabledCredentials(ctx, "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(backups) != wantBackups {
+			t.Fatalf("access enable=%v left %d backups, want %d", enable, len(backups), wantBackups)
+		}
+		states, err := store.LifecycleStates(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if states["alice"].EffectiveState != wantState || states["alice"].PendingCount != wantPending {
+			t.Fatalf("persisted access enable=%v: %+v", enable, states["alice"])
+		}
+	}
+	if len(fixture.actions) != 2 || hashJSON(findConfigInbound(fixture.configs[5], "socks")) != hashJSON(socks) ||
+		hashJSON(findConfigInbound(fixture.configs[5], "normal")) != hashJSON(lifecycleInbound("normal", "vless", credential)) {
+		t.Fatal("access cycle must restore the normal inbound and leave anonymous SOCKS unchanged")
 	}
 }
 

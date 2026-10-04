@@ -303,8 +303,14 @@ func analyzeAccessInbound(username string, enable bool, config map[string]any, r
 	item.Protocol = strings.ToLower(strings.TrimSpace(fmt.Sprint(inbound["protocol"])))
 	settings, _ := inbound["settings"].(map[string]any)
 	if item.Protocol == "socks" && strings.TrimSpace(fmt.Sprint(settings["auth"])) != "password" {
-		item.Status, item.LastError = lifecycleItemFailed, "匿名 SOCKS 端口无法单独禁用或启用用户"
-		return item
+		if !enable {
+			item.Status, item.LastError = lifecycleItemFailed, "匿名 SOCKS 端口无法单独禁用用户"
+			return item
+		}
+		if len(backups) == 0 {
+			item.Status, item.DecisionNote = lifecycleItemCompleted, "匿名 SOCKS 端口无需恢复"
+			return item
+		}
 	}
 	entries, key, err := accessInboundCredentialEntries(inbound)
 	if err != nil {
