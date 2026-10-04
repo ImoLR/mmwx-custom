@@ -113,7 +113,119 @@ if (process.argv.includes('--agent')) {
     await new Promise(resolve=>setTimeout(resolve,500));
     const calls = fs.readFileSync(callsPath,'utf8').slice(callsBefore).trim().split('\n').filter(Boolean).map(JSON.parse);
     record('package update credential push',{oldInboundPresent:readConfig().inbounds.some(i=>i.tag===ownTag),oldCredentialPresent:JSON.stringify(readConfig()).includes(ownCredential.id),calls});
+  } else if (process.argv.includes('--e2e')) {
+    const custom = async (username, action, json) => {
+      const response = await fetch(`http://127.0.0.1:22890/api/custom/users/${username}/${action}`, {
+        method:json === undefined ? 'GET' : 'POST',
+        headers:{'Content-Type':'application/json','MM-Authorization':login.token},
+        body:json === undefined ? undefined : JSON.stringify(json),
+      });
+      return {status:response.status,data:await response.json()};
+    };
+    const count = (table, predicate) => Number(sql(`SELECT count(*) FROM ${table} WHERE ${predicate}`));
+    const createUser = async username => assert.equal((await official.op('1e98343aac1ebc18',{username,password:'FixtureOnly#2026'})).status,200);
+    let sequence = 2000;
+    const credential = username => ({id:`00000000-0000-4000-8000-${String(++sequence).padStart(12,'0')}`,email:username});
+    const ref = (username, tag, secret) => sql(`INSERT INTO user_inbound_configs(username,server_id,inbound_tag,protocol,credential_json) VALUES(${q(username)},1,${q(tag)},'vless',${q(JSON.stringify(secret))})`);
+    const node = (username, tag, coadmin=false) => {
+      const secret = credential(username), port = 19000 + sequence;
+      const admin = coadmin ? credential('admin') : null;
+      const config = readConfig();
+      config.inbounds.push({tag,listen:'0.0.0.0',port,protocol:'vless',settings:{decryption:'none',clients:admin ? [secret,admin] : [secret]}});
+      writeConfig(config);
+      ref(username,tag,secret);
+      if (admin) sql(`INSERT INTO server_xray_config_snapshots(server_id,config_json,config_hash,source,status) VALUES(1,${q(JSON.stringify(config))},${q(`lifecycle-${tag}`)},'master_write','success')`);
+      return {id:addNode(tag,port,secret),tag,secret};
+    };
+    const maps = ['node_multipliers','node_name_overrides','node_speed_limits','node_device_limits','node_traffic_limits'];
+    const createPackage = async (username, name, nodes) => {
+      const body = {name,nodes:nodes.map(n=>n.id),cycle_days:30,traffic_limit_gb:10,node_name_override_enabled:true};
+      for (const key of maps) body[key] = Object.fromEntries(nodes.map(n=>[n.id,key === 'node_name_overrides' ? n.tag : key === 'node_multipliers' ? 0.5 : 1]));
+      const response = await official.op('9186047b1bf5ba88',body);
+      assert.equal(response.status,201);
+      sql(`UPDATE users SET package_id=${response.data.id},package_start_date='2026-10-04',package_end_date='2027-10-04' WHERE username=${q(username)}`);
+      sql(`INSERT INTO user_package_assignments(username,package_id,package_start_date,package_end_date,status,is_primary,legacy_source,short_code) VALUES(${q(username)},${response.data.id},'2026-10-04','2027-10-04','active',1,1,${q(`lf${response.data.id}`)})`);
+      sql(`INSERT INTO mmwxc_package_traffic_groups(package_id,name,limit_bytes,node_ids) VALUES(${response.data.id},'lifecycle group',1073741824,${q(JSON.stringify(nodes.map(n=>n.id)))})`);
+      return response.data.id;
+    };
+    const deleteUser = async (username, label) => {
+      const preview = await custom(username,'deletion-preview');
+      record(`${label} preview`,preview);
+      assert.equal(preview.status,200);
+      const response = await custom(username,'delete',{});
+      record(`${label} delete`,response);
+      assert.equal(response.status,200);
+      assert.equal(response.data.result?.user_deleted,true);
+      assert.equal(response.data.result?.pending_count,0);
+      assert.equal(count('users',`username=${q(username)}`),0);
+      return preview;
+    };
+    const gone = nodes => {
+      for (const n of nodes) {
+        assert.equal(count('nodes',`id=${n.id}`),0);
+        assert.equal(readConfig().inbounds.some(i=>i.tag===n.tag),false);
+        assert.equal(JSON.stringify(readConfig()).includes(n.secret.id),false);
+      }
+    };
+    const retained = node => {
+      assert.equal(count('nodes',`id=${node.id}`),1);
+      assert.ok(readConfig().inbounds.find(i=>i.tag===node.tag)?.settings.clients.some(c=>c.id===node.secret.id));
+    };
+    const pruned = (id, deleted, retainedNodes) => {
+      const pkg = JSON.parse(sql(`SELECT row_to_json(p) FROM packages p WHERE id=${id}`));
+      assert.deepEqual(JSON.parse(pkg.nodes),retainedNodes.map(n=>n.id));
+      for (const key of maps) {
+        const values = typeof pkg[key] === 'string' ? JSON.parse(pkg[key]) : pkg[key];
+        for (const n of deleted) assert.equal(Object.hasOwn(values ?? {},n.id),false,`${key} retains ${n.id}`);
+        for (const n of retainedNodes) assert.equal(Object.hasOwn(values ?? {},n.id),true,`${key} lost ${n.id}`);
+      }
+      const groups = JSON.parse(sql(`SELECT COALESCE(json_agg(node_ids),'[]') FROM mmwxc_package_traffic_groups WHERE package_id=${id}`));
+      for (const members of groups) for (const n of deleted) assert.equal(members.includes(n.id),false);
+      assert.ok(groups.some(members=>retainedNodes.every(n=>members.includes(n.id))));
+      return {packageID:id,nodes:JSON.parse(pkg.nodes),groups};
+    };
+    writeConfig({inbounds:[],outbounds:[{protocol:'freedom',tag:'direct'}]});
+
+    await createUser('lf-own');
+    const own = node('lf-own','lf-own-a'), coowned = node('lf-own','lf-own-admin',true);
+    const ownPackage = await createPackage('lf-own','lifecycle own and admin',[own,coowned]);
+    await deleteUser('lf-own','only own and admin co-owned');
+    gone([own,coowned]);
+    assert.equal(count('packages',`id=${ownPackage}`),0);
+    record('only own and admin co-owned PASS',{packageGone:true,nodesGone:true});
+
+    await createUser('lf-mixed'); await createUser('lf-mixed-other');
+    const mixedOwn = node('lf-mixed','lf-mixed-a'), mixedOther = node('lf-mixed-other','lf-mixed-b');
+    const mixedPackage = await createPackage('lf-mixed','lifecycle mixed package',[mixedOwn,mixedOther]);
+    await deleteUser('lf-mixed','own plus another business user');
+    gone([mixedOwn]); retained(mixedOther);
+    assert.equal(count('users',"username='lf-mixed-other'"),1);
+    record('own plus another business user PASS',pruned(mixedPackage,[mixedOwn],[mixedOther]));
+
+    await createUser('lf-owner'); await createUser('lf-consumer');
+    const owned = node('lf-owner','lf-reference-own'), otherNode = node('lf-consumer','lf-reference-other');
+    const ownerPackage = await createPackage('lf-owner','lifecycle owner package',[owned]);
+    const consumerPackage = await createPackage('lf-consumer','lifecycle consumer package',[owned,otherNode]);
+    await deleteUser('lf-owner','another package references deleted node');
+    gone([owned]); retained(otherNode);
+    assert.equal(count('packages',`id=${ownerPackage}`),0);
+    assert.equal(count('users',"username='lf-consumer'"),1);
+    record('another package references deleted node PASS',pruned(consumerPackage,[owned],[otherNode]));
+
+    await createUser('lf-shared-a'); await createUser('lf-shared-b');
+    const shared = node('lf-shared-a','lf-shared');
+    ref('lf-shared-b',shared.tag,shared.secret);
+    const before = JSON.stringify(readConfig());
+    const disabled = await custom('lf-shared-a','access',{enabled:false});
+    record('shared credential disable',disabled);
+    assert.equal(disabled.status,200);
+    assert.ok(disabled.data.result?.pending_count>0);
+    assert.ok(disabled.data.result?.items.some(i=>i.last_error && /共享|其他用户|其它用户/.test(i.last_error)));
+    assert.equal(JSON.stringify(readConfig()),before);
+    retained(shared);
+    assert.equal(count('users',"username='lf-shared-b'"),1);
+    record('shared credential disable PASS',{refused:true,otherCredentialUnchanged:true});
   } else {
-    throw new Error('Use --probe or --agent; end-to-end mode is added with the product fixes');
+    throw new Error('Use --probe, --e2e or --agent');
   }
 }

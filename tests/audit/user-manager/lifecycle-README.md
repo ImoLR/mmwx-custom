@@ -36,7 +36,21 @@ Custom `127.0.0.1:22890` 和 `mmwx-test-pg`；不会连接生产。
    node REST 删除、package REST PUT 与页面 op 的对照。重新运行应先恢复 dump，
    避免 fixture 用户、凭据与节点交叉引用污染结果。
 
-5. 收尾先停 Custom、fake Agent 和官方，再恢复 public：
+5. 在干净 dump 恢复后启动本分支已构建的 Custom（所有监听仅 loopback，数据库
+   `127.0.0.1:55432/mmwx`，官方 target 为 `http://127.0.0.1:22889`），执行：
+
+   ```bash
+   AUDIT_OFFICIAL_LOCAL=1 NODE_OPTIONS=--max-old-space-size=768 \
+     node tests/audit/user-manager/verify-lifecycle.mjs --e2e
+   ```
+
+   `e2e-results.json` 保存预览与实际结果。四项断言：仅本人加管理员共同凭据的节点
+   随用户/套餐删除；混有另一业务用户节点的套餐保留；其它用户套餐引用的本人节点
+   从列表、5 种节点覆写和 Custom 流量组成员中移除；共享认证的禁用被拒绝且配置不变。
+   Fixture 通过官方创建用户/套餐，并 SQL seed admin-owned 节点、凭据、active assignment、
+   snapshot 和 Custom 流量组；实际被测的生命周期动作全部调用 Custom API。
+
+6. 收尾先停 Custom、fake Agent 和官方，再恢复 public：
 
    ```bash
    docker stop mmwx-test-official
