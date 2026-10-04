@@ -80,3 +80,28 @@ test("audit UA-D06 saving an existing permanent package must not invent an expir
   assert.ok(saved, "save must call the package API");
   assert.ok(!saved.expire_date, `permanent assignment received finite expiry ${saved.expire_date}`);
 });
+
+test("audit UA-D07 package counts and filters include additional assignments", {
+  skip: enabled ? false : "audit: UA-D07",
+}, () => {
+  const require = createRequire(new URL("../../frontend/package.json", import.meta.url));
+  const ts = require("typescript");
+  const source = readFileSync(new URL("../../frontend/src/user-manager.tsx", import.meta.url), "utf8");
+  const file = ts.createSourceFile("user-manager.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const page = file.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === "UserManagementPage");
+  const declarations = page.body.statements.filter((node: any) => ts.isVariableStatement(node))
+    .flatMap((node: any) => node.declarationList.declarations);
+  const users = [{ username: "alice", role: "user", package_id: 1, assignment_package_ids: [1, 2] }];
+  const packages = [{ id: 1, name: "primary" }, { id: 2, name: "additional" }];
+  const compute = (name: string) => {
+    const declaration = declarations.find((node: any) => node.name.text === name);
+    const callback = declaration.initializer.arguments[0];
+    const compiled = ts.transpileModule(`const compute = ${callback.getText(file)};`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2020 },
+    }).outputText;
+    return new Function("users", "packages", "query", "packageFilter", `${compiled}\nreturn compute();`)(users, packages, "", "2");
+  };
+  assert.deepEqual({ count: compute("counts").get("2"), visible: compute("visible").map((user: { username: string }) => user.username) }, {
+    count: 1, visible: ["alice"],
+  }, "additional package must count and display its assigned user");
+});
