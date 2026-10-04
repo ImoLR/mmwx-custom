@@ -121,3 +121,53 @@ func TestAccessEnableWithoutBackupDoesNotRequireRuntimeCredential(t *testing.T) 
 		t.Fatalf("never-swapped credential needs no runtime restoration: %+v", item)
 	}
 }
+
+func TestAccessSharedCredentialDoesNotDisableOfficialAccount(t *testing.T) {
+	for _, supported := range []bool{false, true} {
+		t.Run(fmt.Sprint(supported), func(t *testing.T) {
+			db := auditUserDeleteDB(t, "official-shared-conflict")
+			auditDeleteExec(t, db, `CREATE TABLE server_xray_config_snapshots(id bigint,server_id bigint,config_json text,status text,created_at timestamp)`)
+			auditDeleteExec(t, db, `ALTER TABLE remote_servers ADD COLUMN xray_mode text DEFAULT 'external'`)
+			auditDeleteExec(t, db, `INSERT INTO remote_servers VALUES(1,'shared','external')`)
+			auditDeleteExec(t, db, `INSERT INTO users(username,is_active) VALUES('alice',1),('bob',1)`)
+			credential := map[string]any{"email": "shared__node", "id": "11111111-1111-4111-8111-111111111111"}
+			raw, _ := json.Marshal(credential)
+			auditDeleteExec(t, db, `INSERT INTO package_assignment_inbound_configs(username,server_id,inbound_tag,protocol,credential_json) VALUES('alice',1,'shared','vless',$1),('bob',1,'shared','vless',$1)`, string(raw))
+			config := lifecycleConfig(lifecycleInbound("shared", "vless", credential))
+			raw, _ = json.Marshal(config)
+			auditDeleteExec(t, db, `INSERT INTO server_xray_config_snapshots VALUES(1,1,$1,'current',CURRENT_TIMESTAMP)`, string(raw))
+			fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{1: config})
+			defer server.Close()
+			calls := lifecycleStatusFixture(t, fixture, db, func(_ string, active bool) {
+				if !active {
+					fixture.configs[1] = lifecycleConfig(lifecycleInbound("shared", "vless"))
+				}
+			})
+			store := &postgresAdminSessionStore{db: db}
+			application := lifecycleTestApp(t, &lifecycleTestStore{}, server)
+			application.adminStore, application.trafficGroupsReady = store, true
+			if supported {
+				application.detailedConnections = map[string]serverDetailedConnectionRecord{"1": persistentTestRecord()}
+			}
+			ctx := context.Background()
+			plan, err := application.buildAccessPlan(ctx, "session", "alice", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SaveAccessPlan(ctx, "alice", lifecycleOperationDisable, "shared-disable", plan); err != nil {
+				t.Fatal(err)
+			}
+			result := application.executeAccessPlan(ctx, "session", "alice", "shared-disable", lifecycleOperationDisable, plan)
+			if result.PendingCount == 0 || result.State != lifecycleStatePartiallyDisabled || !strings.Contains(result.LastError, "未停用官方账户") {
+				t.Fatalf("shared credential should preserve official activation with a conflict: %+v", result)
+			}
+			current, err := store.ManagedUserState(ctx, "alice")
+			if err != nil || !current.IsActive || len(*calls) != 0 || len(fixture.actions) != 0 || hashJSON(fixture.configs[1]) != hashJSON(config) {
+				t.Fatalf("shared client was changed through official disable: current=%+v calls=%v actions=%d err=%v", current, *calls, len(fixture.actions), err)
+			}
+			if len(application.disabledUserBlocks["alice"]["1"]) != 0 {
+				t.Fatal("shared client was blocked")
+			}
+		})
+	}
+}

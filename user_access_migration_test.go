@@ -126,3 +126,52 @@ func TestPersistentDisableMigrationMissingClientRequiresExactOriginal(t *testing
 		})
 	}
 }
+
+func TestPersistentDisableMigrationMixedInboundRestoresOnlyBlockableCredential(t *testing.T) {
+	db := auditUserDeleteDB(t, "disable-migration-mixed")
+	auditDeleteExec(t, db, `ALTER TABLE remote_servers ADD COLUMN xray_mode text DEFAULT 'external'`)
+	auditDeleteExec(t, db, `CREATE TABLE server_xray_config_snapshots(id bigint,server_id bigint,config_json text,status text,created_at timestamptz DEFAULT CURRENT_TIMESTAMP)`)
+	auditDeleteExec(t, db, `INSERT INTO users(username,is_active) VALUES('alice',0)`)
+	auditDeleteExec(t, db, `INSERT INTO remote_servers VALUES(1,'supported','external')`)
+	labeled := map[string]any{"email": "alice__old", "id": "11111111-1111-4111-8111-111111111111"}
+	unlabeled := map[string]any{"id": "22222222-2222-4222-8222-222222222222"}
+	refs := []lifecycleCredentialRef{lifecycleRef(1, "old", "vless", labeled), lifecycleRef(1, "old", "vless", unlabeled)}
+	for _, ref := range refs {
+		auditDeleteExec(t, db, `INSERT INTO package_assignment_inbound_configs(username,server_id,inbound_tag,protocol,credential_json) VALUES('alice',1,'old','vless',$1)`, ref.CredentialRaw)
+	}
+	item := analyzeAccessInbound("alice", false, lifecycleConfig(lifecycleInbound("old", "vless", labeled, unlabeled)), refs, nil)
+	store := &postgresAdminSessionStore{db: db}
+	ctx := context.Background()
+	if err := store.SaveAccessPlan(ctx, "alice", lifecycleOperationDisable, "old-disable", []lifecyclePlanItem{item}); err != nil {
+		t.Fatal(err)
+	}
+	config := lifecycleConfig(item.replacementInbound)
+	noEmailDisabledHash := hashJSON(findCredential(t, config, "old", 1))
+	raw, _ := json.Marshal(config)
+	auditDeleteExec(t, db, `INSERT INTO server_xray_config_snapshots(id,server_id,config_json,status) VALUES(1,1,$1,'current')`, string(raw))
+	fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{1: config})
+	defer server.Close()
+	application := lifecycleTestApp(t, &lifecycleTestStore{}, server)
+	application.adminStore, application.trafficGroupsReady = store, true
+	record := persistentTestRecord()
+	record.Snapshot.ProxyUsers = []serverProxyUserConnections{{Identity: serverConnectionIdentity{InboundTag: "old", User: "alice__old"}, Blocked: true}}
+	application.detailedConnections = map[string]serverDetailedConnectionRecord{"1": record}
+	if err := application.refreshDisabledUsers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := application.migratePersistentDisabledUser(ctx, store, "session", "alice"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backups, err := store.LifecycleDisabledCredentials(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 || nonEmptyCredentialValue(backups[0].OriginalCredential, "email") || len(fixture.actions) != 1 {
+		t.Fatalf("mixed migration backups=%+v actions=%d", backups, len(fixture.actions))
+	}
+	if !credentialsMatch(findCredential(t, fixture.configs[1], "old", 0), labeled, "vless") || hashJSON(findCredential(t, fixture.configs[1], "old", 1)) != noEmailDisabledHash {
+		t.Fatal("migration did not restore just the blocked identity while retaining the unsupported credential swap")
+	}
+}

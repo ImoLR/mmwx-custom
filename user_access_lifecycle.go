@@ -675,7 +675,20 @@ func (a *app) executeAccessPlan(ctx context.Context, token, username, operationI
 			lastError = item.LastError
 		}
 	}
-	if err := a.applyAccessOfficialState(ctx, token, username, operation == lifecycleOperationEnable); err != nil {
+	officialChangeSafe := true
+	if operation == lifecycleOperationDisable {
+		for _, item := range result.Items {
+			if item.Status != lifecycleItemCompleted {
+				officialChangeSafe = false
+			}
+		}
+	}
+	if !officialChangeSafe {
+		if lastError != "" {
+			lastError += "；"
+		}
+		lastError += "存在冲突或未核实节点，未停用官方账户以免影响其他用户"
+	} else if err := a.applyAccessOfficialState(ctx, token, username, operation == lifecycleOperationEnable); err != nil {
 		result.PendingCount++
 		lastError = lifecycleSafeError(err)
 	}
