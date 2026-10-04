@@ -101,6 +101,10 @@ func TestAuditUAD02DeleteRetryRetainsFailedInboundAfterPackageCascade(t *testing
 	if first.UserDeleted || first.PendingCount != 2 {
 		t.Fatalf("expected failed inbound and waiting package: %+v", first)
 	}
+	var snapshots int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM mmwxc_user_lifecycle_items WHERE operation_id='audit-delete-retry' AND deletion_snapshot<>'{}'::jsonb`).Scan(&snapshots); err != nil || snapshots != len(plan) {
+		t.Fatalf("partial delete lost snapshots: count=%d err=%v", snapshots, err)
+	}
 	var configs, assignments int
 	var packageID sql.NullInt64
 	if err := db.QueryRow(`SELECT COUNT(*) FROM package_assignment_inbound_configs`).Scan(&configs); err != nil {
@@ -130,6 +134,13 @@ func TestAuditUAD02DeleteRetryRetainsFailedInboundAfterPackageCascade(t *testing
 	second := application.executeDeletePlan(ctx, "session", "alice", "audit-delete-retry", plan)
 	if !second.UserDeleted || findConfigInbound(fixture.configs[5], "assignment-inbound") != nil {
 		t.Fatal("UA-D02: retry deleted the user while its original working credential remains on the server")
+	}
+	var state string
+	if err := db.QueryRow(`SELECT state FROM mmwxc_user_lifecycle_operations WHERE operation_id='audit-delete-retry'`).Scan(&state); err != nil || state != lifecycleStateDeleted {
+		t.Fatalf("delete operation state=%q err=%v", state, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM mmwxc_user_lifecycle_items WHERE operation_id='audit-delete-retry' AND deletion_snapshot<>'{}'::jsonb`).Scan(&snapshots); err != nil || snapshots != 0 {
+		t.Fatalf("successful delete retained snapshots: count=%d err=%v", snapshots, err)
 	}
 }
 

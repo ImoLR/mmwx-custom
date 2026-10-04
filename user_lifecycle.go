@@ -879,6 +879,9 @@ func (s *postgresAdminSessionStore) FinalizeManagementUserDeletion(ctx context.C
 	if _, err := tx.ExecContext(ctx, `UPDATE mmwxc_user_lifecycle_operations SET state='deleted',pending_count=0,last_error='',updated_at=CURRENT_TIMESTAMP WHERE operation_id=$1 AND username=$2`, operationID, username); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE mmwxc_user_lifecycle_items SET deletion_snapshot='{}'::jsonb WHERE operation_id=$1`, operationID); err != nil {
+		return err
+	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE username=$1`, username)
 	if err != nil {
 		return err
