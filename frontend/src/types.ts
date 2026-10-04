@@ -1148,6 +1148,21 @@ export type ManagedUserLifecycleItem = {
   last_checked_at?: string;
 };
 
+export type UserAccessNodeStatus = {
+  server_id: number;
+  server_name: string;
+  inbound_tag: string;
+  node_id?: number;
+  node_name?: string;
+  status: "blocked" | "best_effort" | "conflict" | "pending";
+  reason?: string;
+};
+
+export type ManagedUserAccessPreviewResponse = {
+  success: boolean;
+  access: UserAccessNodeStatus[];
+};
+
 export type ManagedUserLifecycle = {
   username: string;
   desired_state: string;
@@ -1156,6 +1171,7 @@ export type ManagedUserLifecycle = {
   pending_count: number;
   last_error?: string;
   updated_at: string;
+  access?: UserAccessNodeStatus[];
 };
 
 export type ManagedUserLifecycleResponse = {

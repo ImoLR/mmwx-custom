@@ -41,6 +41,7 @@ import {
   fetchManagedUserNodes,
   fetchManagedUsers,
   fetchManagedUserDeletionPreview,
+  fetchManagedUserAccessPreview,
   fetchManagedUserLifecycles,
   fetchManagedUserPackageAssignments,
   fetchManagedUserSubaccounts,
@@ -59,7 +60,7 @@ import {
   updateManagedUserRemark,
   updateManagedUserShortCode,
 } from "./api";
-import type { HelperUserConnectionsResponse, UserConnectionsResponse, NodeURIItem, ManagedPackage, ManagedUser, ManagedUserImportedNode, ManagedUserDeleteResult, ManagedUserDeletionPreview, ManagedUserLifecycle, ManagedUserLifecycleItem, ManagedUserPackageAssignment, UserSubaccount, XrayNode } from "./types";
+import type { HelperUserConnectionsResponse, UserConnectionsResponse, NodeURIItem, ManagedPackage, ManagedUser, ManagedUserImportedNode, ManagedUserDeleteResult, ManagedUserDeletionPreview, ManagedUserLifecycle, ManagedUserLifecycleItem, ManagedUserPackageAssignment, UserAccessNodeStatus, UserSubaccount, XrayNode } from "./types";
 import { fetchUserManagementData } from "./user-management-state";
 import { credentialWriteState, eligiblePackages, matchesExpiry, parseRenewDays, parseTrafficOverride, remainingDays, renewedDate, searchUserURIs, trafficOverrideGB, validUsername } from "./user-manager-logic";
 import type { ExpiryFilter } from "./user-manager-logic";
@@ -75,6 +76,7 @@ type Dialog =
   | { kind: "subscription"; user: ManagedUser }
   | { kind: "telegram"; user: ManagedUser }
   | { kind: "delete"; user: ManagedUser }
+  | { kind: "disable"; user: ManagedUser }
   | { kind: "renew" | "uris" | "imports" | "replace-admin" | "repair-admin"; user: ManagedUser }
   | null;
 
@@ -158,11 +160,12 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
     async function refresh() {
       if (stopped || inFlight || document.visibilityState === "hidden") return;
       inFlight = true;
-      const [formal, helper] = await Promise.allSettled([fetchUserConnections(token), fetchHelperUserConnections(token)]);
+      const [formal, helper, lifecycle] = await Promise.allSettled([fetchUserConnections(token), fetchHelperUserConnections(token), fetchManagedUserLifecycles(token)]);
       if (!stopped) {
         setConnections(formal.status === "fulfilled" ? formal.value : null);
         setHelperConnections(helper.status === "fulfilled" ? helper.value : null);
-        setRealtimeError(formal.status === "rejected" || helper.status === "rejected" ? "统计不完整：部分实时数据读取失败" : "");
+        if (lifecycle.status === "fulfilled") setLifecycles(lifecycle.value.users);
+        setRealtimeError(lifecycle.status === "rejected" ? "禁用状态刷新失败，请刷新后核对" : formal.status === "rejected" || helper.status === "rejected" ? "统计不完整：部分实时数据读取失败" : "");
       }
       inFlight = false;
       if (!stopped && isVisible()) timer = window.setTimeout(() => void refresh(), 5000);
@@ -272,8 +275,9 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
               realtime={<UserRealtime user={user} connections={connections} helper={helperConnections} />}
               onDialog={setDialog}
               onStatus={(enable) => {
-                if (!window.confirm(`确认${enable ? "启用" : "禁用"}用户 ${user.username}？`)) return;
-                void changeAccess(user, enable);
+                if (!enable) { setDialog({ kind: "disable", user }); return; }
+                if (!window.confirm(`确认启用用户 ${user.username}？将解除该用户的禁用，并恢复禁用前的官方账号状态；流量超限造成的封禁会保留。`)) return;
+                void changeAccess(user, true);
               }}
               onExtend={(days) => {
                 const confirmed = confirmCredentialWrite(lifecycles[user.username]);
@@ -292,6 +296,7 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
       )}
 
       {dialog?.kind === "create" && <CreateUserDialog token={token} onClose={() => setDialog(null)} onCreated={async (password) => { setDialog(null); setNotice({ tone: "success", text: `用户已创建，初始密码 ${password} 已复制` }); await load(); }} />}
+      {dialog?.kind === "disable" && <DisableUserDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onConfirm={() => { setDialog(null); void changeAccess(dialog.user, false); }} />}
       {dialog?.kind === "password" && <PasswordDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onSaved={(password) => { setDialog(null); setNotice({ tone: "success", text: `新密码 ${password} 已复制` }); }} />}
       {dialog?.kind === "profile" && <ProfileDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onSaved={async () => { setDialog(null); setNotice({ tone: "success", text: "用户资料已更新" }); await load(); }} />}
       {dialog?.kind === "package" && <PackageDialog token={token} user={dialog.user} packages={packages} lifecycle={lifecycles[dialog.user.username]} onClose={() => setDialog(null)} onSaved={async (text) => { setDialog(null); setNotice({ tone: "success", text }); await load(); }} />}
@@ -334,7 +339,7 @@ function UserCard({ user, lifecycle, pkg, busy, view, currentUsername, realtime,
   const accessState = lifecycle?.effective_state ?? "enabled";
   const accessDisabled = accessState === "disabled" || accessState === "partially_disabled" || accessState === "partially_enabled" || accessState === "enabling";
   const accessPending = !deleting && (lifecycle?.pending_count ?? 0) > 0;
-  const enableAction = accessState === "disabled" || accessState === "partially_enabled" || accessState === "enabling";
+  const enableAction = lifecycle?.desired_state === "disabled" || accessState === "disabled" || accessState === "partially_enabled" || accessState === "enabling";
   const accessOperationLabel = lifecycle?.operation === "enable" ? "启用" : "禁用";
   const statusLabel = deleting ? pending > 0 ? "删除未完成" : "正在删除"
     : accessPending ? `${accessOperationLabel}未完成`
@@ -357,6 +362,7 @@ function UserCard({ user, lifecycle, pkg, busy, view, currentUsername, realtime,
         <div><strong>{user.package_name || (hasPackage ? `已绑定 ${user.assignment_package_ids?.length || 1} 个套餐` : "未绑定套餐")}</strong><span>{user.package_end_date ? `到期 ${user.package_end_date}${days === null ? "" : days <= 0 ? " · 已过期" : ` · 剩余 ${days} 天`}` : admin ? "系统管理员" : hasPackage ? "长期有效" : "可绑定套餐后生成订阅"}</span></div>
         {limit > 0 ? <div className="user-traffic"><span><b>{formatBytes(used)}</b> / {formatBytes(limit)} · {percent.toFixed(percent < 10 ? 1 : 0)}%</span><i><em style={{ width: `${percent}%` }} /></i></div> : <span className="user-unlimited">{pkg ? "流量不限" : "—"}</span>}
       </div>
+      {!deleting && (lifecycle?.desired_state === "disabled" || accessDisabled || accessState === "disabling") && <UserAccessStatus items={lifecycle?.access} />}
       {view === "renewal" && !admin && <div className="user-renew-actions">{[30, 90, 365].map((days) => <button key={days} type="button" disabled={!hasPackage || deleting || Boolean(busy)} onClick={() => onExtend(days)}>+{days} 天</button>)}<button type="button" disabled={!hasPackage || deleting || Boolean(busy)} onClick={() => onDialog({ kind: "renew", user })}>自定义续期</button></div>}
       <footer>
         <button type="button" onClick={() => onDialog({ kind: "subscription", user })} disabled={!hasPackage}><Link2 />订阅</button>
@@ -371,6 +377,7 @@ function UserCard({ user, lifecycle, pkg, busy, view, currentUsername, realtime,
         {!admin && <button type="button" onClick={() => onDialog({ kind: "password", user })}><KeyRound />重置密码</button>}
         {!admin && <button type="button" onClick={onResetTraffic} disabled={Boolean(busy)}><RotateCcw />重置流量</button>}
         {!admin && !deleting && <button type="button" onClick={() => onStatus(enableAction)} disabled={Boolean(busy)}>{enableAction ? <Power /> : <PowerOff />}{enableAction ? "启用" : "禁用"}{accessPending ? ` (${lifecycle?.pending_count ?? 0})` : ""}</button>}
+        {!admin && !deleting && enableAction && lifecycle?.desired_state === "disabled" && accessPending && <button type="button" onClick={() => onStatus(false)} disabled={Boolean(busy)}><RefreshCw />重试禁用</button>}
         {!admin && <button className={`danger user-delete-button${pending > 0 ? " pending" : ""}`} type="button" onClick={onDelete} disabled={Boolean(busy)}>{pending > 0 && <span aria-hidden="true">{pending}</span>}<Trash2 /><b>删除</b></button>}
       </footer>
       {pending > 0 && <p className="user-delete-pending">删除未完成，还有 {pending} 个项目待清理，可再次点击删除重试。</p>}
@@ -399,8 +406,49 @@ function UserRealtime({ user, connections, helper }: { user: ManagedUser; connec
 function confirmCredentialWrite(lifecycle?: ManagedUserLifecycle) {
   const state = credentialWriteState(lifecycle?.effective_state);
   if (state === "refuse") { window.alert("该用户正在删除或删除未完成，不能执行凭据写入操作"); return null; }
-  if (state === "confirm") return window.confirm("该用户处于禁用状态，此操作可能使其节点凭据重新可用") ? true : null;
+  if (state === "confirm") {
+    const access = lifecycle?.access;
+    const uncertain = !access || access.some((item) => item.status !== "blocked");
+    const affected = access?.filter((item) => item.status !== "blocked").map((item) => `${item.server_name || `服务器 ${item.server_id}`} / ${item.node_name || (item.node_id ? `节点 ${item.node_id}` : item.inbound_tag)}`).join("、");
+    return window.confirm(`该用户处于禁用状态。已封禁节点保持禁用，新增节点将在下一次检查时封禁。${uncertain ? `尽力禁用或尚未确认的节点可能恢复连接，请核对${affected ? `：${affected}` : "禁用清单"}。` : ""}确认继续？`) ? true : null;
+  }
   return false;
+}
+
+function UserAccessStatus({ items, preview = false }: { items?: UserAccessNodeStatus[]; preview?: boolean }) {
+  if (!items) return <p className="user-delete-pending">禁用清单尚未确认，请刷新后核对。</p>;
+  if (!items.length) return <p className="user-delete-pending">当前没有可处理的节点；禁用期间新增节点会定期检查，不支持封禁的节点仍可能连接。</p>;
+  return <div className="user-delete-plan" aria-label={preview ? "禁用范围" : "禁用状态"}>{items.map((item, index) => {
+    const label = item.status === "blocked" ? preview ? "将封禁" : "已封禁" : item.status === "best_effort" ? "尽力禁用" : item.status === "conflict" ? "冲突" : "待处理";
+    const warning = "此服务器不支持封禁，只能尽力禁用：官方续期/改套餐/加节点后该用户可能恢复连接";
+    return <article key={`${item.server_id}-${item.inbound_tag}-${item.node_id ?? index}`} className={item.status === "blocked" ? "completed" : "failed"}>
+      <div><strong>{item.server_name || `服务器 ${item.server_id}`}</strong><span>{item.node_name || (item.node_id ? `节点 ${item.node_id}` : item.inbound_tag || "待确认节点")}</span></div>
+      <b>{label}</b>
+      {item.status === "best_effort" && <p>{warning}</p>}
+      {item.reason && item.reason !== warning && <p>{item.reason}</p>}
+    </article>;
+  })}</div>;
+}
+
+function DisableUserDialog({ token, user, onClose, onConfirm }: { token: string; user: ManagedUser; onClose: () => void; onConfirm: () => void }) {
+  const [access, setAccess] = useState<UserAccessNodeStatus[] | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    setAccess(null);
+    setError("");
+    fetchManagedUserAccessPreview(token, user.username)
+      .then((response) => { if (active) setAccess(response.access); })
+      .catch((err) => { if (active) setError(messageOf(err, "读取禁用范围失败")); });
+    return () => { active = false; };
+  }, [token, user.username]);
+  return <DialogShell title={`禁用用户 ${user.username}？`} subtitle="同时停用官方账号；启用时恢复其原有状态。" onClose={onClose} footer={<><button type="button" onClick={onClose}>取消</button><button className="danger" type="button" disabled={access === null} onClick={() => { if (access !== null) onConfirm(); }}>确认禁用</button></>}>
+    {access === null ? !error && <div className="user-empty small">正在核对服务器和节点...</div> : <>
+      <p>支持封禁的节点会持续禁用；新增节点将在下一次检查时处理。冲突项目不会封禁，以免影响其他用户。</p>
+      <UserAccessStatus items={access} preview />
+    </>}
+    {error && <p className="user-form-error" role="alert">{error}</p>}
+  </DialogShell>;
 }
 
 function RenewDialog({ token, user, lifecycle, onClose, onSaved }: { token: string; user: ManagedUser; lifecycle?: ManagedUserLifecycle; onClose: () => void; onSaved: () => Promise<void> }) {

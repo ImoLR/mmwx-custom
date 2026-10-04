@@ -50,6 +50,7 @@ import type {
   ManagedUserDeletionPreviewResponse,
   ManagedUserDeleteResponse,
   ManagedUserAccessResponse,
+  ManagedUserAccessPreviewResponse,
   ManagedUserLifecycleResponse,
   ManagedUserPackageAssignmentsResponse,
   ManagedUserPackageInput,
@@ -1398,6 +1399,10 @@ export function deleteManagedUser(token: string, username: string) {
     method: "POST",
     body: JSON.stringify({}),
   });
+}
+
+export function fetchManagedUserAccessPreview(token: string, username: string) {
+  return requestCustomOperator<ManagedUserAccessPreviewResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/users/${encodeURIComponent(username)}/access`), token, { cache: "no-store" });
 }
 
 export function setManagedUserLifecycleAccess(token: string, username: string, enabled: boolean) {

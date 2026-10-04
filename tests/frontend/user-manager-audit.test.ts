@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { eligiblePackages, parseTrafficOverride, remainingDays, matchesExpiry } from "../../frontend/src/user-manager-logic.ts";
+import { credentialWriteState, eligiblePackages, parseTrafficOverride, remainingDays, matchesExpiry } from "../../frontend/src/user-manager-logic.ts";
 
 // Compile the real, unexported card in isolation. API calls and the page's
 // effects are deliberately excluded; no product export is needed for these tests.
@@ -13,7 +13,7 @@ function renderUserCard(user: Record<string, unknown>, lifecycle?: Record<string
   const { renderToStaticMarkup } = require("react-dom/server");
   const source = readFileSync(new URL("../../frontend/src/user-manager.tsx", import.meta.url), "utf8");
   const file = ts.createSourceFile("user-manager.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const names = new Set(["UserCard", "UserFact", "formatLimit", "formatBytes"]);
+  const names = new Set(["UserCard", "UserFact", "UserAccessStatus", "formatLimit", "formatBytes"]);
   const functions = file.statements.filter((node: any) => ts.isFunctionDeclaration(node) && names.has(node.name?.text));
   const iconImport = file.statements.find((node: any) => ts.isImportDeclaration(node) && node.moduleSpecifier.text === "lucide-react");
   const iconNames = iconImport.importClause.namedBindings.elements.map((element: any) => element.name.text);
@@ -37,6 +37,124 @@ test("UA-D03 official inactive state remains visible alongside Custom lifecycle 
     assert.match(html, /class="off"/, "official inactive state must use the inactive badge");
   }
   assert.match(renderUserCard({ username: "alice", role: "user", is_active: true }), />已启用</);
+});
+
+test("UA-A08 disabled cards retain intent after official renew and explain every node's protection", () => {
+  const access = [
+    { server_id: 1, server_name: "封禁服务器", inbound_tag: "a", node_id: 10, node_name: "已确认节点", status: "blocked" },
+    { server_id: 2, server_name: "内置服务器", inbound_tag: "b", node_id: 20, node_name: "尽力节点", status: "best_effort" },
+    { server_id: 3, server_name: "共享服务器", inbound_tag: "c", node_id: 30, node_name: "共享节点", status: "conflict", reason: "该节点与其他用户共用身份，不能封禁" },
+    { server_id: 1, server_name: "封禁服务器", inbound_tag: "d", node_id: 40, node_name: "新增节点", status: "pending", reason: "封禁已安排，等待服务器确认" },
+  ];
+  for (const is_active of [false, true]) {
+    const html = renderUserCard({ username: "alice", role: "user", is_active }, { desired_state: "disabled", effective_state: "disabled", pending_count: 0, access });
+    assert.match(html, /已禁用/);
+    assert.match(html, /已封禁/);
+    assert.match(html, /尽力禁用/);
+    assert.match(html, /冲突/);
+    assert.match(html, /待处理/);
+    for (const item of access) assert.ok(html.includes(item.server_name) && html.includes(item.node_name));
+    assert.match(html, /此服务器不支持封禁，只能尽力禁用：官方续期\/改套餐\/加节点后该用户可能恢复连接/);
+    assert.match(html, /该节点与其他用户共用身份，不能封禁/);
+    assert.match(html, /封禁已安排，等待服务器确认/);
+    assert.doesNotMatch(html, /blocked_identities|Core/);
+  }
+});
+
+test("a partially disabled user can enable again or retry unresolved nodes", () => {
+  const html = renderUserCard({ username: "alice", role: "user", is_active: false }, {
+    desired_state: "disabled", effective_state: "partially_disabled", operation: "disable", pending_count: 1,
+    access: [{ server_id: 1, server_name: "共享服务器", node_name: "共享节点", status: "conflict", reason: "该节点与其他用户共用身份，不能封禁" }],
+  });
+  assert.match(html, /启用 \(1\)<\/button>/);
+  assert.match(html, /重试禁用<\/button>/);
+  assert.match(html, /禁用未完成/);
+});
+
+test("disable confirmation reads the current affected nodes and never submits a missing preview", async () => {
+  const require = createRequire(new URL("../../frontend/package.json", import.meta.url));
+  const ts = require("typescript");
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const source = readFileSync(new URL("../../frontend/src/user-manager.tsx", import.meta.url), "utf8");
+  const file = ts.createSourceFile("user-manager.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const names = new Set(["DisableUserDialog", "UserAccessStatus", "messageOf"]);
+  const functions = file.statements.filter((node: any) => ts.isFunctionDeclaration(node) && names.has(node.name?.text));
+  const compiled = ts.transpileModule(functions.map((node: any) => node.getText(file)).join("\n"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.React },
+  }).outputText;
+  for (const failed of [false, true]) {
+    const states: unknown[] = [];
+    let stateIndex = 0;
+    let effect: () => void;
+    let resolve: (value: unknown) => void;
+    let reject: (reason: Error) => void;
+    let confirms = 0;
+    const preview = new Promise((accept, refuse) => { resolve = accept; reject = refuse; });
+    const DisableUserDialog = new Function("React", "useState", "useEffect", "DialogShell", "fetchManagedUserAccessPreview", `${compiled}\nreturn DisableUserDialog;`)(
+      React, (initial: unknown) => {
+        const index = stateIndex++;
+        if (!(index in states)) states[index] = initial;
+        return [states[index], (value: unknown) => { states[index] = value; }];
+      }, (callback: () => void) => { effect = callback; },
+      ({ children, footer }: { children: unknown; footer: unknown }) => React.createElement("div", null, children, footer),
+      (token: string, username: string) => { assert.equal(token, "session"); assert.equal(username, "alice"); return preview; },
+    );
+    const render = () => { stateIndex = 0; return DisableUserDialog({ token: "session", user: { username: "alice" }, onClose: () => undefined, onConfirm: () => { confirms++; } }); };
+    let element = render();
+    effect!();
+    let button = element.props.footer.props.children[1];
+    assert.equal(button.props.disabled, true);
+    button.props.onClick();
+    assert.equal(confirms, 0);
+    if (failed) reject!(new Error("服务器暂时不可用"));
+    else resolve!({ access: [
+      { server_id: 1, server_name: "服务器 A", node_name: "正常节点", status: "blocked" },
+      { server_id: 2, server_name: "服务器 B", node_name: "尽力节点", status: "best_effort" },
+      { server_id: 3, server_name: "服务器 C", node_name: "共享节点", status: "conflict", reason: "与管理员默认凭据共用，不能封禁" },
+    ] });
+    await new Promise((resolve) => setImmediate(resolve));
+    element = render();
+    button = element.props.footer.props.children[1];
+    const html = renderToStaticMarkup(element);
+    if (failed) {
+      assert.match(html, /服务器暂时不可用/);
+      assert.equal(button.props.disabled, true);
+      button.props.onClick();
+      assert.equal(confirms, 0);
+    } else {
+      assert.match(html, /将封禁/);
+      assert.match(html, /尽力节点/);
+      assert.match(html, /服务器 B/);
+      assert.match(html, /官方续期\/改套餐\/加节点后该用户可能恢复连接/);
+      assert.match(html, /与管理员默认凭据共用，不能封禁/);
+      assert.doesNotMatch(html, /已封禁/);
+      assert.equal(button.props.disabled, false);
+      button.props.onClick();
+      assert.equal(confirms, 1);
+    }
+  }
+});
+
+test("credential repush confirmation distinguishes persistent blocks and best-effort nodes", () => {
+  const require = createRequire(new URL("../../frontend/package.json", import.meta.url));
+  const ts = require("typescript");
+  const source = readFileSync(new URL("../../frontend/src/user-manager.tsx", import.meta.url), "utf8");
+  const file = ts.createSourceFile("user-manager.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const fn = file.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === "confirmCredentialWrite");
+  const compiled = ts.transpileModule(fn.getText(file), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
+  let message = "";
+  const confirm = new Function("window", "credentialWriteState", `${compiled}\nreturn confirmCredentialWrite;`)({ confirm: (text: string) => { message = text; return true; }, alert: () => undefined }, credentialWriteState);
+  const blocked = { status: "blocked", server_name: "服务器 A", node_name: "封禁节点" };
+  assert.equal(confirm({ effective_state: "disabled", access: [blocked] }), true);
+  assert.match(message, /已封禁节点保持禁用/);
+  assert.doesNotMatch(message, /可能恢复连接/);
+  confirm({ effective_state: "disabled", access: [blocked, { status: "best_effort", server_name: "服务器 B", node_name: "尽力节点" }] });
+  assert.match(message, /可能恢复连接/);
+  assert.match(message, /服务器 B \/ 尽力节点/);
+  confirm({ effective_state: "disabled" });
+  assert.match(message, /尚未确认的节点可能恢复连接/);
+  assert.equal(confirm({ effective_state: "delete_partial" }), null);
 });
 
 test("delete_partial hides access, admin hides destructive actions", () => {
