@@ -983,6 +983,7 @@ export type ManagedUser = {
   is_active: boolean;
   remark?: string;
   package_id?: number | null;
+  assignment_package_ids?: number[];
   package_name?: string;
   traffic_limit_gb?: number;
   traffic_used?: number;

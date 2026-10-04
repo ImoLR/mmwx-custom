@@ -84,6 +84,10 @@ const nextMonth = () => {
   return date.toISOString().slice(0, 10);
 };
 
+function managedUserPackageIds(user: ManagedUser) {
+  return user.assignment_package_ids?.length ? user.assignment_package_ids : user.package_id ? [user.package_id] : [];
+}
+
 export function UserManagementPage({ token }: { token: string }) {
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [packages, setPackages] = useState<ManagedPackage[]>([]);
@@ -131,14 +135,15 @@ export function UserManagementPage({ token }: { token: string }) {
   const counts = useMemo(() => {
     const result = new Map<string, number>();
     result.set("all", users.filter((user) => user.role !== "admin").length);
-    result.set("none", users.filter((user) => !user.package_id && user.role !== "admin").length);
-    packages.forEach((pkg) => result.set(String(pkg.id), users.filter((user) => user.package_id === pkg.id && user.role !== "admin").length));
+    result.set("none", users.filter((user) => managedUserPackageIds(user).length === 0 && user.role !== "admin").length);
+    packages.forEach((pkg) => result.set(String(pkg.id), users.filter((user) => managedUserPackageIds(user).includes(pkg.id) && user.role !== "admin").length));
     return result;
   }, [packages, users]);
   const visible = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return users.filter((user) => {
-      const filterMatch = packageFilter === "all" || (packageFilter === "none" ? !user.package_id : String(user.package_id ?? "") === packageFilter);
+      const packageIds = managedUserPackageIds(user);
+      const filterMatch = packageFilter === "all" || (packageFilter === "none" ? packageIds.length === 0 : packageIds.includes(Number(packageFilter)));
       const searchMatch = !normalized || [user.username, user.nickname, user.email, user.remark, user.package_name, user.telegram_username]
         .some((value) => value?.toLowerCase().includes(normalized));
       return filterMatch && searchMatch;
@@ -260,6 +265,7 @@ function UserCard({ user, lifecycle, pkg, busy, view, onDialog, onStatus, onExte
   const limit = Number(user.traffic_limit) || 0;
   const percent = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
   const admin = user.role === "admin";
+  const officialInactive = user.is_active === false;
   const deleting = lifecycle?.effective_state === "deleting" || lifecycle?.effective_state === "delete_partial";
   const pending = deleting ? lifecycle?.pending_count ?? 0 : 0;
   const accessState = lifecycle?.effective_state ?? "enabled";
@@ -270,11 +276,12 @@ function UserCard({ user, lifecycle, pkg, busy, view, onDialog, onStatus, onExte
   const statusLabel = deleting ? pending > 0 ? "删除未完成" : "正在删除"
     : accessPending ? `${accessOperationLabel}未完成`
       : accessState === "disabling" ? "正在禁用" : accessState === "enabling" ? "正在启用" : accessDisabled ? "已禁用" : "已启用";
+  const displayedStatus = officialInactive ? statusLabel === "已启用" ? "官方已停用" : `${statusLabel}（官方已停用）` : statusLabel;
   return (
-    <article className={`user-card${accessDisabled ? " disabled" : ""}`}>
+    <article className={`user-card${accessDisabled || officialInactive ? " disabled" : ""}`}>
       <header>
         <div className="user-identity"><span className="user-avatar">{(user.nickname || user.username).slice(0, 1).toUpperCase()}</span><div><h2>{user.username}</h2><p>{user.nickname || "—"}{user.email ? ` · ${user.email}` : ""}</p></div></div>
-        <div className="user-badges"><span>{admin ? "管理员" : "用户"}</span>{!admin && <span className={deleting || accessDisabled || accessPending ? "off" : "ok"}>{statusLabel}</span>}</div>
+        <div className="user-badges"><span>{admin ? "管理员" : "用户"}</span>{!admin && <span className={deleting || accessDisabled || accessPending || officialInactive ? "off" : "ok"}>{displayedStatus}</span>}</div>
       </header>
       {view === "full" && <div className="user-facts">
         <UserFact label="Telegram" value={user.telegram_id ? `@${user.telegram_username || user.telegram_id}` : "未绑定"} />
@@ -346,7 +353,7 @@ function ProfileDialog({ token, user, onClose, onSaved }: { token: string; user:
 }
 
 function PackageDialog({ token, user, packages, onClose, onSaved }: { token: string; user: ManagedUser; packages: ManagedPackage[]; onClose: () => void; onSaved: (text: string) => Promise<void> }) {
-  const [packageId, setPackageId] = useState(String(user.package_id ?? "")); const [startDate, setStartDate] = useState(today()); const [expireDate, setExpireDate] = useState(user.package_end_date || nextMonth()); const [isReset, setIsReset] = useState(user.is_reset ?? true); const [resetDay, setResetDay] = useState(user.reset_day || 1); const [saving, setSaving] = useState(false); const [error, setError] = useState("");
+  const [packageId, setPackageId] = useState(String(user.package_id ?? "")); const [startDate, setStartDate] = useState(today()); const [expireDate, setExpireDate] = useState(user.package_id ? user.package_end_date || "" : nextMonth()); const [isReset, setIsReset] = useState(user.is_reset ?? true); const [resetDay, setResetDay] = useState(user.reset_day || 1); const [saving, setSaving] = useState(false); const [error, setError] = useState("");
   async function save() { setSaving(true); setError(""); try { if (!packageId) { await unassignManagedUserPackage(token, user.username); await onSaved(`用户 ${user.username} 已解绑套餐`); } else { const result = await assignManagedUserPackage(token, { username: user.username, package_id: Number(packageId), start_date: startDate, expire_date: expireDate, is_reset: isReset, reset_day: resetDay }); await onSaved(result.warnings?.length ? `套餐已更新；${result.warnings.join("；")}` : `用户 ${user.username} 套餐已更新`); } } catch (err) { setError(messageOf(err, "更新套餐失败")); } finally { setSaving(false); } }
   return <DialogShell title="管理套餐" subtitle={`用户：${user.username}`} onClose={onClose} footer={<><button type="button" onClick={onClose}>取消</button><button className="primary" type="button" onClick={() => void save()} disabled={saving}>{saving ? "处理中..." : "保存套餐"}</button></>}>
     <div className="user-form"><label className="wide"><span>套餐</span><select value={packageId} onChange={(event) => setPackageId(event.target.value)}><option value="">不绑定套餐</option>{packages.map((pkg) => <option key={pkg.id} value={pkg.id}>{pkg.name}</option>)}</select></label><label><span>开始日期</span><input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} disabled={!packageId} /></label><label><span>到期日期</span><input type="date" value={expireDate} onChange={(event) => setExpireDate(event.target.value)} disabled={!packageId} /></label><label className="user-check"><input type="checkbox" checked={isReset} onChange={(event) => setIsReset(event.target.checked)} disabled={!packageId} /><span>启用每月流量重置</span></label><label><span>每月重置日</span><input type="number" min="1" max="31" value={resetDay} onChange={(event) => setResetDay(Number(event.target.value))} disabled={!packageId || !isReset} /></label>{error && <p className="user-form-error wide">{error}</p>}</div>
