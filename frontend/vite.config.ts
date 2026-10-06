@@ -18,6 +18,11 @@ const proxy = {
           changeOrigin: true,
           secure: true,
         },
+        "/t": {
+          target: apiTarget,
+          changeOrigin: true,
+          secure: true,
+        },
         "/api": {
           target: apiTarget,
           changeOrigin: true,

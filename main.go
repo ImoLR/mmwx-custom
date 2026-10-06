@@ -282,6 +282,7 @@ func newMux(api *app, mmwxAPITarget *url.URL, frontendDir string) *http.ServeMux
 	mux.HandleFunc("/api/custom/user-status-tasks/", api.withCORS(api.userStatusTaskHandler))
 	mux.Handle("/api/", api.withCORSHandler(mmwxAPIProxy(mmwxAPITarget)))
 	mux.Handle("/x/", mmwxAPIProxy(mmwxAPITarget))
+	mux.Handle("/t/", mmwxAPIProxy(mmwxAPITarget))
 	mux.Handle("/", spaHandler(frontendDir))
 
 	return mux
