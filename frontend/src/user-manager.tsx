@@ -64,6 +64,19 @@ import type { HelperUserConnectionsResponse, UserConnectionsResponse, NodeURIIte
 import { fetchUserManagementData } from "./user-management-state";
 import { credentialWriteState, eligiblePackages, matchesExpiry, parseRenewDays, parseTrafficOverride, remainingDays, renewedDate, searchUserURIs, trafficOverrideGB, validUsername } from "./user-manager-logic";
 import type { ExpiryFilter } from "./user-manager-logic";
+import autoIcon from "./assets/client-icons/auto.svg";
+import clashIcon from "./assets/client-icons/clash_color.png";
+import stashIcon from "./assets/client-icons/stash_color.png";
+import shadowrocketIcon from "./assets/client-icons/shadowrocket_color.png";
+import surfboardIcon from "./assets/client-icons/surfboard_color.png";
+import surgeIcon from "./assets/client-icons/surge_color.png";
+import surgeMacIcon from "./assets/client-icons/surgeformac_icon_color.png";
+import loonIcon from "./assets/client-icons/loon_color.png";
+import quantumultIcon from "./assets/client-icons/quanx_color.png";
+import egernIcon from "./assets/client-icons/egern_color.png";
+import singBoxIcon from "./assets/client-icons/sing-box_color.png";
+import v2rayIcon from "./assets/client-icons/v2ray_color.png";
+import uriIcon from "./assets/client-icons/uri.svg";
 
 type Notice = { tone: "success" | "error" | "info"; text: string } | null;
 type Dialog =
@@ -81,12 +94,12 @@ type Dialog =
   | null;
 
 const clients = [
-  ["auto", "自动识别"],
-  ["clash", "Clash"], ["stash", "Stash"], ["shadowrocket", "Shadowrocket"],
-  ["clash-to-shadowrocket", "Clash → Shadowrocket"], ["surfboard", "Surfboard"],
-  ["surge", "Surge"], ["surgemac", "Surge Mac"], ["clash-to-surge", "Clash → Surge"],
-  ["loon", "Loon"], ["clash-to-loon", "Clash → Loon"], ["clash-to-loon-kelee", "Clash → Loon (kelee)"],
-  ["qx", "Quantumult X"], ["egern", "Egern"], ["sing-box", "sing-box"], ["v2ray", "V2Ray"], ["uri", "URI"],
+  ["auto", "自动识别", autoIcon],
+  ["clash", "Clash", clashIcon], ["stash", "Stash", stashIcon], ["shadowrocket", "Shadowrocket", shadowrocketIcon],
+  ["clash-to-shadowrocket", "Clash → Shadowrocket", shadowrocketIcon], ["surfboard", "Surfboard", surfboardIcon],
+  ["surge", "Surge", surgeIcon], ["surgemac", "Surge Mac", surgeMacIcon], ["clash-to-surge", "Clash → Surge", surgeIcon],
+  ["loon", "Loon", loonIcon], ["clash-to-loon", "Clash → Loon", loonIcon], ["clash-to-loon-kelee", "Clash → Loon (kelee)", loonIcon],
+  ["qx", "Quantumult X", quantumultIcon], ["egern", "Egern", egernIcon], ["sing-box", "sing-box", singBoxIcon], ["v2ray", "V2Ray", v2rayIcon], ["uri", "URI", uriIcon],
 ] as const;
 
 const randomPassword = () => {
@@ -730,6 +743,7 @@ function SubscriptionDialog({ token, user, pkg, onClose, onCopied }: { token: st
   }, [selection, subscriptionPackages]);
 
   const selectedPackage = selection ? subscriptionPackages.find((item) => item.id === selection.packageId) : undefined;
+  const qrClientIcon = clients.find(([client]) => client === qrClient)?.[2];
   const subscriptionUrl = (selectedPackage && selection)
     ? managedSubscriptionUrlFromCode(selectedPackage.shortCode, selection.mode === "qr" ? qrClient : "auto", subscriptionBaseUrl)
     : "";
@@ -757,11 +771,11 @@ function SubscriptionDialog({ token, user, pkg, onClose, onCopied }: { token: st
       </article>)}</div>
       {selectedPackage && selection?.mode === "copy" && <section className="user-subscription-panel">
         <header><div><strong>{selectedPackage.name}</strong><span>选择客户端格式</span></div>{subscriptionPackages.length > 1 && <button type="button" onClick={() => setSelection(null)}><ArrowLeft /><span>返回套餐</span></button>}</header>
-        <div className="user-client-list">{clients.map(([client, name]) => <button key={client} type="button" onClick={() => void copy(client, name)}><Copy /><span>{name}</span></button>)}</div>
+        <div className="user-client-list">{clients.map(([client, name, icon]) => <button key={client} type="button" onClick={() => void copy(client, name)}><img className="user-client-icon" src={icon} alt="" loading="lazy" /><span>{name}</span><Copy className="user-client-copy" aria-hidden="true" /></button>)}</div>
       </section>}
       {selectedPackage && selection?.mode === "qr" && <section className="user-subscription-panel user-subscription-qr">
         <header><div><strong>{selectedPackage.name}</strong><span>选择二维码对应的客户端</span></div>{subscriptionPackages.length > 1 && <button type="button" onClick={() => setSelection(null)}><ArrowLeft /><span>返回套餐</span></button>}</header>
-        <label><span>客户端格式</span><select value={qrClient} onChange={(event) => setQrClient(event.target.value)}>{clients.map(([client, name]) => <option key={client} value={client}>{name}</option>)}</select></label>
+        <label><span>客户端格式</span><div className="user-client-select"><img className="user-client-icon" src={qrClientIcon} alt="" /><select value={qrClient} onChange={(event) => setQrClient(event.target.value)}>{clients.map(([client, name]) => <option key={client} value={client}>{name}</option>)}</select></div></label>
         <div className="user-subscription-qr-code"><QRCodeSVG value={subscriptionUrl} size={216} level="M" title={`${selectedPackage.name} 订阅二维码`} /></div>
       </section>}
     </>}

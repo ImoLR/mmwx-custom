@@ -5158,7 +5158,10 @@ button {
 .user-account-list b { grid-column: 2; grid-row: 1; }
 .user-client-list { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .user-client-list button { min-width: 0; justify-content: flex-start; }
-.user-client-list button span { min-width: 0; overflow-wrap: anywhere; text-align: left; }
+.user-client-list button span { min-width: 0; flex: 1; overflow-wrap: anywhere; text-align: left; }
+.user-client-icon { width: 20px; height: 20px; flex: 0 0 20px; object-fit: contain; border-radius: 4px; background: #fff; }
+.user-client-list .user-client-copy { width: 14px; height: 14px; color: var(--muted); }
+.user-client-select { min-width: 0; display: flex; align-items: center; gap: 8px; }
 .user-subscription-packages { min-width: 0; display: grid; gap: 8px; }
 .user-subscription-packages article { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
 .user-subscription-packages article > div:first-child { min-width: 0; display: grid; gap: 3px; }
