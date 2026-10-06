@@ -13,6 +13,11 @@ const proxy = {
   },
   ...(apiTarget
     ? {
+        "/x": {
+          target: apiTarget,
+          changeOrigin: true,
+          secure: true,
+        },
         "/api": {
           target: apiTarget,
           changeOrigin: true,

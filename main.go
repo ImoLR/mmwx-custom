@@ -224,32 +224,7 @@ func main() {
 		log.Printf("[mmwx-custom] warning: MMWXC_HELPER_TOKENS is not set; helper metrics POST endpoint is disabled")
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", api.withCORS(api.healthz))
-	mux.HandleFunc("/api/dashboard/system", api.withCORS(api.system))
-	mux.HandleFunc("/api/custom/dashboard/system", api.withCORS(api.system))
-	mux.HandleFunc("/api/geo/lookup", api.withCORS(api.geoLookup))
-	mux.HandleFunc("/api/custom/geo/lookup", api.withCORS(api.geoLookup))
-	mux.HandleFunc("/api/custom/agent/metrics", api.withCORS(api.connectionMetricsHandler))
-	mux.HandleFunc("/api/custom/agent/user-connections", api.withCORS(api.helperUserConnectionsHandler))
-	mux.HandleFunc("/api/custom/agent/connections", api.withCORS(api.helperDetailedConnectionsHandler))
-	mux.HandleFunc("/api/custom/agent/takeover", api.withCORS(api.helperTakeoverHandler))
-	mux.HandleFunc("/api/custom/servers/", api.withCORS(api.serverConnectionsHandler))
-	mux.HandleFunc("/api/custom/helper/install-token", api.withCORS(api.createHelperInstallTokenHandler))
-	mux.HandleFunc("/api/custom/helper/install/", api.withCORS(api.helperInstallScriptHandler))
-	mux.HandleFunc("/api/custom/helper/rebind", api.withCORS(api.helperRebindHandler))
-	mux.HandleFunc("/api/custom/agent/update-progress", api.withCORS(api.helperUpdateProgressHandler))
-	mux.HandleFunc("/api/custom/releases", api.withCORS(api.releaseInfoHandler))
-	mux.HandleFunc("/api/custom/settings/github-accelerator", api.withCORS(api.githubAcceleratorHandler))
-	mux.HandleFunc("/api/custom/ui/service-groups", api.withCORS(api.uiServiceGroupsHandler))
-	mux.HandleFunc("/api/custom/ui/routing-presets", api.withCORS(api.uiRoutingPresetsHandler))
-	mux.HandleFunc("/api/custom/users/", api.withCORS(api.userManagementHandler))
-	mux.HandleFunc("/api/custom/user-lifecycle", api.withCORS(api.userLifecycleIndexHandler))
-	mux.HandleFunc("/api/custom/packages/", api.withCORS(api.packageTrafficGroupsHandler))
-	mux.HandleFunc("/api/custom/user-status-tasks", api.withCORS(api.userStatusTaskHandler))
-	mux.HandleFunc("/api/custom/user-status-tasks/", api.withCORS(api.userStatusTaskHandler))
-	mux.Handle("/api/", api.withCORSHandler(mmwxAPIProxy(mmwxAPITarget)))
-	mux.Handle("/", spaHandler(getenv("MMWXC_FRONTEND_DIR", defaultFrontendDir)))
+	mux := newMux(api, mmwxAPITarget, getenv("MMWXC_FRONTEND_DIR", defaultFrontendDir))
 
 	server := &http.Server{
 		Addr:              listenAddr,
@@ -278,6 +253,38 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("[mmwx-custom] graceful shutdown failed: %v", err)
 	}
+}
+
+func newMux(api *app, mmwxAPITarget *url.URL, frontendDir string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", api.withCORS(api.healthz))
+	mux.HandleFunc("/api/dashboard/system", api.withCORS(api.system))
+	mux.HandleFunc("/api/custom/dashboard/system", api.withCORS(api.system))
+	mux.HandleFunc("/api/geo/lookup", api.withCORS(api.geoLookup))
+	mux.HandleFunc("/api/custom/geo/lookup", api.withCORS(api.geoLookup))
+	mux.HandleFunc("/api/custom/agent/metrics", api.withCORS(api.connectionMetricsHandler))
+	mux.HandleFunc("/api/custom/agent/user-connections", api.withCORS(api.helperUserConnectionsHandler))
+	mux.HandleFunc("/api/custom/agent/connections", api.withCORS(api.helperDetailedConnectionsHandler))
+	mux.HandleFunc("/api/custom/agent/takeover", api.withCORS(api.helperTakeoverHandler))
+	mux.HandleFunc("/api/custom/servers/", api.withCORS(api.serverConnectionsHandler))
+	mux.HandleFunc("/api/custom/helper/install-token", api.withCORS(api.createHelperInstallTokenHandler))
+	mux.HandleFunc("/api/custom/helper/install/", api.withCORS(api.helperInstallScriptHandler))
+	mux.HandleFunc("/api/custom/helper/rebind", api.withCORS(api.helperRebindHandler))
+	mux.HandleFunc("/api/custom/agent/update-progress", api.withCORS(api.helperUpdateProgressHandler))
+	mux.HandleFunc("/api/custom/releases", api.withCORS(api.releaseInfoHandler))
+	mux.HandleFunc("/api/custom/settings/github-accelerator", api.withCORS(api.githubAcceleratorHandler))
+	mux.HandleFunc("/api/custom/ui/service-groups", api.withCORS(api.uiServiceGroupsHandler))
+	mux.HandleFunc("/api/custom/ui/routing-presets", api.withCORS(api.uiRoutingPresetsHandler))
+	mux.HandleFunc("/api/custom/users/", api.withCORS(api.userManagementHandler))
+	mux.HandleFunc("/api/custom/user-lifecycle", api.withCORS(api.userLifecycleIndexHandler))
+	mux.HandleFunc("/api/custom/packages/", api.withCORS(api.packageTrafficGroupsHandler))
+	mux.HandleFunc("/api/custom/user-status-tasks", api.withCORS(api.userStatusTaskHandler))
+	mux.HandleFunc("/api/custom/user-status-tasks/", api.withCORS(api.userStatusTaskHandler))
+	mux.Handle("/api/", api.withCORSHandler(mmwxAPIProxy(mmwxAPITarget)))
+	mux.Handle("/x/", mmwxAPIProxy(mmwxAPITarget))
+	mux.Handle("/", spaHandler(frontendDir))
+
+	return mux
 }
 
 func (a *app) withCORS(next http.HandlerFunc) http.HandlerFunc {
