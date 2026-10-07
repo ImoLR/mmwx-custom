@@ -1177,6 +1177,16 @@ export type ManagedUserLifecycle = {
 export type ManagedUserLifecycleResponse = {
   success: boolean;
   users: Record<string, ManagedUserLifecycle>;
+  expired_packages: Record<string, ManagedUserExpiredPackage>;
+};
+
+export type ManagedUserExpiredPackage = {
+  role: string;
+  last_package_id: number | null;
+  last_package_end_date: string | null;
+  last_package_name: string | null;
+  rebindable: boolean;
+  reason: string;
 };
 
 export type ManagedUserDeleteResult = {

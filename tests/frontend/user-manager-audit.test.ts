@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { credentialWriteState, eligiblePackages, parseTrafficOverride, remainingDays, matchesExpiry } from "../../frontend/src/user-manager-logic.ts";
+import { credentialWriteState, expiredUnboundPackage, rebindPackageInput, parseRenewDays, renewedDate, eligiblePackages, parseTrafficOverride, remainingDays, matchesExpiry } from "../../frontend/src/user-manager-logic.ts";
 
 // Compile the real, unexported card in isolation. API calls and the page's
 // effects are deliberately excluded; no product export is needed for these tests.
@@ -20,7 +20,7 @@ function renderUserCard(user: Record<string, unknown>, lifecycle?: Record<string
   const compiled = ts.transpileModule(functions.map((node: any) => node.getText(file)).join("\n"), {
     compilerOptions: { target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.React },
   }).outputText;
-  const UserCard = new Function("React", "remainingDays", ...iconNames, `${compiled}\nreturn UserCard;`)(React, remainingDays, ...iconNames.map(() => () => null));
+  const UserCard = new Function("React", "remainingDays", "expiredUnboundPackage", ...iconNames, `${compiled}\nreturn UserCard;`)(React, remainingDays, expiredUnboundPackage, ...iconNames.map(() => () => null));
   const noop = () => undefined;
   return renderToStaticMarkup(React.createElement(UserCard, {
     user, lifecycle, busy: "", view: "full", onDialog: noop, onStatus: noop,
@@ -398,5 +398,124 @@ test("deletion dialog refreshes stale lifecycle and waits for both preview reads
       await new Promise((resolve) => setImmediate(resolve));
       assert.equal(deleteCalls, 1, "existing partial operation can retry despite conflicts");
     }
+  }
+});
+
+const expiredPackage = { role: "user", last_package_id: 3, last_package_name: "Boil HKT 用户2", last_package_end_date: "2026-08-25T00:00:00", rebindable: true, reason: "" };
+
+test("expired-unbound card shows history and rebind choices, never-bound keeps its text", () => {
+  const user = { username: "Riczzoe", role: "user", package_id: null, package_end_date: null };
+  for (const view of ["full", "renewal"]) {
+    const html = renderUserCard(user, undefined, { view, expiredPackage });
+    assert.match(html, />已过期</);
+    assert.match(html, /上次套餐 Boil HKT 用户2，到期 2026-08-25（官方已解绑）/);
+    assert.doesNotMatch(html, /未绑定套餐/);
+    assert.match(html, /<button type="button">重新绑定上次套餐并续期<\/button>/);
+    if (view === "renewal") {
+      for (const days of [30, 90, 365]) assert.ok(html.includes(`<button type="button">+${days} 天</button>`));
+      assert.match(html, /<button type="button">自定义续期<\/button>/);
+    }
+  }
+  const never = renderUserCard(user, undefined, { view: "renewal" });
+  assert.match(never, /未绑定套餐/);
+  assert.match(never, /可绑定套餐后生成订阅/);
+  assert.doesNotMatch(never, /重新绑定上次套餐并续期|官方已解绑/);
+});
+
+test("rebind card excludes admins and current bindings and explains unavailable packages", () => {
+  for (const extra of [{ role: "admin" }, { package_id: 4 }, { assignment_package_ids: [4] }]) {
+    const html = renderUserCard({ username: "alice", role: "user", ...extra }, undefined, { view: "renewal", expiredPackage });
+    assert.doesNotMatch(html, /重新绑定上次套餐并续期|官方已解绑/);
+  }
+  for (const reason of ["上次套餐已删除或不存在，请在「套餐」中选择其他套餐", "上次套餐已绑定其他用户，请在「套餐」中选择其他套餐"]) {
+    const html = renderUserCard({ username: "alice", role: "user" }, undefined, { view: "renewal", expiredPackage: { ...expiredPackage, rebindable: false, reason } });
+    assert.match(html, /<button type="button" disabled="">重新绑定上次套餐并续期<\/button>/);
+    assert.ok(html.includes(reason));
+    assert.match(html, /请打开下方「套餐」管理/);
+  }
+});
+
+
+test("card rebind buttons submit the existing assign-package API only after confirmation", async () => {
+  const require = createRequire(new URL("../../frontend/package.json", import.meta.url));
+  const ts = require("typescript");
+  const React = require("react");
+  function compile(path: string, names: string[]) {
+    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, path.endsWith("tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+    return ts.transpileModule(file.statements.filter((node: any) => ts.isFunctionDeclaration(node) && names.includes(node.name?.text)).map((node: any) => node.getText(file).replace(/^export /, "")).join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.React } }).outputText;
+  }
+  const ui = compile("../../frontend/src/user-manager.tsx", ["UserCard", "RenewDialog", "confirmCredentialWrite", "messageOf"]);
+  const api = compile("../../frontend/src/api.ts", ["managedUserFeature", "assignManagedUserPackage"]);
+  const find = (element: any, predicate: (element: any) => boolean): any => {
+    if (!element || typeof element !== "object") return undefined;
+    if (predicate(element)) return element;
+    for (const child of [element.props?.children, element.props?.footer].flat(3)) {
+      const result = find(child, predicate);
+      if (result) return result;
+    }
+  };
+  for (const choice of [30, 90, 365, 1, 3650, 0, 3651, "cancel", "unavailable", "admin"] as const) {
+    const states: unknown[] = [];
+    let index = 0;
+    const requests: { url: string; token: string; options: any }[] = [];
+    const confirmations: string[] = [];
+    let saved = 0;
+    const icons = Object.fromEntries(["Link2", "PackageCheck", "Edit3", "SlidersHorizontal", "UserRoundCog", "KeyRound", "RefreshCw", "Send", "RotateCcw", "Power", "PowerOff", "Trash2"].map((name) => [name, () => null]));
+    const deps = {
+      React, remainingDays, expiredUnboundPackage, parseRenewDays, renewedDate, credentialWriteState,
+      rebindPackageInput: (user: any, last: any, days: number) => rebindPackageInput(user, last, days, false, new Date("2026-10-07T16:30:00Z")),
+      formatBytes: () => "0", UserAccessStatus: () => null, DialogShell: () => null,
+      useState: (initial: unknown) => { const slot = index++; if (!(slot in states)) states[slot] = initial; return [states[slot], (value: unknown) => { states[slot] = value; }]; },
+      window: { confirm: (message: string) => { confirmations.push(message); return choice !== "cancel"; }, alert: () => assert.fail("unexpected alert") },
+      extendManagedUserPackage: () => assert.fail("expired-unbound must use assign-package"),
+      MMWX_CUSTOM_API_BASE_URL: "", joinUrl: (base: string, path: string) => base + path,
+      requestCustomOperator: async (url: string, token: string, options: any) => { requests.push({ url, token, options }); return { success: true }; },
+      ...icons,
+    };
+    const { UserCard, RenewDialog } = new Function(...Object.keys(deps), `${api}\n${ui}\nreturn { UserCard, RenewDialog };`)(...Object.values(deps));
+    const user = { username: "Riczzoe", role: "user", is_active: false, package_id: null, package_end_date: null, is_reset: true, reset_day: 12, traffic_limit_override_gb: 25 };
+    const lifecycle = { desired_state: "disabled", effective_state: "disabled", pending_count: 0, access: [{ status: "blocked" }] };
+    let dialog: any;
+    const card = UserCard({ user, lifecycle, expiredPackage, busy: "", view: "renewal", onDialog: (value: any) => { dialog = value; }, onExtend: () => assert.fail("legacy renew triggered") });
+    const quick = [30, 90, 365].includes(Number(choice));
+    const button = find(card, (element) => element.type === "button" && (quick ? element.props.children?.join?.("") === `+${choice} 天` : element.props.children === "重新绑定上次套餐并续期"));
+    assert.ok(button);
+    assert.equal(button.props.disabled, false);
+    button.props.onClick();
+    assert.equal(dialog.kind, "rebind");
+    if (quick) assert.equal(dialog.days, choice);
+    const last = choice === "unavailable" ? { ...expiredPackage, rebindable: false, reason: "上次套餐已绑定其他用户" } : expiredPackage;
+    const render = () => {
+      index = 0;
+      return RenewDialog({ token: "session", user: choice === "admin" ? { ...user, role: "admin" } : user, lifecycle, rebind: true, expiredPackage: last, initialDays: dialog.days, onClose: () => undefined, onSaved: async () => { saved++; } });
+    };
+    let element = render();
+    if (typeof choice === "number" && !quick) {
+      find(element, (item) => item.type === "input").props.onChange({ target: { value: String(choice) } });
+      element = render();
+    }
+    const submit = element.props.footer.props.children[1];
+    if (choice === "unavailable" || choice === "admin") assert.equal(submit.props.disabled, true);
+    submit.props.onClick();
+    await new Promise((resolve) => setImmediate(resolve));
+    if (typeof choice === "string" || choice === 0 || choice === 3651) {
+      assert.equal(requests.length, 0);
+      assert.equal(saved, 0);
+      continue;
+    }
+    assert.equal(requests.length, 1);
+    assert.equal(saved, 1);
+    assert.equal(confirmations.length, 2);
+    const expected = rebindPackageInput(user, expiredPackage, choice, true, new Date("2026-10-07T16:30:00Z"));
+    assert.ok(confirmations[0].includes("Boil HKT 用户2") && confirmations[0].includes(expected.expire_date));
+    assert.match(confirmations[0], /台湾今天 2026-10-08/);
+    assert.match(confirmations[0], /官方将重建该套餐所在服务器的 Core/);
+    assert.match(confirmations[0], /清零且无法找回/);
+    assert.match(confirmations[1], /已封禁节点保持禁用/);
+    assert.equal(requests[0].url, "/api/custom/users/Riczzoe/features/assign-package");
+    assert.equal(requests[0].token, "session");
+    assert.equal(requests[0].options.method, "POST");
+    assert.deepEqual(JSON.parse(requests[0].options.body), expected);
   }
 });

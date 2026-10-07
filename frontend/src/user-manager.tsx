@@ -60,9 +60,9 @@ import {
   updateManagedUserRemark,
   updateManagedUserShortCode,
 } from "./api";
-import type { HelperUserConnectionsResponse, UserConnectionsResponse, NodeURIItem, ManagedPackage, ManagedUser, ManagedUserImportedNode, ManagedUserDeleteResult, ManagedUserDeletionPreview, ManagedUserLifecycle, ManagedUserLifecycleItem, ManagedUserPackageAssignment, UserAccessNodeStatus, UserSubaccount, XrayNode } from "./types";
+import type { HelperUserConnectionsResponse, UserConnectionsResponse, NodeURIItem, ManagedPackage, ManagedUser, ManagedUserImportedNode, ManagedUserDeleteResult, ManagedUserDeletionPreview, ManagedUserLifecycle, ManagedUserLifecycleItem, ManagedUserExpiredPackage, ManagedUserPackageAssignment, UserAccessNodeStatus, UserSubaccount, XrayNode } from "./types";
 import { fetchUserManagementData } from "./user-management-state";
-import { credentialWriteState, eligiblePackages, matchesExpiry, parseRenewDays, parseTrafficOverride, remainingDays, renewedDate, searchUserURIs, trafficOverrideGB, validUsername } from "./user-manager-logic";
+import { credentialWriteState, eligiblePackages, expiredUnboundPackage, rebindPackageInput, matchesExpiry, parseRenewDays, parseTrafficOverride, remainingDays, renewedDate, searchUserURIs, trafficOverrideGB, validUsername } from "./user-manager-logic";
 import type { ExpiryFilter } from "./user-manager-logic";
 import autoIcon from "./assets/client-icons/auto.svg";
 import clashIcon from "./assets/client-icons/clash_color.png";
@@ -81,6 +81,7 @@ import uriIcon from "./assets/client-icons/uri.svg";
 type Notice = { tone: "success" | "error" | "info"; text: string } | null;
 type Dialog =
   | { kind: "create" }
+  | { kind: "rebind"; user: ManagedUser; days?: number }
   | { kind: "password"; user: ManagedUser }
   | { kind: "profile"; user: ManagedUser }
   | { kind: "package"; user: ManagedUser }
@@ -123,6 +124,7 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
   const [packages, setPackages] = useState<ManagedPackage[]>([]);
   const [nodes, setNodes] = useState<XrayNode[]>([]);
   const [lifecycles, setLifecycles] = useState<Record<string, ManagedUserLifecycle>>({});
+  const [expiredPackages, setExpiredPackages] = useState<Record<string, ManagedUserExpiredPackage>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
@@ -143,12 +145,13 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
         () => fetchPackages(token),
         () => fetchManagedUserNodes(token),
       ),
-      fetchManagedUserLifecycles(token).then((response) => ({ users: response.users, error: "" })).catch((error) => ({ users: {}, error: messageOf(error, "读取用户生命周期失败") })),
+      fetchManagedUserLifecycles(token).then((response) => ({ users: response.users, expiredPackages: response.expired_packages ?? {}, error: "" })).catch((error) => ({ users: {}, expiredPackages: {}, error: messageOf(error, "读取用户生命周期失败") })),
     ]);
     if (result.users) {
       setUsers(result.users);
     }
     setLifecycles(lifecycleResult.users);
+    setExpiredPackages(lifecycleResult.expiredPackages);
     if (result.packages) setPackages(result.packages);
     if (result.nodes) setNodes(result.nodes);
     const failures = lifecycleResult.error ? [...result.failures, lifecycleResult.error] : result.failures;
@@ -177,7 +180,7 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
       if (!stopped) {
         setConnections(formal.status === "fulfilled" ? formal.value : null);
         setHelperConnections(helper.status === "fulfilled" ? helper.value : null);
-        if (lifecycle.status === "fulfilled") setLifecycles(lifecycle.value.users);
+        if (lifecycle.status === "fulfilled") { setLifecycles(lifecycle.value.users); setExpiredPackages(lifecycle.value.expired_packages ?? {}); }
         setRealtimeError(lifecycle.status === "rejected" ? "禁用状态刷新失败，请刷新后核对" : formal.status === "rejected" || helper.status === "rejected" ? "统计不完整：部分实时数据读取失败" : "");
       }
       inFlight = false;
@@ -207,9 +210,9 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
       const filterMatch = packageFilter === "all" || (packageFilter === "none" ? packageIds.length === 0 : packageIds.includes(Number(packageFilter)));
       const searchMatch = !normalized || [user.username, user.nickname, user.email, user.remark, user.package_name, user.telegram_username]
         .some((value) => value?.toLowerCase().includes(normalized));
-      return filterMatch && searchMatch && (view !== "renewal" || matchesExpiry(user.package_end_date, expiryFilter));
+      return filterMatch && searchMatch && (view !== "renewal" || matchesExpiry(user.package_end_date, expiryFilter, Date.now(), expiredUnboundPackage(user, expiredPackages[user.username])?.last_package_end_date));
     });
-  }, [packageFilter, query, users, view, expiryFilter]);
+  }, [packageFilter, query, users, view, expiryFilter, expiredPackages]);
 
   async function run(key: string, action: () => Promise<unknown>, success: string) {
     if (busy) return;
@@ -284,7 +287,7 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
         <section className={`user-list ${view}`}>
           {visible.map((user) => {
             const pkg = user.package_id ? packageById.get(user.package_id) : undefined;
-            return <UserCard key={user.username} user={user} lifecycle={lifecycles[user.username]} pkg={pkg} busy={busy} view={view} currentUsername={currentUsername}
+            return <UserCard key={user.username} user={user} lifecycle={lifecycles[user.username]} expiredPackage={expiredPackages[user.username]} pkg={pkg} busy={busy} view={view} currentUsername={currentUsername}
               realtime={<UserRealtime user={user} connections={connections} helper={helperConnections} />}
               onDialog={setDialog}
               onStatus={(enable) => {
@@ -313,7 +316,7 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
       {dialog?.kind === "password" && <PasswordDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onSaved={(password) => { setDialog(null); setNotice({ tone: "success", text: `新密码 ${password} 已复制` }); }} />}
       {dialog?.kind === "profile" && <ProfileDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onSaved={async () => { setDialog(null); setNotice({ tone: "success", text: "用户资料已更新" }); await load(); }} />}
       {dialog?.kind === "package" && <PackageDialog token={token} user={dialog.user} packages={packages} lifecycle={lifecycles[dialog.user.username]} onClose={() => setDialog(null)} onSaved={async (text) => { setDialog(null); setNotice({ tone: "success", text }); await load(); }} />}
-      {dialog?.kind === "renew" && <RenewDialog token={token} user={dialog.user} lifecycle={lifecycles[dialog.user.username]} onClose={() => setDialog(null)} onSaved={async () => { setDialog(null); await load({ success: "用户套餐已续期" }); }} />}
+      {(dialog?.kind === "renew" || dialog?.kind === "rebind") && <RenewDialog token={token} user={dialog.user} rebind={dialog.kind === "rebind"} initialDays={dialog.kind === "rebind" ? dialog.days : undefined} expiredPackage={expiredPackages[dialog.user.username]} lifecycle={lifecycles[dialog.user.username]} onClose={() => setDialog(null)} onSaved={async (warnings) => { setDialog(null); await load({ success: warnings?.length ? `套餐已更新；${warnings.join("；")}` : dialog.kind === "rebind" ? "已重新绑定上次套餐并续期" : "用户套餐已续期" }); }} />}
       {dialog?.kind === "uris" && <URIDialog token={token} user={dialog.user} onClose={() => setDialog(null)} />}
       {dialog?.kind === "imports" && <ImportedNodesDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onChanged={async () => { await load({ background: true, success: "已清空该用户导入的节点并清理套餐引用" }); }} />}
       {(dialog?.kind === "replace-admin" || dialog?.kind === "repair-admin") && <AdminCredentialsDialog token={token} user={dialog.user} lifecycle={lifecycles[dialog.user.username]} repair={dialog.kind === "repair-admin"} onClose={() => setDialog(null)} onSaved={async (text) => { setDialog(null); await load({ success: text }); }} />}
@@ -335,8 +338,8 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
   );
 }
 
-function UserCard({ user, lifecycle, pkg, busy, view, currentUsername, realtime, onDialog, onStatus, onExtend, onResetTraffic, onDelete }: {
-  user: ManagedUser; lifecycle?: ManagedUserLifecycle; pkg?: ManagedPackage; busy: string; view: "full" | "renewal";
+function UserCard({ user, lifecycle, expiredPackage, pkg, busy, view, currentUsername, realtime, onDialog, onStatus, onExtend, onResetTraffic, onDelete }: {
+  user: ManagedUser; lifecycle?: ManagedUserLifecycle; expiredPackage?: ManagedUserExpiredPackage; pkg?: ManagedPackage; busy: string; view: "full" | "renewal";
   currentUsername?: string; realtime?: React.ReactNode;
   onDialog: (dialog: Dialog) => void; onStatus: (enable: boolean) => void; onExtend: (days: number) => void; onResetTraffic: () => void; onDelete: () => void;
 }) {
@@ -345,6 +348,7 @@ function UserCard({ user, lifecycle, pkg, busy, view, currentUsername, realtime,
   const percent = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
   const admin = user.role === "admin";
   const hasPackage = Boolean(user.package_id || user.assignment_package_ids?.length);
+  const lastPackage = expiredUnboundPackage(user, expiredPackage);
   const days = remainingDays(user.package_end_date);
   const officialInactive = user.is_active === false;
   const deleting = lifecycle?.effective_state === "deleting" || lifecycle?.effective_state === "delete_partial";
@@ -372,11 +376,12 @@ function UserCard({ user, lifecycle, pkg, busy, view, currentUsername, realtime,
       </div>}
       {view === "full" && realtime}
       <div className="user-package">
-        <div><strong>{user.package_name || (hasPackage ? `已绑定 ${user.assignment_package_ids?.length || 1} 个套餐` : "未绑定套餐")}</strong><span>{user.package_end_date ? `到期 ${user.package_end_date}${days === null ? "" : days <= 0 ? " · 已过期" : ` · 剩余 ${days} 天`}` : admin ? "系统管理员" : hasPackage ? "长期有效" : "可绑定套餐后生成订阅"}</span></div>
+        <div><strong>{lastPackage ? "已过期" : user.package_name || (hasPackage ? `已绑定 ${user.assignment_package_ids?.length || 1} 个套餐` : "未绑定套餐")}</strong><span>{lastPackage ? `上次套餐 ${lastPackage.last_package_name || (lastPackage.last_package_id ? `#${lastPackage.last_package_id}` : "未知")}，到期 ${lastPackage.last_package_end_date?.slice(0, 10)}（官方已解绑）` : user.package_end_date ? `到期 ${user.package_end_date}${days === null ? "" : days <= 0 ? " · 已过期" : ` · 剩余 ${days} 天`}` : admin ? "系统管理员" : hasPackage ? "长期有效" : "可绑定套餐后生成订阅"}</span></div>
         {limit > 0 ? <div className="user-traffic"><span><b>{formatBytes(used)}</b> / {formatBytes(limit)} · {percent.toFixed(percent < 10 ? 1 : 0)}%</span><i><em style={{ width: `${percent}%` }} /></i></div> : <span className="user-unlimited">{pkg ? "流量不限" : "—"}</span>}
       </div>
       {!deleting && (lifecycle?.desired_state === "disabled" || accessDisabled || accessState === "disabling") && <UserAccessStatus items={lifecycle?.access} />}
-      {view === "renewal" && !admin && <div className="user-renew-actions">{[30, 90, 365].map((days) => <button key={days} type="button" disabled={!hasPackage || deleting || Boolean(busy)} onClick={() => onExtend(days)}>+{days} 天</button>)}<button type="button" disabled={!hasPackage || deleting || Boolean(busy)} onClick={() => onDialog({ kind: "renew", user })}>自定义续期</button></div>}
+      {lastPackage && <><div className="user-renew-actions"><button type="button" disabled={!lastPackage.rebindable || deleting || Boolean(busy)} onClick={() => onDialog({ kind: "rebind", user })}>重新绑定上次套餐并续期</button></div>{!lastPackage.rebindable && <p className="user-delete-pending">{lastPackage.reason}；请打开下方「套餐」管理。</p>}</>}
+      {view === "renewal" && !admin && <div className="user-renew-actions">{[30, 90, 365].map((days) => <button key={days} type="button" disabled={!(hasPackage || lastPackage?.rebindable) || deleting || Boolean(busy)} onClick={() => lastPackage ? onDialog({ kind: "rebind", user, days }) : onExtend(days)}>+{days} 天</button>)}<button type="button" disabled={!(hasPackage || lastPackage?.rebindable) || deleting || Boolean(busy)} onClick={() => onDialog({ kind: lastPackage ? "rebind" : "renew", user })}>自定义续期</button></div>}
       <footer>
         <button type="button" onClick={() => onDialog({ kind: "subscription", user })} disabled={!hasPackage}><Link2 />订阅</button>
         <button type="button" onClick={() => onDialog({ kind: "uris", user })}><Link2 />节点 URI</button>
@@ -464,22 +469,26 @@ function DisableUserDialog({ token, user, onClose, onConfirm }: { token: string;
   </DialogShell>;
 }
 
-function RenewDialog({ token, user, lifecycle, onClose, onSaved }: { token: string; user: ManagedUser; lifecycle?: ManagedUserLifecycle; onClose: () => void; onSaved: () => Promise<void> }) {
-  const [days, setDays] = useState("30"); const [saving, setSaving] = useState(false); const [error, setError] = useState("");
+function RenewDialog({ token, user, lifecycle, rebind = false, expiredPackage, initialDays = 30, onClose, onSaved }: { token: string; user: ManagedUser; lifecycle?: ManagedUserLifecycle; rebind?: boolean; expiredPackage?: ManagedUserExpiredPackage; initialDays?: number; onClose: () => void; onSaved: (warnings?: string[]) => Promise<void> }) {
+  const [days, setDays] = useState(String(initialDays)); const [saving, setSaving] = useState(false); const [error, setError] = useState("");
+  const canRebind = Boolean(expiredUnboundPackage(user, expiredPackage)?.rebindable);
   let preview = "";
-  try { preview = renewedDate(user.package_end_date, parseRenewDays(days)); } catch { /* Invalid input is explained on save. */ }
+  try { preview = rebind ? rebindPackageInput(user, expiredPackage, parseRenewDays(days)).expire_date : renewedDate(user.package_end_date, parseRenewDays(days)); } catch { /* Invalid input is explained on save. */ }
   async function save() {
+    if (saving) return;
     setError("");
     try {
       const value = parseRenewDays(days);
+      const body = rebind ? rebindPackageInput(user, expiredPackage, value) : undefined;
+      if (body && !window.confirm(`确认将 ${user.username} 重新绑定上次套餐「${expiredPackage?.last_package_name || `#${body.package_id}`}」，从台湾今天 ${body.start_date} 起续期 ${value} 天，新到期日为 ${body.expire_date}？本周期已用流量将清零且无法找回，不继承旧到期日；沿用当前每月重置设置和流量覆写。官方将重建该套餐所在服务器的 Core，可能短暂中断连接。`)) return;
       const confirmed = confirmCredentialWrite(lifecycle);
       if (confirmed === null) return;
       setSaving(true);
-      await extendManagedUserPackage(token, user.username, value, confirmed);
-      await onSaved();
+      const result = body ? await assignManagedUserPackage(token, { ...body, confirm_disabled: confirmed }) : await extendManagedUserPackage(token, user.username, value, confirmed);
+      await onSaved(body ? result.warnings : undefined);
     } catch (err) { setError(messageOf(err, "续期失败")); } finally { setSaving(false); }
   }
-  return <DialogShell title="自定义续期" subtitle={`用户：${user.username}`} onClose={saving ? () => {} : onClose} footer={<><button type="button" onClick={onClose} disabled={saving}>取消</button><button className="primary" type="button" onClick={() => void save()} disabled={saving}>{saving ? "续期中..." : "确认续期"}</button></>}><div className="user-form one"><label><span>续期天数</span><input type="number" min="1" max="3650" step="1" value={days} onChange={(event) => setDays(event.target.value)} /><small>请输入 1–3650 之间的整数。已过期用户从今天开始计算。</small></label>{preview && <p>预计续期至 {preview}</p>}{error && <p className="user-form-error">{error}</p>}</div></DialogShell>;
+  return <DialogShell title={rebind ? "重新绑定上次套餐并续期" : "自定义续期"} subtitle={`用户：${user.username}`} onClose={saving ? () => {} : onClose} footer={<><button type="button" onClick={onClose} disabled={saving}>取消</button><button className="primary" type="button" onClick={() => void save()} disabled={saving || (rebind && !canRebind)}>{saving ? "续期中..." : rebind ? "确认重新绑定并续期" : "确认续期"}</button></>}><div className="user-form one">{rebind && <><p>上次套餐：{expiredPackage?.last_package_name || `#${expiredPackage?.last_package_id}`}。从台湾今天开始计算，重置本周期流量，不继承旧到期日；沿用每月重置设置和流量覆写。官方将重建该套餐所在服务器的 Core。</p><div className="user-renew-actions">{[30, 90, 365].map((value) => <button key={value} type="button" disabled={saving} onClick={() => setDays(String(value))}>+{value} 天</button>)}</div>{!canRebind && <p className="user-form-error">{expiredPackage?.reason || "上次套餐信息已变更，请关闭后在「套餐」中核对"}</p>}</>}<label><span>续期天数</span><input type="number" min="1" max="3650" step="1" value={days} onChange={(event) => setDays(event.target.value)} disabled={saving} /><small>请输入 1–3650 之间的整数。已过期用户从今天开始计算。</small></label>{preview && <p>预计续期至 {preview}</p>}{error && <p className="user-form-error">{error}</p>}</div></DialogShell>;
 }
 
 function URIDialog({ token, user, onClose }: { token: string; user: ManagedUser; onClose: () => void }) {

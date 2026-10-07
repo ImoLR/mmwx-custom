@@ -1,3 +1,5 @@
+import type { ManagedUser, ManagedUserExpiredPackage, ManagedUserPackageInput } from "./types";
+
 export type ExpiryFilter = "all" | "expired" | "d7" | "d30" | "permanent";
 
 export function remainingDays(expiry: string | null | undefined, now = Date.now()): number | null {
@@ -6,12 +8,33 @@ export function remainingDays(expiry: string | null | undefined, now = Date.now(
   return Number.isNaN(end) ? null : Math.ceil((end - now) / 86400000);
 }
 
-export function matchesExpiry(expiry: string | null | undefined, filter: ExpiryFilter, now = Date.now()) {
+export function matchesExpiry(expiry: string | null | undefined, filter: ExpiryFilter, now = Date.now(), lastPackageEndDate?: string | null) {
   if (filter === "all") return true;
+  if (!expiry && lastPackageEndDate) return filter === "expired";
   const days = remainingDays(expiry, now);
   if (filter === "permanent") return days === null;
   if (days === null) return false;
   return filter === "expired" ? days <= 0 : days > 0 && days <= (filter === "d7" ? 7 : 30);
+}
+
+export function expiredUnboundPackage(user: ManagedUser, lastPackage?: ManagedUserExpiredPackage) {
+  return user.role !== "admin" && !user.package_id && !user.assignment_package_ids?.length && lastPackage?.last_package_end_date ? lastPackage : undefined;
+}
+
+export function rebindPackageInput(user: ManagedUser, lastPackage: ManagedUserExpiredPackage | undefined, days: number, confirmDisabled = false, now = new Date()): ManagedUserPackageInput {
+  parseRenewDays(String(days));
+  if (!expiredUnboundPackage(user, lastPackage) || !lastPackage?.rebindable || !lastPackage.last_package_id) throw new Error(lastPackage?.reason || "上次套餐不可重新绑定，请在「套餐」中重新选择");
+  // Taiwan calendar days, independent of the browser timezone or the old expiry.
+  const date = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+  const startDate = date.toISOString().slice(0, 10);
+  date.setUTCDate(date.getUTCDate() + days);
+  return {
+    username: user.username, package_id: lastPackage.last_package_id,
+    start_date: startDate, expire_date: date.toISOString().slice(0, 10), permanent: false,
+    is_reset: user.is_reset ?? true, reset_day: user.reset_day || 1,
+    inherit_expire_date: false, inherit_traffic: false,
+    traffic_limit_override_gb: user.traffic_limit_override_gb ?? null, confirm_disabled: confirmDisabled,
+  };
 }
 
 export function validUsername(username: string) { return /^[A-Za-z0-9-]{3,20}$/.test(username); }
