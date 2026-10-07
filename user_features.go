@@ -16,6 +16,55 @@ import (
 
 const disabledUserFeatureWarning = "该用户处于禁用状态，此操作可能使其节点凭据重新可用"
 
+type managedUserExpiredPackage struct {
+	Role               string  `json:"role"`
+	LastPackageID      *int64  `json:"last_package_id"`
+	LastPackageEndDate *string `json:"last_package_end_date"`
+	LastPackageName    *string `json:"last_package_name"`
+	Rebindable         bool    `json:"rebindable"`
+	Reason             string  `json:"reason"`
+}
+
+func (s *postgresAdminSessionStore) expiredManagedUserPackages(ctx context.Context) (map[string]managedUserExpiredPackage, error) {
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, `SELECT u.username, u.role, u.last_package_id,
+		to_char(u.last_package_end_date, 'YYYY-MM-DD"T"HH24:MI:SS'), p.name, p.id IS NOT NULL,
+		EXISTS(SELECT 1 FROM users other WHERE other.package_id=u.last_package_id AND other.username<>u.username) OR
+		EXISTS(SELECT 1 FROM user_package_assignments other WHERE other.package_id=u.last_package_id AND other.username<>u.username)
+		FROM users u LEFT JOIN packages p ON p.id=u.last_package_id
+		WHERE u.package_id IS NULL
+		AND NOT EXISTS(SELECT 1 FROM user_package_assignments a WHERE a.username=u.username)
+		AND (u.last_package_id IS NOT NULL OR u.last_package_end_date IS NOT NULL)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]managedUserExpiredPackage)
+	for rows.Next() {
+		var username string
+		var item managedUserExpiredPackage
+		var exists, otherOwner bool
+		if err := rows.Scan(&username, &item.Role, &item.LastPackageID, &item.LastPackageEndDate, &item.LastPackageName, &exists, &otherOwner); err != nil {
+			return nil, err
+		}
+		switch {
+		case item.Role == "admin":
+			item.Reason = "管理员不适用"
+		case item.LastPackageEndDate == nil:
+			item.Reason = "没有上次套餐到期记录"
+		case !exists:
+			item.Reason = "上次套餐已删除或不存在，请在「套餐」中选择其他套餐"
+		case otherOwner:
+			item.Reason = "上次套餐已绑定其他用户，请在「套餐」中选择其他套餐"
+		default:
+			item.Rebindable = true
+		}
+		result[username] = item
+	}
+	return result, rows.Err()
+}
+
 type managedUserFeatureRequest struct {
 	Username               string          `json:"username"`
 	PackageID              int64           `json:"package_id"`

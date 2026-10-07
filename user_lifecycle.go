@@ -1018,9 +1018,17 @@ func (a *app) userLifecycleIndexHandler(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "failed to read lifecycle state"})
 		return
 	}
+	expiredPackages := map[string]managedUserExpiredPackage{}
+	if postgres, ok := store.(*postgresAdminSessionStore); ok {
+		expiredPackages, err = postgres.expiredManagedUserPackages(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "读取上次套餐失败"})
+			return
+		}
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	a.attachUserAccess(states)
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "users": states})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "users": states, "expired_packages": expiredPackages})
 }
 
 func (a *app) buildDeletionPlan(ctx context.Context, token, username string) ([]lifecyclePlanItem, error) {
