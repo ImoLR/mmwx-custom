@@ -352,6 +352,7 @@ function sanitizeInbound(item: XrayObject, original?: XrayObject) {
 }
 
 async function replaceInboundFlow(token: string, server: RemoteServer, tag: string, inbound: XrayObject, nodeName?: string) {
+  if (inbound.tag !== tag) throw new Error("修复流控时不能同时修改入站标识，请先保存流控修复，再单独改名");
   const before = await fetchXrayNodes(token);
   if (before.success === false || !before.nodes) throw new Error("读取节点失败，未提交流控修复");
   const related = (nodes: XrayNode[]) => nodes.filter((node) => node.inbound_tag === tag && node.node_type !== "routed" && nodeManagedServer(node, [server]));
@@ -1191,7 +1192,10 @@ export function ManagedNodeEditDialog({ node, servers, token, username, onClose,
       const inbound = sanitizeInbound({ ...next, tag: state.originalTag }, state.item);
       if (["snell", "mieru", "anytls"].includes(asString(inbound.protocol)) && state.server.xray_mode === "external") throw new Error("Snell / Mieru / AnyTLS 需要内置 Xray");
       const nodeName = asString(next._wizard_node_name).trim() || node.node_name;
-      if (inboundFlowNeedsRepair(state.item, inbound)) await replaceInboundFlow(token, state.server, state.originalTag, inbound, nodeName);
+      if (inboundFlowNeedsRepair(state.item, inbound)) {
+        if (next.tag !== state.originalTag) throw new Error("修复流控时不能同时修改入站标识，请先保存流控修复，再单独改名");
+        await replaceInboundFlow(token, state.server, state.originalTag, inbound, nodeName);
+      }
       else {
         const response = await mutateXrayInbound(token, state.server.id, { action: "update", tag: state.originalTag, inbound, node_name: nodeName });
         if (response.success === false) throw new Error(response.message || "修改失败");

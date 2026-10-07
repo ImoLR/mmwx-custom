@@ -223,6 +223,24 @@ test("ordinary saves never replace unchanged, non-mixed or non-flow clients", as
   assert.equal(inboundFlowNeedsRepair(normalizeInboundFlow(inbound, "REALITY"), normalizeInboundFlow(inbound, "XTLS-Vision-REALITY")), false);
 });
 
+test("both editor paths reject renaming a mixed inbound during repair before any mutation", async () => {
+  const noop = () => undefined;
+  for (const component of ["", "ManagedNodeEditDialog"]) for (const protocol of ["vless", "trojan"]) for (const mode of ["REALITY", "XTLS-Vision-REALITY"]) {
+    const payloads: any[] = [], errors: string[] = [];
+    const server = { id: 12, name: "Boil", xray_mode: "external" };
+    const original = { ...inbound, protocol };
+    await compileSave(component, component ? "save" : "saveEditor", {
+      server, token: "test", node, editor: { kind: "inbound", item: original, originalTag: original.tag }, state: { server, item: original, originalTag: original.tag },
+      setBusy: noop, setEditor: noop, setError: (v: string) => { if (v) errors.push(v); }, setNotice: (v: any) => { if (v?.kind === "error") errors.push(v.text); },
+      fetchXrayNodes: async () => ({ success: true, nodes: [node] }),
+      mutateXrayInbound: async (_t: string, _id: number, body: any) => { payloads.push(body); return { success: true }; },
+      assignConnectionPort: noop, refreshInbounds: noop, onSaved: noop, onClose: noop,
+    })({ ...original, tag: "renamed", _wizard_security: mode });
+    assert.deepEqual(payloads, [], `${component || "editor"} ${protocol} ${mode}`);
+    assert.deepEqual(errors, ["修复流控时不能同时修改入站标识，请先保存流控修复，再单独改名"]);
+  }
+});
+
 test("repair verifies both link formats, every relay, missing nodes and partial write failures", async () => {
   const fixed = normalizeInboundFlow(inbound, "XTLS-Vision-REALITY");
   assert.match(inboundFlowRepairWarning(fixed, [{ ...relay, clash_config: node.parsed_config, parsed_config: JSON.stringify({ type: "vless", uuid: "ADMIN-UUID" }) }], vision), /usb vless-relay/);
