@@ -2,6 +2,20 @@ import type { NodeTunnel, NodeTunnelChain, RemoteServer, XrayNode, XrayObject } 
 
 export type NodeRoutingState = { rules?: XrayObject[]; balancers?: XrayObject[]; outbounds?: XrayObject[] };
 
+type NodeRoutingResponse = { success?: boolean; message?: string; error?: string; routing?: NodeRoutingState; outbounds?: XrayObject[] };
+
+export function nodeRoutingReadResult(server: Pick<RemoteServer, "id" | "name">, rules: PromiseSettledResult<NodeRoutingResponse>, outbounds: PromiseSettledResult<NodeRoutingResponse>) {
+  const failures: string[] = [];
+  for (const [label, result] of [["路由", rules], ["出站", outbounds]] as const) {
+    if (result.status === "rejected") failures.push(`${label}：${result.reason instanceof Error ? result.reason.message : "请求失败"}`);
+    else if (result.value.success === false) failures.push(`${label}：${result.value.error || result.value.message || "读取失败"}`);
+  }
+  if (failures.length || rules.status !== "fulfilled" || outbounds.status !== "fulfilled") {
+    return { state: undefined, error: `${server.name}（#${server.id}）：${failures.join("；")}` };
+  }
+  return { state: { ...rules.value.routing, outbounds: outbounds.value.outbounds || [] }, error: "" };
+}
+
 export function nodeCardConfig(node: XrayNode): XrayObject {
   for (const raw of [node.clash_config, node.parsed_config]) {
     try { const value = JSON.parse(raw || "{}"); if (value && typeof value === "object" && value.server) return value; } catch { /* Historical configs may be invalid. */ }

@@ -1576,6 +1576,7 @@ export type UserConnectionsResponse = {
   geo_available?: boolean;
   connection_count_ready?: boolean;
   excluded_server_names?: string[];
+  not_ready_server_ids?: Array<string | number>;
 };
 
 export type HelperUserConnectionsResponse = UserConnectionsResponse & {

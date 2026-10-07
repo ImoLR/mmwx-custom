@@ -1,4 +1,30 @@
-import type { ManagedUser, ManagedUserExpiredPackage, ManagedUserPackageInput } from "./types";
+import type { HelperUserConnectionsResponse, ManagedUser, ManagedUserExpiredPackage, ManagedUserPackageInput, RemoteServer, UserConnectionsResponse } from "./types";
+
+export function userConnectionCoverage(formal: UserConnectionsResponse | null, helper: HelperUserConnectionsResponse | null, servers: RemoteServer[] | null) {
+  if (!formal && !helper) return { incomplete: true, message: "" };
+  const available = new Set(helper?.success ? helper.available_server_ids?.map(String) : []);
+  const excluded = [...new Set(formal?.excluded_server_names || [])];
+  const covered: string[] = [], missing: string[] = [], unknown: string[] = [];
+  for (const name of excluded) {
+    const matches = servers?.filter((server) => server.name === name) || [];
+    if (!matches.length) unknown.push(name);
+    else if (matches.every((server) => available.has(String(server.id)))) covered.push(name);
+    else missing.push(name);
+  }
+  const notReady = (formal?.not_ready_server_ids || []).filter((id) => !available.has(String(id)));
+  const notReadyNames = notReady.map((id) => servers?.find((server) => String(server.id) === String(id))?.name || `服务器 #${id}`);
+  const waiting = formal?.connection_count_ready === false && !(formal.not_ready_server_ids?.length);
+  const parts: string[] = [];
+  if (!formal?.success) parts.push("官方连接／IP 数据读取失败，请稍后刷新");
+  if (!helper?.success) parts.push("Helper 连接数据读取失败，请稍后刷新");
+  if (missing.length) parts.push(`连接数待补齐：${missing.join("、")}（请检查 Helper 是否在线并有最新上报）`);
+  if (unknown.length) parts.push(`连接数覆盖待核对：${unknown.join("、")}（无法匹配服务器列表，请刷新）`);
+  if (notReadyNames.length) parts.push(`官方连接统计尚未就绪：${notReadyNames.join("、")}`);
+  else if (waiting) parts.push("官方连接统计尚未就绪");
+  if (covered.length) parts.push(`连接数已由 Helper 补齐：${covered.join("、")}`);
+  if (excluded.length) parts.push(`IP／地理位置仍仅显示官方覆盖的数据；未覆盖：${excluded.join("、")}`);
+  return { incomplete: !formal?.success || !helper?.success || missing.length > 0 || unknown.length > 0 || notReady.length > 0 || waiting, message: parts.join("。") };
+}
 
 export type ExpiryFilter = "all" | "expired" | "d7" | "d30" | "permanent";
 

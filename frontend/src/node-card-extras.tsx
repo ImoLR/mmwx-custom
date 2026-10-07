@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { cancelNodeRelay, fetchBlockedNodeIds, fetchNodeTunnels, fetchNodeUnlocks, fetchRemoteRouting, fetchXrayInbounds, fetchXrayOutbounds, setNodeRelay } from "./api";
-import { externalNodeSource, nodeCardConfig, nodeManagedServer, nodeTunnelChain, nodeTunnels, resolveWholeOutbound, tunnelEntryHost, type NodeRoutingState } from "./node-card-logic";
+import { externalNodeSource, nodeCardConfig, nodeManagedServer, nodeRoutingReadResult, nodeTunnelChain, nodeTunnels, resolveWholeOutbound, tunnelEntryHost, type NodeRoutingState } from "./node-card-logic";
 import { removeNodeTunnel } from "./node-manager-tools";
 import type { NodeTunnel, NodeTunnelChain, RemoteServer, XrayNode, XrayObject } from "./types";
 import { nodeInboundFlow } from "./inbound-flow";
@@ -18,6 +18,7 @@ export function useNodeCardExtras(token: string, nodes: XrayNode[], servers: Rem
   const [revision, setRevision] = useState(0);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const serverIds = [...new Set(nodes.map((node) => nodeManagedServer(node, servers)?.id).filter((id): id is number => id != null))].sort((a, b) => a - b).join(",");
+  const serverNames = JSON.stringify(Object.fromEntries(servers.map(({ id, name }) => [id, name])));
   const flowServers = JSON.stringify(servers.filter((server) => server.status === "connected" && nodes.some((node) => node.inbound_tag && node.node_type !== "routed" && ["vless", "trojan"].includes(String(node.protocol || nodeCardConfig(node).type).toLowerCase()) && nodeManagedServer(node, [server]))).map(({ id, name }) => ({ id, name })));
   const refresh = useCallback(async () => { setRevision((value) => value + 1); }, []);
   useEffect(() => {
@@ -48,20 +49,22 @@ export function useNodeCardExtras(token: string, nodes: XrayNode[], servers: Rem
       if (inFlight) return;
       inFlight = true;
       try {
-        const next: Record<number, NodeRoutingState> = {}, failures: number[] = [];
+        const next: Record<number, NodeRoutingState> = {}, failures: string[] = [];
+        const names: Record<string, string> = JSON.parse(serverNames);
         // One pair of reads per server, irrespective of its node count.
         for (const id of serverIds.split(",").filter(Boolean).map(Number)) {
           const [rules, outbounds] = await Promise.allSettled([fetchRemoteRouting(token, id), fetchXrayOutbounds(token, id)]);
           if (!active) return;
-          if (rules.status === "fulfilled" && outbounds.status === "fulfilled") next[id] = { ...rules.value.routing, outbounds: outbounds.value.outbounds || [] };
-          else failures.push(id);
+          const result = nodeRoutingReadResult({ id, name: names[id] || `服务器 ${id}` }, rules, outbounds);
+          if (result.state) next[id] = result.state;
+          else failures.push(result.error);
         }
-        if (active) { setRouting(next); setErrors((current) => ({ ...current, routing: failures.length ? "部分服务器出站状态读取失败" : "" })); }
+        if (active) { setRouting(next); setErrors((current) => ({ ...current, routing: failures.length ? `出站状态读取失败：${failures.join("；")}。请检查对应服务器的 Agent 连接后刷新，页面每 60 秒自动重试。` : "" })); }
       } finally { inFlight = false; }
     };
     void load(); const timer = window.setInterval(() => { if (!document.hidden) void load(); }, 60000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [token, serverIds, revision]);
+  }, [token, serverIds, serverNames, revision]);
   useEffect(() => {
     let active = true;
     const pending = new Set<number>(), failures = new Map<number, string>();

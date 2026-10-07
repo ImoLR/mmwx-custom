@@ -35,6 +35,7 @@ import {
   repairAdminCredentials,
   fetchUserConnections,
   fetchHelperUserConnections,
+  fetchRemoteServers,
   createManagedUser,
   deleteManagedUser,
   extendManagedUserPackage,
@@ -60,9 +61,9 @@ import {
   updateManagedUserRemark,
   updateManagedUserShortCode,
 } from "./api";
-import type { HelperUserConnectionsResponse, UserConnectionsResponse, NodeURIItem, ManagedPackage, ManagedUser, ManagedUserImportedNode, ManagedUserDeleteResult, ManagedUserDeletionPreview, ManagedUserLifecycle, ManagedUserLifecycleItem, ManagedUserExpiredPackage, ManagedUserPackageAssignment, UserAccessNodeStatus, UserSubaccount, XrayNode } from "./types";
+import type { HelperUserConnectionsResponse, RemoteServer, UserConnectionsResponse, NodeURIItem, ManagedPackage, ManagedUser, ManagedUserImportedNode, ManagedUserDeleteResult, ManagedUserDeletionPreview, ManagedUserLifecycle, ManagedUserLifecycleItem, ManagedUserExpiredPackage, ManagedUserPackageAssignment, UserAccessNodeStatus, UserSubaccount, XrayNode } from "./types";
 import { fetchUserManagementData } from "./user-management-state";
-import { credentialWriteState, eligiblePackages, expiredUnboundPackage, rebindPackageInput, matchesExpiry, parseRenewDays, parseTrafficOverride, remainingDays, renewedDate, searchUserURIs, trafficOverrideGB, validUsername } from "./user-manager-logic";
+import { credentialWriteState, eligiblePackages, expiredUnboundPackage, rebindPackageInput, matchesExpiry, parseRenewDays, parseTrafficOverride, remainingDays, renewedDate, searchUserURIs, trafficOverrideGB, userConnectionCoverage, validUsername } from "./user-manager-logic";
 import type { ExpiryFilter } from "./user-manager-logic";
 import autoIcon from "./assets/client-icons/auto.svg";
 import clashIcon from "./assets/client-icons/clash_color.png";
@@ -134,24 +135,28 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
   const [expiryFilter, setExpiryFilter] = useState<ExpiryFilter>("all");
   const [connections, setConnections] = useState<UserConnectionsResponse | null>(null);
   const [helperConnections, setHelperConnections] = useState<HelperUserConnectionsResponse | null>(null);
+  const [servers, setServers] = useState<RemoteServer[] | null>(null);
+  const coverage = userConnectionCoverage(connections, helperConnections, servers);
   const [realtimeError, setRealtimeError] = useState("");
   const [view, setView] = useState<"full" | "renewal">(() => localStorage.getItem("users-view-mode") === "package" ? "renewal" : "full");
 
   const load = useCallback(async (options?: { background?: boolean; success?: string }) => {
     if (!options?.background) setLoading(true);
-    const [result, lifecycleResult] = await Promise.all([
+    const [result, lifecycleResult, serverResult] = await Promise.all([
       fetchUserManagementData(
         () => fetchManagedUsers(token),
         () => fetchPackages(token),
         () => fetchManagedUserNodes(token),
       ),
       fetchManagedUserLifecycles(token).then((response) => ({ users: response.users, expiredPackages: response.expired_packages ?? {}, error: response.expired_packages_error ?? "" })).catch((error) => ({ users: {}, expiredPackages: {}, error: messageOf(error, "读取用户生命周期失败") })),
+      fetchRemoteServers(token).then((response) => response.success ? response.servers || [] : null).catch(() => null),
     ]);
     if (result.users) {
       setUsers(result.users);
     }
     setLifecycles(lifecycleResult.users);
     setExpiredPackages(lifecycleResult.expiredPackages);
+    setServers(serverResult);
     if (result.packages) setPackages(result.packages);
     if (result.nodes) setNodes(result.nodes);
     const failures = lifecycleResult.error ? [...result.failures, lifecycleResult.error] : result.failures;
@@ -281,14 +286,14 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
         {([["all", "全部到期时间"], ["expired", "已过期"], ["d7", "7 日内"], ["d30", "30 日内"], ["permanent", "长期"]] as const).map(([value, label]) => <button key={value} type="button" className={expiryFilter === value ? "active" : ""} onClick={() => setExpiryFilter(value)}>{label}</button>)}
       </section>}
 
-      {(realtimeError || connections?.connection_count_ready === false || (connections?.excluded_server_names?.length ?? 0) > 0) && <p className="user-delete-pending">{realtimeError || `统计不完整：${connections?.excluded_server_names?.join("、") || "部分服务器暂不支持连接统计"}`}</p>}
+      {(realtimeError || coverage.message) && <p className="user-delete-pending">{[realtimeError, coverage.message].filter(Boolean).join("。")}</p>}
 
       {loading ? <div className="user-empty">正在读取用户...</div> : visible.length === 0 ? <div className="user-empty">没有符合条件的用户</div> : (
         <section className={`user-list ${view}`}>
           {visible.map((user) => {
             const pkg = user.package_id ? packageById.get(user.package_id) : undefined;
             return <UserCard key={user.username} user={user} lifecycle={lifecycles[user.username]} expiredPackage={expiredPackages[user.username]} pkg={pkg} busy={busy} view={view} currentUsername={currentUsername}
-              realtime={<UserRealtime user={user} connections={connections} helper={helperConnections} />}
+              realtime={<UserRealtime user={user} connections={connections} helper={helperConnections} incomplete={coverage.incomplete} />}
               onDialog={setDialog}
               onStatus={(enable) => {
                 if (!enable) { setDialog({ kind: "disable", user }); return; }
@@ -405,7 +410,7 @@ function UserCard({ user, lifecycle, expiredPackage, pkg, busy, view, currentUse
 
 function UserFact({ label, value }: { label: string; value: string }) { return <div><span>{label}</span><strong title={value}>{value}</strong></div>; }
 
-function UserRealtime({ user, connections, helper }: { user: ManagedUser; connections: UserConnectionsResponse | null; helper: HelperUserConnectionsResponse | null }) {
+function UserRealtime({ user, connections, helper, incomplete }: { user: ManagedUser; connections: UserConnectionsResponse | null; helper: HelperUserConnectionsResponse | null; incomplete: boolean }) {
   const rate = helper?.user_rates?.[user.username];
   const count = (connections?.connections?.[user.username] ?? 0) + (helper?.connections?.[user.username] ?? 0);
   const ips = Object.entries(connections?.ips?.[user.username] ?? {}).sort((a, b) => b[1] - a[1]);
@@ -415,7 +420,7 @@ function UserRealtime({ user, connections, helper }: { user: ManagedUser; connec
   }).filter(Boolean);
   return <div className="user-facts">
     <UserFact label="实时网速 · 5 秒" value={rate?.rate_fresh ? `↑ ${formatBytes(rate.upload_bytes_per_second)}/s · ↓ ${formatBytes(rate.download_bytes_per_second)}/s` : "暂无新鲜数据"} />
-    <UserFact label="连接数" value={connections || helper ? `${count}${connections?.connection_count_ready === false ? "+" : ""}` : "—"} />
+    <UserFact label="连接数" value={connections || helper ? `${count}${incomplete ? "+" : ""}` : "—"} />
     <UserFact label={`IP（${ips.length}）`} value={ips.map(([ip, count]) => `${ip} ×${count}`).join("、") || "—"} />
     <UserFact label="地理位置" value={Array.from(new Set(geo)).join("、") || (connections?.geo_available === false ? "暂不可用" : "—")} />
   </div>;

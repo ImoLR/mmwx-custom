@@ -182,11 +182,12 @@ test("history query notices preserve disabled lifecycle on page load and polling
       fetchManagedUserLifecycles: async () => ({ users, expired_packages: {}, expired_packages_error: historyError }),
       fetchUserManagementData: async () => ({ users: [{ username: "alice" }], packages: [], nodes: [], failures: [] }),
       fetchManagedUsers: noop, fetchPackages: noop, fetchManagedUserNodes: noop,
+      fetchRemoteServers: async () => ({ success: true, servers: [] }),
       fetchUserConnections: async () => ({}), fetchHelperUserConnections: async () => ({}),
       messageOf: (error: Error) => error.message,
       document: { visibilityState: "visible", addEventListener: noop, removeEventListener: noop },
       window: { setTimeout: noop, clearTimeout: noop, confirm: () => { confirmations++; return false; }, alert: noop },
-      ...Object.fromEntries(["Loading", "Users", "Lifecycles", "ExpiredPackages", "Packages", "Nodes", "Notice", "Connections", "HelperConnections", "RealtimeError"].map((name) => [`set${name}`, (value: unknown) => { state[name] = value; }])),
+      ...Object.fromEntries(["Loading", "Users", "Lifecycles", "ExpiredPackages", "Packages", "Nodes", "Servers", "Notice", "Connections", "HelperConnections", "RealtimeError"].map((name) => [`set${name}`, (value: unknown) => { state[name] = value; }])),
     };
     const handlers = new Function(...Object.keys(deps), `${compiled}\nreturn { load, confirmCredentialWrite };`)(...Object.values(deps));
     await handlers.load();

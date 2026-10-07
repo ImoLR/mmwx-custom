@@ -1,7 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { externalNodeSource, nodeTunnelChain, nodeTunnels, resolveWholeOutbound, wholeOutboundRule } from "../../frontend/src/node-card-logic.ts";
+import { externalNodeSource, nodeRoutingReadResult, nodeTunnelChain, nodeTunnels, resolveWholeOutbound, wholeOutboundRule } from "../../frontend/src/node-card-logic.ts";
 
+test("routing failures identify the server, failed read and upstream reason", () => {
+  const server = { id: 12, name: "Boil Hinet 158" };
+  const rules = { status: "fulfilled", value: { success: true, routing: { rules: [] } } } as const;
+  const outbounds = { status: "fulfilled", value: { success: true, outbounds: [] } } as const;
+  const rejected = { status: "rejected", reason: new Error("HTTP 502: Agent timeout") } as const;
+  const result = nodeRoutingReadResult(server, rejected, outbounds);
+  assert.equal(result.state, undefined);
+  assert.match(result.error, /Boil Hinet 158（#12）.*路由：HTTP 502: Agent timeout/);
+  const both = nodeRoutingReadResult(server, rejected, { status: "fulfilled", value: { success: false, message: "Agent disconnected" } });
+  assert.match(both.error, /路由：.*出站：Agent disconnected/);
+  assert.equal(both.state, undefined);
+  assert.deepEqual(nodeRoutingReadResult(server, rules, outbounds), { state: { rules: [], outbounds: [] }, error: "" });
+});
 const server = { id: 1, name: "entry", domain: "entry.example", ip_address: "192.0.2.1" };
 const node = { id: 1, node_name: "source", original_server: "entry", inbound_tag: "in", clash_config: JSON.stringify({ server: "192.0.2.1", port: 443 }) };
 test("whole outbound uses first unconstrained dedicated rule and hides built-ins", () => {
