@@ -48,14 +48,16 @@ type helperStateData struct {
 }
 
 type helperServerIdentity struct {
-	OfficialServerID  string    `json:"official_remote_server_id"`
-	CustomServerUUID  string    `json:"custom_server_uuid"`
-	HelperTokenHash   string    `json:"helper_token_hash"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	LastSeenAt        time.Time `json:"last_seen_at,omitempty"`
-	LastHelperVersion string    `json:"last_helper_version,omitempty"`
-	MachineID         string    `json:"machine_id,omitempty"`
+	OfficialServerID            string    `json:"official_remote_server_id"`
+	CustomServerUUID            string    `json:"custom_server_uuid"`
+	HelperTokenHash             string    `json:"helper_token_hash"`
+	PendingHelperTokenHash      string    `json:"pending_helper_token_hash,omitempty"`
+	PendingHelperTokenExpiresAt time.Time `json:"pending_helper_token_expires_at,omitempty"`
+	CreatedAt                   time.Time `json:"created_at"`
+	UpdatedAt                   time.Time `json:"updated_at"`
+	LastSeenAt                  time.Time `json:"last_seen_at,omitempty"`
+	LastHelperVersion           string    `json:"last_helper_version,omitempty"`
+	MachineID                   string    `json:"machine_id,omitempty"`
 }
 
 type helperInstallToken struct {
@@ -204,14 +206,10 @@ func (s *helperState) createInstallTokenForMode(officialServerID, installMode st
 		}
 	}
 
-	helperToken := ""
 	preserveExisting := ok && identity.HelperTokenHash != ""
-	if !preserveExisting {
-		var err error
-		helperToken, err = randomSecret(32)
-		if err != nil {
-			return helperInstallToken{}, "", err
-		}
+	helperToken, err := randomSecret(32)
+	if err != nil {
+		return helperInstallToken{}, "", err
 	}
 	identity.UpdatedAt = now
 	s.data.Servers[officialServerID] = identity
@@ -232,14 +230,11 @@ func (s *helperState) createInstallTokenForMode(officialServerID, installMode st
 		OfficialServerID: officialServerID,
 		CustomServerUUID: identity.CustomServerUUID,
 		HelperToken:      helperToken,
-		HelperTokenHash:  identity.HelperTokenHash,
+		HelperTokenHash:  hashSecret(helperToken),
 		CreatedAt:        now,
 		ExpiresAt:        now.Add(s.ttl),
 		PreserveExisting: preserveExisting,
 		InstallMode:      installMode,
-	}
-	if !preserveExisting {
-		record.HelperTokenHash = hashSecret(helperToken)
 	}
 	s.data.InstallTokens[record.TokenHash] = record
 	if err := s.saveLocked(); err != nil {
@@ -270,6 +265,9 @@ func (s *helperState) consumeInstallToken(rawToken string) (helperInstallToken, 
 	}
 	if !record.PreserveExisting {
 		identity.HelperTokenHash = record.HelperTokenHash
+	} else if record.HelperToken != "" {
+		identity.PendingHelperTokenHash = record.HelperTokenHash
+		identity.PendingHelperTokenExpiresAt = record.ExpiresAt.Add(24 * time.Hour)
 	}
 	identity.UpdatedAt = now
 	s.data.Servers[record.OfficialServerID] = identity
@@ -290,7 +288,7 @@ func (s *helperState) authorizeReporter(reportedID, token, version string) (stri
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for officialID, identity := range s.data.Servers {
-		if identity.CustomServerUUID == reportedID && identity.HelperTokenHash == tokenHash {
+		if identity.CustomServerUUID == reportedID && (identity.HelperTokenHash == tokenHash || identity.acceptsPendingToken(tokenHash, now)) {
 			identity.LastSeenAt = now
 			identity.LastHelperVersion = strings.TrimSpace(version)
 			identity.UpdatedAt = now
@@ -302,11 +300,18 @@ func (s *helperState) authorizeReporter(reportedID, token, version string) (stri
 	return "", "", false
 }
 
+func (identity helperServerIdentity) acceptsPendingToken(tokenHash string, now time.Time) bool {
+	return identity.PendingHelperTokenHash != "" && identity.PendingHelperTokenHash == tokenHash && now.Before(identity.PendingHelperTokenExpiresAt)
+}
+
 func (s *helperState) recordLegacyReporter(officialServerID, token, version string) string {
 	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	identity, ok := s.data.Servers[officialServerID]
+	if ok && identity.HelperTokenHash != "" && identity.HelperTokenHash != hashSecret(token) {
+		return ""
+	}
 	if !ok {
 		uuid, err := randomUUID()
 		if err != nil {
@@ -383,6 +388,13 @@ func equalManagementMappings(left, right []serverManagementMapping) bool {
 }
 
 func (s *helperState) pruneExpiredLocked(now time.Time) {
+	for key, identity := range s.data.Servers {
+		if identity.PendingHelperTokenHash != "" && !now.Before(identity.PendingHelperTokenExpiresAt) {
+			identity.PendingHelperTokenHash = ""
+			identity.PendingHelperTokenExpiresAt = time.Time{}
+			s.data.Servers[key] = identity
+		}
+	}
 	for key, record := range s.data.InstallTokens {
 		if now.After(record.ExpiresAt) {
 			delete(s.data.InstallTokens, key)
@@ -421,6 +433,9 @@ func (s *helperState) rebindMachine(rawInstallToken, machineID, helperToken stri
 	targetID := rebind.OfficialServerID
 	identity.OfficialServerID = targetID
 	identity.MachineID = machineID
+	// An in-place rebind kept its existing credential and consumed this install.
+	identity.PendingHelperTokenHash = ""
+	identity.PendingHelperTokenExpiresAt = time.Time{}
 	identity.UpdatedAt = now
 	s.data.Servers[targetID] = identity
 	if sourceID != targetID {

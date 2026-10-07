@@ -312,6 +312,9 @@ func (a *app) authorizedHelper(r *http.Request, serverID, version string) (strin
 		customUUID := ""
 		if a.helperState != nil {
 			customUUID = a.helperState.recordLegacyReporter(serverID, got, version)
+			if customUUID == "" {
+				return "", "", false
+			}
 		}
 		return serverID, customUUID, true
 	}

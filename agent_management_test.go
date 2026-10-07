@@ -42,7 +42,7 @@ func TestInstallTokenPreservesExistingIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !record.PreserveExisting || record.HelperToken != "" || rawToken == "" {
+	if !record.PreserveExisting || record.HelperToken == "" || record.HelperTokenHash != hashSecret(record.HelperToken) || rawToken == "" {
 		t.Fatalf("unexpected upgrade token: %#v", record)
 	}
 	if _, ok, err := state.consumeInstallToken(rawToken); err != nil || !ok {
@@ -137,7 +137,7 @@ func TestManagementCommandAndSignedResultRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := state.acceptManagementReport("7", &managementReport{Result: &result})
+	next, err := state.acceptManagementReport("7", "helper-token", &managementReport{Result: &result})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestStaleInvalidResultDoesNotBlockNextCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	corrupt := &managementResult{CommandID: stale.ID, Action: stale.Action, Success: false, Message: "legacy result", CompletedAt: time.Now().UTC(), Signature: "invalid"}
-	delivered, err := state.acceptManagementReport("7", &managementReport{Result: corrupt})
+	delivered, err := state.acceptManagementReport("7", "helper-token", &managementReport{Result: corrupt})
 	if err != nil {
 		t.Fatal(err)
 	}

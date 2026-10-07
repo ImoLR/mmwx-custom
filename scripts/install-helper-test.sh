@@ -66,7 +66,7 @@ EOF
 config_before="$(sha256sum "$legacy_root/etc/mmwxc-helper.env" | awk '{print $1}')"
 state_before="$(sha256sum "$legacy_root/var/lib/mmwxc-helper/state.json" | awk '{print $1}')"
 
-legacy_output="$(MMWXC_INSTALL_ROOT="$legacy_root" MMWXC_ASSET_DIR="$assets" "$ROOT_DIR/scripts/install-helper.sh")"
+legacy_output="$(MMWXC_HELPER_SERVER_ID=fresh-server-id MMWXC_HELPER_TOKEN=fresh-install-token MMWXC_INSTALL_ROOT="$legacy_root" MMWXC_ASSET_DIR="$assets" "$ROOT_DIR/scripts/install-helper.sh")"
 grep -q '^\[mmwxc\] Custom Agent installer started$' <<<"$legacy_output"
 grep -q '^\[mmwxc\] Existing Helper identity/config detected; preserving it unchanged$' <<<"$legacy_output"
 grep -q '^\[mmwxc\] Helper version: v0.1.0 -> v0.4.2$' <<<"$legacy_output"

@@ -435,7 +435,7 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 		ConnectionCount: request.ConnectionCount, SampledAt: request.Snapshot.SampledAt, UpdatedAt: now, HelperVersion: strings.TrimSpace(request.HelperVersion),
 	}
 	a.connectionMu.Unlock()
-	command, err := a.helperState.acceptManagementReport(officialID, request.Management)
+	command, err := a.helperState.acceptManagementReport(officialID, strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")), request.Management)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
 		return

@@ -29,7 +29,7 @@ func TestHelperUpdateProgressIsAuthenticatedAndSurvivesHeartbeat(t *testing.T) {
 	if progress == nil || progress.Component != "helper" || progress.Phase != "verifying" || progress.TargetVersion != "v0.5.2" {
 		t.Fatalf("progress=%#v", progress)
 	}
-	if _, err := state.acceptManagementReport("12", &managementReport{Status: agentStatus{Helper: componentStatus{Version: "v0.5.1"}}}); err != nil {
+	if _, err := state.acceptManagementReport("12", "helper-token", &managementReport{Status: agentStatus{Helper: componentStatus{Version: "v0.5.1"}}}); err != nil {
 		t.Fatal(err)
 	}
 	state.mu.Lock()

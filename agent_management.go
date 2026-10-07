@@ -234,7 +234,7 @@ func (s *helperState) withCurrentGitHubAccelerator(action string, payload json.R
 	return updated, nil
 }
 
-func (s *helperState) acceptManagementReport(serverID string, report *managementReport) (*managementCommand, error) {
+func (s *helperState) acceptManagementReport(serverID, token string, report *managementReport) (*managementCommand, error) {
 	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -242,22 +242,14 @@ func (s *helperState) acceptManagementReport(serverID string, report *management
 	if !ok {
 		return nil, errors.New("helper is not registered")
 	}
+	tokenHash := hashSecret(token)
+	promote := identity.acceptsPendingToken(tokenHash, now)
+	if identity.HelperTokenHash != tokenHash && !promote {
+		return nil, errors.New("helper credential is no longer authorized")
+	}
 	if report != nil {
-		previousUpdate := s.data.AgentStatuses[serverID].Update
-		report.Status.ReportedAt = now
-		if report.Status.Update == nil {
-			report.Status.Update = completeObservedUpdate(previousUpdate, report.Status, now)
-		}
-		report.Status.Capabilities = append([]string(nil), report.Status.Capabilities...)
-		sort.Strings(report.Status.Capabilities)
-		s.data.AgentStatuses[serverID] = report.Status
-		if machineID := strings.TrimSpace(report.Status.MachineID); validPersistentMachineID(machineID) {
-			identity.MachineID = machineID
-			identity.UpdatedAt = now
-			s.data.Servers[serverID] = identity
-		}
 		if report.Result != nil {
-			expected, err := signManagementResult(*report.Result, identity.HelperTokenHash)
+			expected, err := signManagementResult(*report.Result, tokenHash)
 			if err != nil || subtle.ConstantTimeCompare([]byte(expected), []byte(report.Result.Signature)) != 1 {
 				queued := false
 				for _, command := range s.data.ManagementCommands[serverID] {
@@ -271,6 +263,26 @@ func (s *helperState) acceptManagementReport(serverID string, report *management
 				}
 				report.Result = nil
 			}
+		}
+	}
+	previousIdentity := s.data.Servers[serverID]
+	previousCommands := s.data.ManagementCommands[serverID]
+	previousIntent, hadIntent := s.data.CoreModeIntents[serverID]
+	previousStatus := s.data.AgentStatuses[serverID]
+	previousResults := s.data.ManagementResults[serverID]
+	consumedRebinds := make(map[string]helperRebindToken)
+	if report != nil {
+		previousUpdate := s.data.AgentStatuses[serverID].Update
+		report.Status.ReportedAt = now
+		if report.Status.Update == nil {
+			report.Status.Update = completeObservedUpdate(previousUpdate, report.Status, now)
+		}
+		report.Status.Capabilities = append([]string(nil), report.Status.Capabilities...)
+		sort.Strings(report.Status.Capabilities)
+		s.data.AgentStatuses[serverID] = report.Status
+		if machineID := strings.TrimSpace(report.Status.MachineID); validPersistentMachineID(machineID) {
+			identity.MachineID = machineID
+			identity.UpdatedAt = now
 		}
 		if report.Result != nil {
 			commands := s.data.ManagementCommands[serverID]
@@ -288,8 +300,46 @@ func (s *helperState) acceptManagementReport(serverID string, report *management
 	for len(commands) > 0 && now.After(commands[0].ExpiresAt) {
 		commands = commands[1:]
 	}
+	if promote {
+		// Only a validated report activates a reinstall credential; probes leave
+		// the running Helper's credential intact. Commands must follow the new key.
+		commands = append([]managementCommand(nil), commands...)
+		for index := range commands {
+			signature, err := signManagementCommand(commands[index], tokenHash)
+			if err != nil {
+				return nil, err
+			}
+			commands[index].Signature = signature
+		}
+		identity.HelperTokenHash = tokenHash
+		identity.PendingHelperTokenHash = ""
+		identity.PendingHelperTokenExpiresAt = time.Time{}
+		identity.UpdatedAt = now
+		if intent, exists := s.data.CoreModeIntents[serverID]; exists {
+			intent.MachineID = identity.MachineID
+			intent.UpdatedAt = now
+			s.data.CoreModeIntents[serverID] = intent
+		}
+		for key, rebind := range s.data.RebindTokens {
+			if rebind.OfficialServerID == serverID {
+				consumedRebinds[key] = rebind
+				delete(s.data.RebindTokens, key)
+			}
+		}
+	}
+	s.data.Servers[serverID] = identity
 	s.data.ManagementCommands[serverID] = commands
 	if err := s.saveLocked(); err != nil {
+		s.data.Servers[serverID] = previousIdentity
+		s.data.ManagementCommands[serverID] = previousCommands
+		s.data.AgentStatuses[serverID] = previousStatus
+		s.data.ManagementResults[serverID] = previousResults
+		if promote && hadIntent {
+			s.data.CoreModeIntents[serverID] = previousIntent
+		}
+		for key, rebind := range consumedRebinds {
+			s.data.RebindTokens[key] = rebind
+		}
 		return nil, err
 	}
 	if len(commands) == 0 {
