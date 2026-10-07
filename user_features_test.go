@@ -207,10 +207,42 @@ func TestExpiredManagedUserPackagesPostgres(t *testing.T) {
 	response = httptest.NewRecorder()
 	application.userLifecycleIndexHandler(response, request)
 	var result struct {
-		ExpiredPackages map[string]managedUserExpiredPackage `json:"expired_packages"`
+		ExpiredPackages      map[string]managedUserExpiredPackage `json:"expired_packages"`
+		ExpiredPackagesError string                               `json:"expired_packages_error"`
 	}
-	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil || !reflect.DeepEqual(result.ExpiredPackages, items) || response.Header().Get("Cache-Control") != "no-store" {
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil || !reflect.DeepEqual(result.ExpiredPackages, items) || result.ExpiredPackagesError != "" || response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("history response: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestUserLifecycleIndexPreservesStatesWhenExpiredPackagesFailPostgres(t *testing.T) {
+	db := auditUserDeleteDB(t, "expired_packages_failure")
+	auditDeleteExec(t, db, `INSERT INTO users(username,role) VALUES('alice','user')`)
+	auditDeleteExec(t, db, `INSERT INTO mmwxc_user_lifecycle(username,desired_state,effective_state,operation) VALUES('alice','disabled','disabled','disable')`)
+	store := &postgresAdminSessionStore{db: db}
+	if _, err := store.expiredManagedUserPackages(context.Background()); err == nil || !strings.Contains(err.Error(), "last_package_") {
+		t.Fatalf("expected missing history column: %v", err)
+	}
+	states, err := store.LifecycleStates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := &app{adminStore: store, apiToken: "operator"}
+	request := httptest.NewRequest(http.MethodGet, "/api/custom/user-lifecycle", nil)
+	request.Header.Set("Authorization", "Bearer operator")
+	response := httptest.NewRecorder()
+	application.userLifecycleIndexHandler(response, request)
+	var result struct {
+		Success              bool                                 `json:"success"`
+		Users                map[string]managedUserLifecycle      `json:"users"`
+		ExpiredPackages      map[string]managedUserExpiredPackage `json:"expired_packages"`
+		ExpiredPackagesError string                               `json:"expired_packages_error"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil || !result.Success || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("lifecycle response: %d %s", response.Code, response.Body.String())
+	}
+	if !reflect.DeepEqual(result.Users, states) || result.ExpiredPackages == nil || len(result.ExpiredPackages) != 0 || result.ExpiredPackagesError != "读取上次套餐失败" {
+		t.Fatalf("history failure lost lifecycle state or notice: %s", response.Body.String())
 	}
 }
 

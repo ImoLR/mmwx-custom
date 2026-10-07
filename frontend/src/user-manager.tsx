@@ -145,7 +145,7 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
         () => fetchPackages(token),
         () => fetchManagedUserNodes(token),
       ),
-      fetchManagedUserLifecycles(token).then((response) => ({ users: response.users, expiredPackages: response.expired_packages ?? {}, error: "" })).catch((error) => ({ users: {}, expiredPackages: {}, error: messageOf(error, "读取用户生命周期失败") })),
+      fetchManagedUserLifecycles(token).then((response) => ({ users: response.users, expiredPackages: response.expired_packages ?? {}, error: response.expired_packages_error ?? "" })).catch((error) => ({ users: {}, expiredPackages: {}, error: messageOf(error, "读取用户生命周期失败") })),
     ]);
     if (result.users) {
       setUsers(result.users);
@@ -181,7 +181,7 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
         setConnections(formal.status === "fulfilled" ? formal.value : null);
         setHelperConnections(helper.status === "fulfilled" ? helper.value : null);
         if (lifecycle.status === "fulfilled") { setLifecycles(lifecycle.value.users); setExpiredPackages(lifecycle.value.expired_packages ?? {}); }
-        setRealtimeError(lifecycle.status === "rejected" ? "禁用状态刷新失败，请刷新后核对" : formal.status === "rejected" || helper.status === "rejected" ? "统计不完整：部分实时数据读取失败" : "");
+        setRealtimeError(lifecycle.status === "rejected" ? "禁用状态刷新失败，请刷新后核对" : lifecycle.value.expired_packages_error || (formal.status === "rejected" || helper.status === "rejected" ? "统计不完整：部分实时数据读取失败" : ""));
       }
       inFlight = false;
       if (!stopped && isVisible()) timer = window.setTimeout(() => void refresh(), 5000);
@@ -375,12 +375,12 @@ function UserCard({ user, lifecycle, expiredPackage, pkg, busy, view, currentUse
         <UserFact label="限制" value={`${formatLimit(user.speed_limit_override, user.speed_limit_mbps, "Mbps")} · ${formatLimit(user.device_limit_override, user.device_limit, "连接")}`} />
       </div>}
       {view === "full" && realtime}
-      <div className="user-package">
+      <div className={`user-package${lastPackage ? " expired" : ""}`}>
         <div><strong>{lastPackage ? "已过期" : user.package_name || (hasPackage ? `已绑定 ${user.assignment_package_ids?.length || 1} 个套餐` : "未绑定套餐")}</strong><span>{lastPackage ? `上次套餐 ${lastPackage.last_package_name || (lastPackage.last_package_id ? `#${lastPackage.last_package_id}` : "未知")}，到期 ${lastPackage.last_package_end_date?.slice(0, 10)}（官方已解绑）` : user.package_end_date ? `到期 ${user.package_end_date}${days === null ? "" : days <= 0 ? " · 已过期" : ` · 剩余 ${days} 天`}` : admin ? "系统管理员" : hasPackage ? "长期有效" : "可绑定套餐后生成订阅"}</span></div>
         {limit > 0 ? <div className="user-traffic"><span><b>{formatBytes(used)}</b> / {formatBytes(limit)} · {percent.toFixed(percent < 10 ? 1 : 0)}%</span><i><em style={{ width: `${percent}%` }} /></i></div> : <span className="user-unlimited">{pkg ? "流量不限" : "—"}</span>}
       </div>
       {!deleting && (lifecycle?.desired_state === "disabled" || accessDisabled || accessState === "disabling") && <UserAccessStatus items={lifecycle?.access} />}
-      {lastPackage && <><div className="user-renew-actions"><button type="button" disabled={!lastPackage.rebindable || deleting || Boolean(busy)} onClick={() => onDialog({ kind: "rebind", user })}>重新绑定上次套餐并续期</button></div>{!lastPackage.rebindable && <p className="user-delete-pending">{lastPackage.reason}；请打开下方「套餐」管理。</p>}</>}
+      {lastPackage && <><div className="user-renew-actions rebind"><button type="button" disabled={!lastPackage.rebindable || deleting || Boolean(busy)} onClick={() => onDialog({ kind: "rebind", user })}>重新绑定上次套餐并续期</button></div>{!lastPackage.rebindable && <p className="user-delete-pending">{lastPackage.reason}；请打开下方「套餐」管理。</p>}</>}
       {view === "renewal" && !admin && <div className="user-renew-actions">{[30, 90, 365].map((days) => <button key={days} type="button" disabled={!(hasPackage || lastPackage?.rebindable) || deleting || Boolean(busy)} onClick={() => lastPackage ? onDialog({ kind: "rebind", user, days }) : onExtend(days)}>+{days} 天</button>)}<button type="button" disabled={!(hasPackage || lastPackage?.rebindable) || deleting || Boolean(busy)} onClick={() => onDialog({ kind: lastPackage ? "rebind" : "renew", user })}>自定义续期</button></div>}
       <footer>
         <button type="button" onClick={() => onDialog({ kind: "subscription", user })} disabled={!hasPackage}><Link2 />订阅</button>

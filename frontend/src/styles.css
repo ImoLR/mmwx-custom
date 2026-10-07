@@ -5078,12 +5078,16 @@ button {
 .user-package > div:first-child { min-width: 0; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
 .user-package > div:first-child strong { min-width: 0; overflow-wrap: anywhere; }
 .user-package > div:first-child span { flex: 0 0 auto; color: var(--muted); font-size: var(--user-font-min); text-align: right; }
+.user-package.expired > div:first-child { display: grid; grid-template-columns: minmax(0, 1fr); }
+.user-package.expired > div:first-child strong { white-space: nowrap; }
+.user-package.expired > div:first-child span { text-align: left; overflow-wrap: anywhere; }
 .user-traffic { display: grid; gap: 5px; }
 .user-traffic > span { color: var(--muted); font-size: var(--user-font-min); }
 .user-traffic i { height: 6px; display: block; overflow: hidden; border-radius: 99px; background: var(--fill-strong); }
 .user-traffic em { height: 100%; display: block; border-radius: inherit; background: linear-gradient(90deg, var(--primary), var(--primary-2)); }
 .user-unlimited { color: var(--muted); font-size: var(--user-font-min); }
 .user-renew-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.user-renew-actions.rebind { grid-template-columns: minmax(0, 1fr); }
 .user-card footer { display: flex; flex-wrap: wrap; gap: 7px; border-top: 1px solid var(--line); padding-top: 10px; }
 .user-card footer button { flex: 1 1 118px; min-height: 38px; font-size: var(--user-font-secondary); }
 .user-delete-button { position: relative; isolation: isolate; overflow: hidden; }

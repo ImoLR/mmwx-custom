@@ -1178,6 +1178,7 @@ export type ManagedUserLifecycleResponse = {
   success: boolean;
   users: Record<string, ManagedUserLifecycle>;
   expired_packages: Record<string, ManagedUserExpiredPackage>;
+  expired_packages_error?: string;
 };
 
 export type ManagedUserExpiredPackage = {

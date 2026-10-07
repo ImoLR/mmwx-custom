@@ -157,6 +157,55 @@ test("credential repush confirmation distinguishes persistent blocks and best-ef
   assert.equal(confirm({ effective_state: "delete_partial" }), null);
 });
 
+test("history query notices preserve disabled lifecycle on page load and polling", async () => {
+  const require = createRequire(new URL("../../frontend/package.json", import.meta.url));
+  const ts = require("typescript");
+  const source = readFileSync(new URL("../../frontend/src/user-manager.tsx", import.meta.url), "utf8");
+  const file = ts.createSourceFile("user-manager.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const page = file.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === "UserManagementPage");
+  const load = page.body.statements.find((node: any) => ts.isVariableStatement(node) && node.declarationList.declarations[0].name.text === "load");
+  const polling = page.body.statements.find((node: any) => ts.isExpressionStatement(node) && node.getText(file).includes("fetchUserConnections(token)"));
+  const confirm = file.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === "confirmCredentialWrite");
+  const compiled = ts.transpileModule([load, polling, confirm].map((node: any) => node.getText(file)).join("\n"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2020 },
+  }).outputText;
+  for (const historyError of [undefined, "读取上次套餐失败"]) {
+    const users = { alice: { desired_state: "disabled", effective_state: "disabled", pending_count: 0 } };
+    const state: Record<string, any> = {};
+    let effect: () => void;
+    let confirmations = 0;
+    const noop = () => undefined;
+    const deps = {
+      token: "session", credentialWriteState,
+      useCallback: (callback: any) => callback,
+      useEffect: (callback: () => void) => { effect = callback; },
+      fetchManagedUserLifecycles: async () => ({ users, expired_packages: {}, expired_packages_error: historyError }),
+      fetchUserManagementData: async () => ({ users: [{ username: "alice" }], packages: [], nodes: [], failures: [] }),
+      fetchManagedUsers: noop, fetchPackages: noop, fetchManagedUserNodes: noop,
+      fetchUserConnections: async () => ({}), fetchHelperUserConnections: async () => ({}),
+      messageOf: (error: Error) => error.message,
+      document: { visibilityState: "visible", addEventListener: noop, removeEventListener: noop },
+      window: { setTimeout: noop, clearTimeout: noop, confirm: () => { confirmations++; return false; }, alert: noop },
+      ...Object.fromEntries(["Loading", "Users", "Lifecycles", "ExpiredPackages", "Packages", "Nodes", "Notice", "Connections", "HelperConnections", "RealtimeError"].map((name) => [`set${name}`, (value: unknown) => { state[name] = value; }])),
+    };
+    const handlers = new Function(...Object.keys(deps), `${compiled}\nreturn { load, confirmCredentialWrite };`)(...Object.values(deps));
+    await handlers.load();
+    assert.deepEqual(state.Users, [{ username: "alice" }]);
+    assert.deepEqual(state.Lifecycles, users);
+    assert.deepEqual(state.ExpiredPackages, {});
+    assert.equal(state.Loading, false);
+    assert.equal(state.Notice?.text, historyError);
+    assert.equal(handlers.confirmCredentialWrite(state.Lifecycles.alice), null);
+    effect!();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(state.Lifecycles, users);
+    assert.deepEqual(state.ExpiredPackages, {});
+    assert.equal(state.RealtimeError, historyError ?? "");
+    assert.equal(handlers.confirmCredentialWrite(state.Lifecycles.alice), null);
+    assert.equal(confirmations, 2, "history failure must not bypass disabled-user confirmation");
+  }
+});
+
 test("delete_partial hides access, admin hides destructive actions", () => {
   const partial = renderUserCard({ username: "alice", role: "user", is_active: true }, {
     effective_state: "delete_partial", operation: "delete", pending_count: 1,
