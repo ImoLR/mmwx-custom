@@ -312,8 +312,60 @@ func TestMachineRebindMovesOwnershipIntentToNewServerID(t *testing.T) {
 		t.Fatal("old server identity remains after rebind")
 	}
 	intent, ok := state.coreModeIntent("20")
-	if !ok || intent.DesiredMode != "external" || !intent.CustomCoreOwned {
+	if !ok || intent.DesiredMode != "embedded" || !intent.CustomCoreOwned || intent.MachineID != "stable-machine-identity" {
 		t.Fatalf("rebound intent=%#v configured=%v", intent, ok)
+	}
+}
+
+func TestInstallCommandRefreshesIntentForFormalMode(t *testing.T) {
+	for _, mode := range []string{"external", "embedded"} {
+		t.Run(mode, func(t *testing.T) {
+			state := newCoreModeTestState(t)
+			previous := "external"
+			if mode == "external" {
+				previous = "embedded"
+			}
+			intent := newCoreModeIntent(previous, time.Now().Add(-time.Hour))
+			intent.PendingChange = true
+			intent.LifecycleSource = "custom-explicit"
+			intent.RepairAttempts = 4
+			intent.LastRepairError = "old install drift"
+			intent.NextRepairAt = time.Now().Add(time.Hour)
+			intent.FormalChangeUnconfirmed = true
+			state.data.CoreModeIntents["12"] = intent
+			payload, _ := json.Marshal(map[string]string{"desired_mode": previous})
+			if _, err := state.enqueueManagementCommand("12", "core.mode.apply", payload); err != nil {
+				t.Fatal(err)
+			}
+			statusCommand, err := state.enqueueManagementCommand("12", "core.status", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := &fakeAdminSessionStore{server: true, runtime: remoteServerRuntime{XrayMode: mode, Status: "connected"}}
+			application := &app{apiToken: "operator-token", adminStore: store, helperState: state}
+			request := httptest.NewRequest(http.MethodPost, "/api/custom/helper/install-token", bytes.NewBufferString(`{"server_id":12}`))
+			request.Header.Set("Authorization", "Bearer operator-token")
+			response := httptest.NewRecorder()
+			application.createHelperInstallTokenHandler(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("install status=%d: %s", response.Code, response.Body.String())
+			}
+			reloaded, err := openHelperState(state.path, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, ok := reloaded.coreModeIntent("12")
+			if !ok || got.DesiredMode != mode || got.PendingChange || got.RepairAttempts != 0 || got.LastRepairError != "" || !got.NextRepairAt.IsZero() || got.FormalChangeUnconfirmed || !got.UpdatedAt.After(intent.UpdatedAt) {
+				t.Fatalf("install did not refresh intent: %+v", got)
+			}
+			commands := reloaded.data.ManagementCommands["12"]
+			if len(commands) != 1 || commands[0].ID != statusCommand.ID {
+				t.Fatal("obsolete mode repair survived or unrelated command was removed")
+			}
+			if store.runtime.XrayMode != mode {
+				t.Fatal("generating an install command changed formal mode")
+			}
+		})
 	}
 }
 

@@ -213,13 +213,25 @@ func (s *helperState) createInstallTokenForMode(officialServerID, installMode st
 	}
 	identity.UpdatedAt = now
 	s.data.Servers[officialServerID] = identity
-	if _, exists := s.data.CoreModeIntents[officialServerID]; !exists {
-		if installMode == "takeover" {
-			s.data.CoreModeIntents[officialServerID] = newCoreModeIntent("external", now)
-		} else {
-			s.data.CoreModeIntents[officialServerID] = newCoreModeIntent("embedded", now)
-		}
+	desiredMode := "embedded"
+	if installMode == "takeover" {
+		desiredMode = "external"
 	}
+	intent := newCoreModeIntent(desiredMode, now)
+	intent.MachineID = identity.MachineID
+	s.data.CoreModeIntents[officialServerID] = intent
+	commands := s.data.ManagementCommands[officialServerID]
+	kept := make([]managementCommand, 0, len(commands))
+	for _, command := range commands {
+		var payload struct {
+			DesiredMode string `json:"desired_mode"`
+		}
+		if command.Action == "core.mode.apply" && json.Unmarshal(command.Payload, &payload) == nil && payload.DesiredMode != desiredMode {
+			continue
+		}
+		kept = append(kept, command)
+	}
+	s.data.ManagementCommands[officialServerID] = kept
 
 	installToken, err := randomSecret(32)
 	if err != nil {
@@ -454,9 +466,9 @@ func (s *helperState) rebindMachine(rawInstallToken, machineID, helperToken stri
 		}
 		delete(s.data.ManagementCommands, sourceID)
 		if intent, exists := s.data.CoreModeIntents[sourceID]; exists {
-			intent.MachineID = machineID
-			intent.UpdatedAt = now
-			s.data.CoreModeIntents[targetID] = intent
+			if _, explicitInstall := s.data.CoreModeIntents[targetID]; !explicitInstall {
+				s.data.CoreModeIntents[targetID] = intent
+			}
 			delete(s.data.CoreModeIntents, sourceID)
 		}
 	}
