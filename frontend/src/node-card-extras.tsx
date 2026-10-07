@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
-import { cancelNodeRelay, fetchBlockedNodeIds, fetchNodeTunnels, fetchNodeUnlocks, fetchRemoteRouting, fetchXrayOutbounds, setNodeRelay } from "./api";
+import { cancelNodeRelay, fetchBlockedNodeIds, fetchNodeTunnels, fetchNodeUnlocks, fetchRemoteRouting, fetchXrayInbounds, fetchXrayOutbounds, setNodeRelay } from "./api";
 import { externalNodeSource, nodeCardConfig, nodeManagedServer, nodeTunnelChain, nodeTunnels, resolveWholeOutbound, tunnelEntryHost, type NodeRoutingState } from "./node-card-logic";
 import { removeNodeTunnel } from "./node-manager-tools";
-import type { NodeTunnel, NodeTunnelChain, RemoteServer, XrayNode } from "./types";
+import type { NodeTunnel, NodeTunnelChain, RemoteServer, XrayNode, XrayObject } from "./types";
+import { nodeInboundFlow } from "./inbound-flow";
 
 type Notice = (tone: "success" | "error" | "info", text: string) => void;
 
@@ -13,6 +14,7 @@ export function useNodeCardExtras(token: string, nodes: XrayNode[], servers: Rem
   const [tunnels, setTunnels] = useState<NodeTunnel[]>([]);
   const [chains, setChains] = useState<NodeTunnelChain[]>([]);
   const [routing, setRouting] = useState<Record<number, NodeRoutingState>>({});
+  const [inbounds, setInbounds] = useState<Record<number, XrayObject[]>>({});
   const [revision, setRevision] = useState(0);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const serverIds = [...new Set(nodes.map((node) => nodeManagedServer(node, servers)?.id).filter((id): id is number => id != null))].sort((a, b) => a - b).join(",");
@@ -59,10 +61,36 @@ export function useNodeCardExtras(token: string, nodes: XrayNode[], servers: Rem
     void load(); const timer = window.setInterval(() => { if (!document.hidden) void load(); }, 60000);
     return () => { active = false; window.clearInterval(timer); };
   }, [token, serverIds, revision]);
+  useEffect(() => {
+    let active = true;
+    const pending = new Set<number>(), failures = new Set<number>();
+    setInbounds({});
+    setErrors((current) => ({ ...current, flow: "" }));
+    const load = () => {
+      for (const id of serverIds.split(",").filter(Boolean).map(Number)) {
+        if (pending.has(id)) continue;
+        pending.add(id);
+        void (async () => {
+          try {
+            const response = await fetchXrayInbounds(token, id);
+            if (response.success === false) throw new Error("读取入站失败");
+            if (active) { setInbounds((current) => ({ ...current, [id]: response.inbounds || [] })); failures.delete(id); }
+          } catch {
+            if (active) { setInbounds((current) => { const next = { ...current }; delete next[id]; return next; }); failures.add(id); }
+          } finally {
+            pending.delete(id);
+            if (active) setErrors((current) => ({ ...current, flow: failures.size ? "部分服务器入站流控检查失败" : "" }));
+          }
+        })();
+      }
+    };
+    load(); const timer = window.setInterval(() => { if (!document.hidden) load(); }, 60000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [token, serverIds, revision]);
   const cards = useMemo(() => new Map(nodes.map((node) => {
     const server = nodeManagedServer(node, servers);
-    return [node.id, { blocked: blocked.has(node.id), unlock: unlocks[String(node.id)], source: externalNodeSource(node, servers), tunnels: nodeTunnels(node, tunnels, servers), chain: nodeTunnelChain(node, chains, servers), whole: resolveWholeOutbound(node, server ? routing[server.id] : undefined, nodes, servers, tunnels) }];
-  })), [nodes, servers, blocked, unlocks, tunnels, chains, routing]);
+    return [node.id, { flow: server ? nodeInboundFlow(node, inbounds[server.id] || []) : null, blocked: blocked.has(node.id), unlock: unlocks[String(node.id)], source: externalNodeSource(node, servers), tunnels: nodeTunnels(node, tunnels, servers), chain: nodeTunnelChain(node, chains, servers), whole: resolveWholeOutbound(node, server ? routing[server.id] : undefined, nodes, servers, tunnels) }];
+  })), [nodes, servers, blocked, unlocks, tunnels, chains, routing, inbounds]);
   return { cards, refresh, error: Object.values(errors).filter(Boolean).join("；") };
 }
 
@@ -71,6 +99,7 @@ export function NodeCardBadges({ node, state, servers }: { node: XrayNode; state
   const chain = state?.chain, chainEntry = chain ? servers.find((server) => server.id === chain.entry_server) : undefined;
   return <>
     {state?.blocked && <span className="bad">被墙</span>}
+    {state?.flow?.warning && <span className="bad" title={state.flow.warning}>流控不一致{state.flow.mixed ? "：部分用户流控不同" : "：节点与入站不同"}</span>}
     {node.multiplier != null && node.multiplier !== 1 && <span title={`此节点流量按 ${node.multiplier}× 计入套餐配额`}>×{node.multiplier}</span>}
     {state?.source && <span>{state.source}</span>}
     {!!state?.unlock?.total && <span title="解锁服务数量">解锁 {state.unlock.unlocked}/{state.unlock.total}</span>}
@@ -81,11 +110,12 @@ export function NodeCardBadges({ node, state, servers }: { node: XrayNode; state
   </>;
 }
 
-export function NodeCardExtras({ node, state, servers, onTunnel, onRelay, onRevertChain, onSwitchWhole, onCancelWhole }: { node: XrayNode; state?: CardState; servers: RemoteServer[]; onTunnel: (tunnel: NodeTunnel) => void; onRelay: () => void; onRevertChain: (entry: string) => void; onSwitchWhole: () => void; onCancelWhole: () => void }) {
+export function NodeCardExtras({ node, state, servers, onTunnel, onRelay, onRevertChain, onSwitchWhole, onCancelWhole, onRepairFlow }: { node: XrayNode; state?: CardState; servers: RemoteServer[]; onTunnel: (tunnel: NodeTunnel) => void; onRelay: () => void; onRevertChain: (entry: string) => void; onSwitchWhole: () => void; onCancelWhole: () => void; onRepairFlow: () => void }) {
   const chain = state?.chain, chainEntry = chain ? servers.find((server) => server.id === chain.entry_server) : undefined;
   const entry = chain ? `${chainEntry?.name || chainEntry?.ip_address || ""}:${chain.entry_port}` : "";
   const parsed = nodeCardConfig(node);
   return <div className="node-card-extras">
+    {state?.flow?.warning && <button type="button" className="node-state-link" onClick={onRepairFlow} title={state.flow.warning}>修复流控</button>}
     {node.relay_orig_server && <button type="button" className="node-state-link" onClick={onRelay} title="点击修改 / 取消中转">中转原服务器 {node.relay_orig_server}:{node.relay_orig_port}</button>}
     {chain && <button type="button" className="node-state-link" onClick={() => onRevertChain(entry)} title={`链式隧道路径\n${[...(chain.hops || []).map((hop) => hop.server_name || `#${hop.server_id}`), node.node_name].join(" → ")}\n点击切回源节点地址`}>链式隧道 {entry}</button>}
     {state?.tunnels.map((tunnel) => {

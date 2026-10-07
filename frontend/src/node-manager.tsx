@@ -68,7 +68,7 @@ import { nodeProbeStatesById } from "./node-auxiliary-logic";
 import { RelayCredentialRepairDialog } from "./node-relay-repair";
 import { NodeSpeedTestActions, SpeedTestHistoryDialog, SpeedTesterManagerDialog, useNodeSpeedTests } from "./node-speedtest";
 import { duplicateNodeKey as duplicateKey, duplicateNodeGroups as findDuplicateGroups, subscriptionDefaultTag, batchRenameTransform, matchesNodeSource, moveSelectedNodes } from "./node-manager-logic";
-import { ManagedNodeCreateDialog, ManagedNodeEditDialog } from "./xray-manager";
+import { ManagedNodeCreateDialog, ManagedNodeEditDialog, NodeFlowRepairDialog } from "./xray-manager";
 import {
   ChainProxyDialog,
   RelayGroupDialog,
@@ -97,6 +97,7 @@ type Dialog =
   | { kind: "chain"; node: XrayNode }
   | { kind: "relay-group"; node: XrayNode }
   | { kind: "managed-edit"; node: XrayNode }
+  | { kind: "flow-repair"; node: XrayNode }
   | { kind: "resolve"; node: XrayNode; ips: string[] }
   | { kind: "batch-rename" }
   | { kind: "batch-tag" }
@@ -644,7 +645,7 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
                   onTunnel={(tunnel) => setDialog({ kind: "relay-action", node, tunnel })}
                   onRelay={() => setDialog({ kind: "relay-action", node })}
                   onRevertChain={(entry) => { if (window.confirm(`切回源服务器地址?\n节点「${node.node_name}」当前经链式隧道入口 ${entry} 连接。切回后将拆除该节点的中转配置,恢复为源服务器地址。`)) void run("切回源服务器地址", async () => { await cancelNodeRelay(token, node.id); await cardExtras.refresh(); }); }}
-                  onSwitchWhole={() => setDialog({ kind: "landing", node })} onCancelWhole={() => cancelWholeOutbound(node)} />}
+                  onSwitchWhole={() => setDialog({ kind: "landing", node })} onCancelWhole={() => cancelWholeOutbound(node)} onRepairFlow={() => setDialog({ kind: "flow-repair", node })} />}
                 extras={<><NodeCardBadges node={node} state={cardExtras.cards.get(node.id)} servers={servers} />
                   <NodePackageChip token={token} nodeId={node.id} loading={packages.loading} memberships={packages.memberships[String(node.id)] || []} packages={packages.packages} onChanged={packages.refresh} onNotice={toolNotice} />
                   <NodeProbeBadge node={node} state={probeStates.get(node.id)} onClick={() => setDialog({ kind: "node-probe" })} />
@@ -714,7 +715,8 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
           onRun={run}
         />
       )}
-      {dialog?.kind === "managed-edit" && <ManagedNodeEditDialog token={token} node={dialog.node} servers={servers} username={username} onClose={() => setDialog(null)} onSaved={loadNodes} />}
+      {dialog?.kind === "managed-edit" && <ManagedNodeEditDialog token={token} node={dialog.node} servers={servers} username={username} onClose={() => setDialog(null)} onSaved={refreshExtras} />}
+      {dialog?.kind === "flow-repair" && <NodeFlowRepairDialog token={token} node={dialog.node} servers={servers} onClose={() => setDialog(null)} onSaved={refreshExtras} />}
       {dialog?.kind === "chain" && <ChainProxyDialog token={token} source={dialog.node} nodes={nodes} onChanged={loadNodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
       {dialog?.kind === "relay-group" && <RelayGroupDialog token={token} source={dialog.node} nodes={nodes} onChanged={loadNodes} onClose={() => setDialog(null)} onNotice={toolNotice} />}
       {dialog?.kind === "resolve" && <NodeIPDialog token={token} node={dialog.node} ips={dialog.ips} busy={busy} onClose={() => setDialog(null)} onRun={run} />}
