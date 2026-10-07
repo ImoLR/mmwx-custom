@@ -44,6 +44,27 @@ export function normalizeInboundFlow(item: XrayObject, mode = inboundSecurityMod
   }) } };
 }
 
+export function inboundFlowNeedsRepair(original: XrayObject, next: XrayObject) {
+  if (!inboundFlowWarning(original) || original.protocol !== next.protocol) return false;
+  const key = String(original.protocol).toLowerCase() === "vless" ? "id" : "password";
+  return clients(original).some((client) => clients(next).some((value) => value[key] === client[key] && String(value.flow || "") !== String(client.flow || "")));
+}
+
+export function inboundFlowRepairWarning(inbound: XrayObject | undefined, nodes: XrayNode[], expectedFlow: string) {
+  if (!inbound) return "重读后未找到入站";
+  const flows = [...new Set(clients(inbound).map((client) => String(client.flow || "")))];
+  const problems: string[] = [];
+  if (!flows.length || flows.some((flow) => flow !== expectedFlow)) problems.push(`入站用户流控为 ${flows.map((flow) => flow || "无 Vision").join("、") || "无用户"}`);
+  for (const node of nodes) {
+    const links = [node.clash_config, node.parsed_config].filter(Boolean);
+    if (!links.length || links.some((link) => {
+      const state = nodeInboundFlow({ ...node, clash_config: link, parsed_config: link }, [inbound]);
+      return !state?.matched || state.warning || state.nodeFlow !== expectedFlow;
+    })) problems.push(`节点「${node.node_name}」链接与入站尚未一致或凭据无法匹配`);
+  }
+  return problems.join("；");
+}
+
 export function nodeInboundFlow(node: XrayNode, inbounds: XrayObject[]) {
   if (!node.inbound_tag || node.node_type === "routed") return null;
   const inbound = inbounds.find((item) => item.tag === node.inbound_tag);

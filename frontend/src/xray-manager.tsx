@@ -59,7 +59,7 @@ import {
 import type { CoreModeResponse, RemoteServer, RoutingRulePreset, XrayNode, XrayObject, XrayServerNIC, XraySystemConfig, XrayWarpStatus } from "./types";
 import { supportsCustomCoreFeatures } from "./xray-capabilities";
 import { defaultNodeIPVersion } from "./node-manager-logic";
-import { inboundFlowWarning, inboundSecurityMode, nodeInboundFlow, normalizeInboundFlow, relayPortChangeWarning } from "./inbound-flow";
+import { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, nodeInboundFlow, normalizeInboundFlow, relayPortChangeWarning } from "./inbound-flow";
 import { nodeManagedServer } from "./node-card-logic";
 
 type Tab = "config" | "inbounds" | "outbounds" | "routing";
@@ -349,6 +349,29 @@ function sanitizeInbound(item: XrayObject, original?: XrayObject) {
   delete inbound._wizard_snell_mode;
   if (sameProtocol && sameSnellOptions && JSON.stringify(item.settings) === JSON.stringify(original?.settings)) inbound.settings = item.settings;
   return normalizeInboundFlow(inbound, inboundSecurityMode(item));
+}
+
+async function replaceInboundFlow(token: string, server: RemoteServer, tag: string, inbound: XrayObject, nodeName?: string) {
+  const before = await fetchXrayNodes(token);
+  if (before.success === false || !before.nodes) throw new Error("读取节点失败，未提交流控修复");
+  const related = (nodes: XrayNode[]) => nodes.filter((node) => node.inbound_tag === tag && node.node_type !== "routed" && nodeManagedServer(node, [server]));
+  const previous = related(before.nodes);
+  const body = { tag, inbound, ...(nodeName ? { node_name: nodeName } : {}) };
+  const replaced = await mutateXrayInbound(token, server.id, { ...body, action: "replace" });
+  if (replaced.success === false) throw new Error(replaced.message || "替换入站流控失败");
+  let updateError = "";
+  try {
+    const updated = await mutateXrayInbound(token, server.id, { ...body, action: "update" });
+    if (updated.success === false) throw new Error(updated.message || "同步节点失败");
+  } catch (reason) { updateError = getError(reason, "同步节点失败"); }
+  const [inboundResult, nodeResult] = await Promise.all([fetchXrayInbounds(token, server.id), fetchXrayNodes(token)]);
+  if (inboundResult.success === false || nodeResult.success === false || !inboundResult.inbounds || !nodeResult.nodes) throw new Error(`入站替换已提交，但无法重新核对流控，请刷新查看${updateError ? `；${updateError}` : ""}`);
+  const current = inboundResult.inbounds.find((item) => item.tag === inbound.tag);
+  const nodes = nodeResult.nodes.filter((node) => node.inbound_tag === inbound.tag && node.node_type !== "routed" && nodeManagedServer(node, [server]));
+  const expectedFlow = asString(asObject((asObject(inbound.settings).clients as XrayObject[])?.[0]).flow);
+  const warning = inboundFlowRepairWarning(current, nodes, expectedFlow);
+  const missing = previous.filter((node) => !nodes.some((item) => item.id === node.id));
+  if (updateError || warning || missing.length) throw new Error(`入站替换已提交；${[updateError, warning, missing.length ? `重读后未找到节点：${missing.map((node) => node.node_name).join("、")}` : ""].filter(Boolean).join("；")}`);
 }
 
 function managementAssignments(item: XrayObject) {
@@ -695,7 +718,8 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
         const nodeName = asString(item._wizard_node_name).trim();
         if (!tag || !asString(item.protocol)) throw new Error("入站标识和协议不能为空");
         if (editor.originalTag) {
-          await mutateXrayInbound(token, server.id, { action: "update", tag: editor.originalTag, inbound, ...(nodeName ? { node_name: nodeName } : {}) });
+          if (inboundFlowNeedsRepair(editor.item, inbound)) await replaceInboundFlow(token, server, editor.originalTag, inbound, nodeName);
+          else await mutateXrayInbound(token, server.id, { action: "update", tag: editor.originalTag, inbound, ...(nodeName ? { node_name: nodeName } : {}) });
         } else {
           await mutateXrayInbound(token, server.id, { action: "add", inbound, ...(nodeName ? { node_name: nodeName } : {}) });
         }
@@ -1062,7 +1086,7 @@ export function ManagedNodeCreateDialog({ servers, token, username, onClose, onC
 export function NodeFlowRepairDialog({ node, servers, token, onClose, onSaved }: { node: XrayNode; servers: RemoteServer[]; token: string; onClose: () => void; onSaved: () => Promise<void> }) {
   const server = nodeManagedServer(node, servers);
   const [state, setState] = useState<ReturnType<typeof nodeInboundFlow>>(null);
-  const [vision, setVision] = useState(false);
+  const [vision, setVision] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -1074,7 +1098,7 @@ export function NodeFlowRepairDialog({ node, servers, token, onClose, onSaved }:
         if (response.success === false) throw new Error("读取服务器入站失败");
         const next = nodeInboundFlow(node, response.inbounds || []);
         if (!next?.matched) throw new Error("入站中未找到节点的相同 UUID / 密码，无法核对流控，请刷新节点后重试");
-        if (active) { setState(next); setVision(next.nodeFlow === "xtls-rprx-vision"); }
+        if (active) { setState(next); setVision(["tls", "reality"].includes(asString(asObject(next.inbound.streamSettings).security).toLowerCase())); }
       } catch (reason) { if (active) setError(getError(reason, "读取入站流控失败")); }
     };
     void load();
@@ -1093,14 +1117,8 @@ export function NodeFlowRepairDialog({ node, servers, token, onClose, onSaved }:
       if (vision && !["tls", "reality"].includes(security)) throw new Error("Vision 需要 TLS 或 REALITY，请先在入站编辑器配置安全方式");
       const mode = vision ? (security === "reality" ? "XTLS-Vision-REALITY" : "XTLS-Vision") : security === "reality" ? "REALITY" : security === "tls" ? "TLS" : "None";
       const inbound = sanitizeInbound({ ...latest.inbound, _wizard_security: mode });
-      const result = await mutateXrayInbound(token, server.id, { action: "update", tag: asString(latest.inbound.tag), inbound });
-      if (result.success === false) throw new Error(result.message || "修复流控失败");
+      await replaceInboundFlow(token, server, asString(latest.inbound.tag), inbound);
       await onSaved();
-      const [inboundResult, nodeResult] = await Promise.all([fetchXrayInbounds(token, server.id), fetchXrayNodes(token)]);
-      if (inboundResult.success === false || nodeResult.success === false) throw new Error("更新已提交，但无法重新核对流控，请刷新查看");
-      const updatedNode = nodeResult.nodes?.find((item) => item.id === node.id);
-      const updated = updatedNode ? nodeInboundFlow(updatedNode, inboundResult.inbounds || []) : null;
-      if (!updated?.matched || updated.warning || updated.nodeFlow !== (vision ? "xtls-rprx-vision" : "")) throw new Error("更新已提交，官方返回的节点与入站流控尚未一致，请刷新查看；如旧凭据再次写回，需要官方侧修复");
       onClose();
     } catch (reason) { setError(getError(reason, "修复流控失败")); }
     finally { setBusy(false); }
@@ -1109,7 +1127,7 @@ export function NodeFlowRepairDialog({ node, servers, token, onClose, onSaved }:
   return <div className="node-dialog-layer" onClick={() => !busy && onClose()}><section className="node-dialog" role="dialog" aria-modal="true" aria-label="修复流控" onClick={(event) => event.stopPropagation()}>
     <header><div><h2>修复流控</h2><p>{node.node_name} · {node.inbound_tag}</p></div><button type="button" disabled={busy} onClick={onClose} aria-label="关闭"><X /></button></header>
     <div className="node-dialog-body">
-      {state ? <><p className="xray-inline-warning">{state.warning || "请选择此入站统一使用的流控"}</p><p>将请求官方统一此入站的所有用户（包括套餐和管理用户），并同步直接与中转节点；更新后重新核对。官方可能保留旧用户流控。默认保留当前节点链接的模式。</p><label><span>保留的流控模式</span><select value={vision ? "vision" : "none"} disabled={busy} onChange={(event) => setVision(event.target.value === "vision")}><option value="vision" disabled={!["tls", "reality"].includes(asString(asObject(state.inbound.streamSettings).security).toLowerCase())}>Vision（xtls-rprx-vision，需要 TLS / REALITY）</option><option value="none">无 Vision（不带 flow）</option></select></label></> : !error && <p>正在读取入站配置...</p>}
+      {state ? <><p className="xray-inline-warning">{state.warning || "请选择此入站统一使用的流控"}</p><p>统一此入站的所有用户（包括套餐和管理用户），并同步直接与中转节点；更新后重新核对入站和节点链接。默认选择 Vision。旧凭据后续再次写回时仍可能需要重新检查。</p><label><span>保留的流控模式</span><select value={vision ? "vision" : "none"} disabled={busy} onChange={(event) => setVision(event.target.value === "vision")}><option value="vision" disabled={!["tls", "reality"].includes(asString(asObject(state.inbound.streamSettings).security).toLowerCase())}>Vision（xtls-rprx-vision，需要 TLS / REALITY）</option><option value="none">无 Vision（不带 flow）</option></select></label></> : !error && <p>正在读取入站配置...</p>}
       {error && <p className="node-error" role="alert">{error}</p>}
       <div className="node-dialog-actions"><button type="button" disabled={busy} onClick={onClose}>取消</button><button type="button" className="primary" disabled={busy || !state} onClick={() => void save()}>{busy ? "修复中..." : "修复流控"}</button></div>
     </div>
@@ -1172,8 +1190,12 @@ export function ManagedNodeEditDialog({ node, servers, token, username, onClose,
     try {
       const inbound = sanitizeInbound({ ...next, tag: state.originalTag }, state.item);
       if (["snell", "mieru", "anytls"].includes(asString(inbound.protocol)) && state.server.xray_mode === "external") throw new Error("Snell / Mieru / AnyTLS 需要内置 Xray");
-      const response = await mutateXrayInbound(token, state.server.id, { action: "update", tag: state.originalTag, inbound, node_name: asString(next._wizard_node_name).trim() || node.node_name });
-      if (response.success === false) throw new Error(response.message || "修改失败");
+      const nodeName = asString(next._wizard_node_name).trim() || node.node_name;
+      if (inboundFlowNeedsRepair(state.item, inbound)) await replaceInboundFlow(token, state.server, state.originalTag, inbound, nodeName);
+      else {
+        const response = await mutateXrayInbound(token, state.server.id, { action: "update", tag: state.originalTag, inbound, node_name: nodeName });
+        if (response.success === false) throw new Error(response.message || "修改失败");
+      }
       for (const assignment of managementAssignments(next)) await assignConnectionPort(token, state.server.id, {
         inbound_tag: state.originalTag,
         management_username: assignment.username,

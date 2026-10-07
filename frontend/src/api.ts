@@ -1579,7 +1579,7 @@ export function updateRemoteServerDomain(token: string, server: RemoteServer, do
   });
 }
 
-export function mutateXrayInbound(token: string, serverId: number, body: { action: "add"; inbound: XrayObject; node_name?: string; ip_version?: "v4" | "v6" | "both" } | { action: "update"; tag: string; inbound: XrayObject; node_name?: string } | { action: "remove"; tag: string }) {
+export function mutateXrayInbound(token: string, serverId: number, body: { action: "add"; inbound: XrayObject; node_name?: string; ip_version?: "v4" | "v6" | "both" } | { action: "update" | "replace"; tag: string; inbound: XrayObject; node_name?: string } | { action: "remove"; tag: string }) {
   return request<{ success?: boolean; message?: string }>(remoteUrl("/api/admin/remote/inbounds", serverId), token, {
     method: "POST",
     body: JSON.stringify(body),

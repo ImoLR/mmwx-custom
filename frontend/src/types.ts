@@ -681,6 +681,8 @@ export type XraySystemConfigResponse = Partial<XraySystemConfig> & {
 
 export type XrayInboundsResponse = {
   success?: boolean;
+  error?: string;
+  message?: string;
   inbounds?: XrayObject[];
 };
 

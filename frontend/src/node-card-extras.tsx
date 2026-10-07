@@ -18,6 +18,7 @@ export function useNodeCardExtras(token: string, nodes: XrayNode[], servers: Rem
   const [revision, setRevision] = useState(0);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const serverIds = [...new Set(nodes.map((node) => nodeManagedServer(node, servers)?.id).filter((id): id is number => id != null))].sort((a, b) => a - b).join(",");
+  const flowServers = JSON.stringify(servers.filter((server) => server.status === "connected" && nodes.some((node) => node.inbound_tag && node.node_type !== "routed" && ["vless", "trojan"].includes(String(node.protocol || nodeCardConfig(node).type).toLowerCase()) && nodeManagedServer(node, [server]))).map(({ id, name }) => ({ id, name })));
   const refresh = useCallback(async () => { setRevision((value) => value + 1); }, []);
   useEffect(() => {
     let active = true;
@@ -63,30 +64,30 @@ export function useNodeCardExtras(token: string, nodes: XrayNode[], servers: Rem
   }, [token, serverIds, revision]);
   useEffect(() => {
     let active = true;
-    const pending = new Set<number>(), failures = new Set<number>();
+    const pending = new Set<number>(), failures = new Map<number, string>();
     setInbounds({});
     setErrors((current) => ({ ...current, flow: "" }));
     const load = () => {
-      for (const id of serverIds.split(",").filter(Boolean).map(Number)) {
+      for (const { id, name } of JSON.parse(flowServers) as { id: number; name: string }[]) {
         if (pending.has(id)) continue;
         pending.add(id);
         void (async () => {
           try {
             const response = await fetchXrayInbounds(token, id);
-            if (response.success === false) throw new Error("读取入站失败");
+            if (response.success === false || !response.inbounds) throw new Error(response.error || response.message || "读取入站失败");
             if (active) { setInbounds((current) => ({ ...current, [id]: response.inbounds || [] })); failures.delete(id); }
-          } catch {
-            if (active) { setInbounds((current) => { const next = { ...current }; delete next[id]; return next; }); failures.add(id); }
+          } catch (reason) {
+            if (active) { setInbounds((current) => { const next = { ...current }; delete next[id]; return next; }); failures.set(id, `${name}（#${id}）：${reason instanceof Error ? reason.message : "读取入站失败"}`); }
           } finally {
             pending.delete(id);
-            if (active) setErrors((current) => ({ ...current, flow: failures.size ? "部分服务器入站流控检查失败" : "" }));
+            if (active) setErrors((current) => ({ ...current, flow: failures.size ? `入站流控检查失败：${[...failures.values()].join("；")}` : "" }));
           }
         })();
       }
     };
     load(); const timer = window.setInterval(() => { if (!document.hidden) load(); }, 60000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [token, serverIds, revision]);
+  }, [token, flowServers, revision]);
   const cards = useMemo(() => new Map(nodes.map((node) => {
     const server = nodeManagedServer(node, servers);
     return [node.id, { flow: server ? nodeInboundFlow(node, inbounds[server.id] || []) : null, blocked: blocked.has(node.id), unlock: unlocks[String(node.id)], source: externalNodeSource(node, servers), tunnels: nodeTunnels(node, tunnels, servers), chain: nodeTunnelChain(node, chains, servers), whole: resolveWholeOutbound(node, server ? routing[server.id] : undefined, nodes, servers, tunnels) }];

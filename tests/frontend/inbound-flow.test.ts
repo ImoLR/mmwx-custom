@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { inboundFlowWarning, inboundSecurityMode, nodeInboundFlow, normalizeInboundFlow, relayPortChangeWarning } from "../../frontend/src/inbound-flow.ts";
+import { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, nodeInboundFlow, normalizeInboundFlow, relayPortChangeWarning } from "../../frontend/src/inbound-flow.ts";
+import { nodeManagedServer } from "../../frontend/src/node-card-logic.ts";
 import type { XrayNode, XrayObject } from "../../frontend/src/types.ts";
 
 const vision = "xtls-rprx-vision";
@@ -94,9 +95,9 @@ function compileSave(component: string, name: string, dependencies: Record<strin
   const scope = component ? file.statements.find((value: any) => ts.isFunctionDeclaration(value) && value.name?.text === component) : file;
   const handler = find(scope, (value) => (ts.isFunctionDeclaration(value) || ts.isVariableDeclaration(value)) && value.name?.text === name);
   assert.ok(handler, `${component} ${name} handler exists`);
-  const helpers = file.statements.filter((value: any) => ts.isFunctionDeclaration(value) && ["asString", "asNumber", "asObject", "sanitizeInbound", "managementAssignments", "getError"].includes(value.name?.text));
+  const helpers = file.statements.filter((value: any) => ts.isFunctionDeclaration(value) && ["asString", "asNumber", "asObject", "sanitizeInbound", "replaceInboundFlow", "managementAssignments", "getError"].includes(value.name?.text));
   const code = ts.transpileModule(`${helpers.map((value: any) => value.getText(file)).join("\n")}\n${ts.isVariableDeclaration(handler) ? "const " : ""}${handler.getText(file)}`, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
-  const deps = { inboundSecurityMode, normalizeInboundFlow, nodeInboundFlow, ...dependencies };
+  const deps = { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, normalizeInboundFlow, nodeInboundFlow, nodeManagedServer, ...dependencies };
   return new Function(...Object.keys(deps), `${code}\nreturn ${name};`)(...Object.values(deps));
 }
 
@@ -104,9 +105,11 @@ test("all three actual inbound save paths normalize every client, including unch
   for (const protocol of ["vless", "trojan"]) for (const mode of ["REALITY", "XTLS-Vision-REALITY"]) for (const path of ["inbound-add", "inbound-update", "node-add", "node-edit"]) {
     const payloads: any[] = [], errors: string[] = [];
     const server = { id: 12, name: "Boil", xray_mode: "external" };
-    const item = { ...inbound, protocol, _wizard_security: mode };
+    const item = { ...inbound, protocol, settings: { ...(inbound.settings as XrayObject), clients: ((inbound.settings as XrayObject).clients as XrayObject[]).map((c) => ({ ...c, password: c.id })) }, _wizard_security: mode };
     const noop = () => undefined;
     const dependencies = {
+      fetchXrayNodes: async () => ({ success: true, nodes: [{ ...node, protocol, parsed_config: JSON.stringify({ type: protocol, uuid: "ADMIN-UUID", password: "ADMIN-UUID", flow: mode.includes("Vision") ? vision : "" }) }] }),
+      fetchXrayInbounds: async () => ({ success: true, inbounds: [payloads.at(-1)?.inbound || item] }),
       server, token: "test", node, editor: { kind: "inbound", item, ...(path === "inbound-update" ? { originalTag: inbound.tag } : {}) },
       state: { server, item, originalTag: inbound.tag }, selectedServers: [server],
       setBusy: noop, setEditor: noop, setError: (value: string) => { if (value) errors.push(value); },
@@ -118,8 +121,7 @@ test("all three actual inbound save paths normalize every client, including unch
     const save = path.startsWith("inbound-") ? compileSave("", "saveEditor", dependencies) : compileSave(path === "node-add" ? "ManagedNodeCreateDialog" : "ManagedNodeEditDialog", "save", dependencies);
     await save(item);
     assert.deepEqual(errors, [], `${path} ${protocol} ${mode}`);
-    assert.equal(payloads.length, 1);
-    assert.equal(payloads[0].action, path.endsWith("add") ? "add" : "update");
+    assert.deepEqual(payloads.map((p) => p.action), path.endsWith("add") ? ["add"] : ["replace", "update"]);
     const values = payloads[0].inbound.settings.clients;
     assert.equal(values.length, 2);
     assert.ok(values.every((client: XrayObject) => mode.includes("Vision") ? client.flow === vision : !("flow" in client)), `${path} ${protocol} ${mode}`);
@@ -133,7 +135,7 @@ test("repair re-reads the inbound, preserves newly added clients and verifies of
   let reads = 0, refreshed = 0, closed = 0;
   const noop = () => undefined;
   const deps = {
-    server: { id: 12 }, token: "test", node, state: nodeInboundFlow(node, [inbound]), vision: true,
+    server: { id: 12, name: "Boil" }, token: "test", node, state: nodeInboundFlow(node, [inbound]), vision: true,
     setBusy: noop, setError: (value: string) => { if (value) errors.push(value); },
     fetchXrayInbounds: async () => ({ success: true, inbounds: [++reads === 1 ? newer : payloads[0].inbound] }),
     fetchXrayNodes: async () => ({ success: true, nodes: [node] }),
@@ -142,14 +144,16 @@ test("repair re-reads the inbound, preserves newly added clients and verifies of
   };
   await compileSave("NodeFlowRepairDialog", "save", deps)();
   assert.deepEqual(errors, []);
-  assert.equal(payloads[0].action, "update");
+  assert.deepEqual(payloads.map((p) => p.action), ["replace", "update"]);
+  assert.deepEqual(payloads[0].inbound, payloads[1].inbound);
+  assert.equal(payloads[1].node_name, undefined);
   assert.equal(payloads[0].inbound.settings.clients.length, 3);
   assert.ok(payloads[0].inbound.settings.clients.every((client: XrayObject) => client.flow === vision));
   assert.equal(reads, 2); assert.equal(refreshed, 1); assert.equal(closed, 1);
   reads = 0; payloads.length = 0; errors.length = 0; closed = 0;
   await compileSave("NodeFlowRepairDialog", "save", { ...deps, fetchXrayInbounds: async () => ({ success: true, inbounds: [inbound] }) })();
   assert.equal(closed, 0);
-  assert.match(errors[0], /尚未一致.*官方侧修复/);
+  assert.match(errors[0], /入站替换已提交.*入站用户流控为/);
   payloads.length = 0; errors.length = 0;
   await compileSave("NodeFlowRepairDialog", "save", { ...deps, fetchXrayInbounds: async () => ({ success: false, inbounds: [inbound] }) })();
   assert.equal(payloads.length, 0);
@@ -160,7 +164,7 @@ test("repair re-reads the inbound, preserves newly added clients and verifies of
   assert.match(errors[0], /Vision 需要 TLS 或 REALITY/);
 });
 
-test("repair defaults to the selected node link's Vision choice", async () => {
+test("repair defaults to Vision even when the selected node link has no flow", async () => {
   for (const flow of [vision, ""]) {
     let choice: boolean | undefined;
     const value = { ...node, parsed_config: JSON.stringify({ type: "vless", uuid: "ADMIN-UUID", flow }) };
@@ -170,7 +174,7 @@ test("repair defaults to the selected node link's Vision choice", async () => {
       setState: () => undefined, setVision: (value: boolean) => { choice = value; },
       setError: (value: string) => assert.fail(value),
     })();
-    assert.equal(choice, flow === vision);
+    assert.equal(choice, true);
   }
 });
 
@@ -197,4 +201,80 @@ test("the real editor displays both mixed-flow and relay port warnings, and card
   const renderBadge = (item: XrayObject) => renderToStaticMarkup(React.createElement(Badges, { node, state: { flow: nodeInboundFlow(node, [item]), tunnels: [] }, servers: [] }));
   assert.match(renderBadge(inbound), /class="bad".*流控不一致/);
   assert.doesNotMatch(renderBadge(normalizeInboundFlow(inbound, "XTLS-Vision-REALITY")), /流控不一致/);
+});
+
+test("ordinary saves never replace unchanged, non-mixed or non-flow clients", async () => {
+  const noop = () => undefined;
+  for (const original of [normalizeInboundFlow(inbound, "REALITY"), { ...inbound, protocol: "vmess" }, { ...inbound, protocol: "shadowsocks" }]) {
+    for (const component of ["", "ManagedNodeEditDialog"]) {
+      const payloads: any[] = [], errors: string[] = [];
+      const server = { id: 12, name: "Boil", xray_mode: "external" };
+      await compileSave(component, component ? "save" : "saveEditor", {
+        server, token: "test", node, editor: { kind: "inbound", item: original, originalTag: original.tag }, state: { server, item: original, originalTag: original.tag },
+        setBusy: noop, setEditor: noop, setError: (v: string) => { if (v) errors.push(v); }, setNotice: (v: any) => { if (v?.kind === "error") errors.push(v.text); },
+        mutateXrayInbound: async (_t: string, _id: number, body: any) => { payloads.push(body); return { success: true }; },
+        assignConnectionPort: noop, refreshInbounds: noop, onSaved: noop, onClose: noop,
+      })({ ...original, port: 10021 });
+      assert.deepEqual(errors, []);
+      assert.deepEqual(payloads.map((p) => p.action), ["update"]);
+    }
+  }
+  assert.equal(inboundFlowNeedsRepair(inbound, structuredClone(inbound)), false);
+  assert.equal(inboundFlowNeedsRepair(normalizeInboundFlow(inbound, "REALITY"), normalizeInboundFlow(inbound, "XTLS-Vision-REALITY")), false);
+});
+
+test("repair verifies both link formats, every relay, missing nodes and partial write failures", async () => {
+  const fixed = normalizeInboundFlow(inbound, "XTLS-Vision-REALITY");
+  assert.match(inboundFlowRepairWarning(fixed, [{ ...relay, clash_config: node.parsed_config, parsed_config: JSON.stringify({ type: "vless", uuid: "ADMIN-UUID" }) }], vision), /usb vless-relay/);
+  const noop = () => undefined;
+  for (const scenario of ["success", "replace-fails", "update-fails", "stale-relay", "missing-node", "reread-fails"]) {
+    const calls: string[] = [], errors: string[] = [];
+    let nodeReads = 0, closed = false;
+    const latest = { ...inbound, _runtime_status: "running", _source: "agent" };
+    await compileSave("NodeFlowRepairDialog", "save", {
+      server: { id: 12, name: "Boil" }, token: "test", node, state: nodeInboundFlow(node, [inbound]), vision: true,
+      setBusy: noop, setError: (v: string) => { if (v) errors.push(v); },
+      fetchXrayInbounds: async () => { calls.push("read-inbound"); return { success: !(scenario === "reread-fails" && calls.includes("update")), inbounds: [calls.includes("update") ? fixed : latest] }; },
+      fetchXrayNodes: async () => { calls.push("read-nodes"); nodeReads++; return { success: true, nodes: nodeReads === 1 ? [node, relay] : scenario === "missing-node" ? [node] : [node, scenario === "stale-relay" ? { ...relay, parsed_config: JSON.stringify({ type: "vless", uuid: "ADMIN-UUID" }) } : relay] }; },
+      mutateXrayInbound: async (_t: string, _id: number, body: any) => {
+        calls.push(body.action); assert.equal(body.inbound._runtime_status, undefined); assert.equal(body.inbound._source, undefined);
+        return { success: scenario !== body.action + "-fails", message: body.action + " rejected" };
+      },
+      onSaved: async () => { calls.push("saved"); }, onClose: () => { closed = true; },
+    })();
+    assert.equal(closed, scenario === "success", scenario);
+    if (scenario === "success") assert.deepEqual(calls, ["read-inbound", "read-nodes", "replace", "update", "read-inbound", "read-nodes", "saved"]);
+    else assert.equal(errors.length, 1, scenario);
+    if (scenario === "replace-fails") assert.equal(calls.includes("update"), false);
+    if (scenario === "update-fails") assert.match(errors[0], /替换已提交.*update rejected/);
+    if (scenario === "stale-relay") assert.match(errors[0], /usb vless-relay.*尚未一致/);
+    if (scenario === "missing-node") assert.match(errors[0], /未找到节点.*usb vless-relay/);
+    if (scenario === "reread-fails") assert.match(errors[0], /无法重新核对/);
+  }
+});
+
+test("flow checks skip offline and unsupported nodes and show connected server errors by name", async () => {
+  const cardFile = ts.createSourceFile("node-card-extras.tsx", readFileSync(new URL("../../frontend/src/node-card-extras.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const hook = cardFile.statements.find((v: any) => ts.isFunctionDeclaration(v) && v.name?.text === "useNodeCardExtras");
+  const code = ts.transpileModule(hook.getText(cardFile).replace(/^export /, ""), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
+  const effects: any[] = [], reads: number[] = [], timers: any[] = [];
+  const values: any[] = []; let index = 0;
+  let fail = true;
+  const deps = {
+    useState: (value: unknown) => { const i = index++; values[i] = value; return [value, (next: any) => { values[i] = typeof next === "function" ? next(values[i]) : next; }]; },
+    useCallback: (f: any) => f, useMemo: () => new Map(), useEffect: (f: any) => { effects.push(f); }, nodeManagedServer,
+    nodeCardConfig: () => ({}), window: { setInterval: (f: any) => { timers.push(f); }, clearInterval: () => {} }, document: { hidden: false },
+    fetchXrayInbounds: async (_t: string, id: number) => { reads.push(id); if (id === 2 && fail) throw new Error("agent timeout"); return id === 3 && fail ? { success: false, error: "official failed" } : { success: true, inbounds: [] }; },
+  };
+  const useExtras = new Function(...Object.keys(deps), `${code}\nreturn useNodeCardExtras;`)(...Object.values(deps));
+  const servers = [1, 2, 3, 4, 5].map((id) => ({ id, name: "server-" + id, status: id === 1 ? "offline" : "connected", xray_mode: "embedded" }));
+  useExtras("test", servers.map((s) => ({ ...node, original_server: s.name, protocol: s.id === 4 ? "mieru" : "vless", node_type: s.id === 5 ? "routed" : undefined })), servers);
+  const cleanup = effects[3]();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(reads, [2, 3]);
+  assert.match(values[7].flow, /server-2（#2）：agent timeout/);
+  assert.match(values[7].flow, /server-3（#3）：official failed/);
+  fail = false; timers[0](); await new Promise((r) => setImmediate(r));
+  assert.equal(values[7].flow, "");
+  cleanup();
 });
