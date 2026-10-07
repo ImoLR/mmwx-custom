@@ -1,4 +1,12 @@
-import type { CoreModeResponse, RemoteServer } from "./types";
+import type { CoreModeResponse, CustomAgentStatusResponse, RemoteServer } from "./types";
+
+export function serverCoreVersion(server: Pick<RemoteServer, "xray_mode" | "xray_version"> | undefined, status?: CustomAgentStatusResponse["status"], officialVersion = server?.xray_version) {
+  const official = officialVersion?.trim() || "";
+  const reported = server?.xray_mode === "external" ? status?.core?.version?.trim() : "";
+  return reported
+    ? { version: reported, source: "Helper 最近上报", officialVersion: official !== reported ? official : "" }
+    : { version: official, source: "官方 Agent", officialVersion: "" };
+}
 
 export function supportsCustomCoreFeatures(server: Pick<RemoteServer, "xray_mode">, mode?: CoreModeResponse, now = Date.now()): boolean {
   if (server.xray_mode !== "external") return true;

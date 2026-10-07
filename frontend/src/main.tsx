@@ -139,7 +139,8 @@ import { NodeManagementPage } from "./node-manager";
 import { PackageManagementPage } from "./package-manager";
 import { UserManagementPage } from "./user-manager";
 import { ForwardManagementPage } from "./forward-manager";
-import { XrayManager } from "./xray-manager";
+import { useCoreModes, XrayManager } from "./xray-manager";
+import { serverCoreVersion } from "./xray-capabilities";
 import "./styles.css";
 
 type DashboardState = {
@@ -893,7 +894,7 @@ function Dashboard({
         <div className="dashboard-content" aria-busy={loading}>
           <section className="metric-grid">
             <SystemStatusCard metrics={state.systemMetrics} />
-            <XrayStatusCard server={selectedServerWithRuntimeStatus} busy={xrayActionBusy} onAction={runXrayAction} />
+            <XrayStatusCard server={selectedServerWithRuntimeStatus} token={session.token} busy={xrayActionBusy} onAction={runXrayAction} />
           </section>
 
           <TrafficChart summary={state.summary} />
@@ -1008,15 +1009,19 @@ function SystemStatusCard({ metrics }: { metrics: SystemMetricsData | null }) {
 
 function XrayStatusCard({
   server,
+  token,
   busy,
   onAction,
 }: {
   server?: RemoteServer;
+  token: string;
   busy: boolean;
   onAction: (action: "start" | "stop" | "restart") => void;
 }) {
   const state = xrayState(server);
-  const version = server?.xray_version ? compactXrayVersion(server.xray_version) : "版本未知";
+  const coreModes = useCoreModes(server ? [server] : [], token);
+  const coreVersion = serverCoreVersion(server, server ? coreModes[String(server.id)]?.agent_status : undefined);
+  const version = coreVersion.version ? compactXrayVersion(coreVersion.version) : "版本未知";
   const serviceAction = server?.xray_running ? "stop" : "start";
   const controlDisabled = !server || busy;
   const settingsTitle = "当前新版前端还没有已迁移的 Xray 设置入口";
@@ -1026,13 +1031,14 @@ function XrayStatusCard({
       <div className="xray-card-main">
         <div className="xray-title-group">
           <h2>Xray</h2>
-          <span className="xray-version">{version}</span>
+          <span className="xray-version" title={`${coreVersion.source}：${coreVersion.version}`}>{version}</span>
         </div>
         <div className="xray-state">
           <span className={`xray-state-dot ${state.kind}`} />
           <span>{state.label}</span>
         </div>
       </div>
+      {server?.xray_mode === "external" && <div className="xray-version-source"><span>{coreVersion.source}：{coreVersion.version || "版本未知"}</span>{coreVersion.officialVersion && <small>官方 Agent 读数（参考）：{coreVersion.officialVersion}</small>}</div>}
       <div className="xray-actions" aria-label="Xray 操作">
         <button type="button" disabled={controlDisabled} onClick={() => onAction(serviceAction)} aria-label={server?.xray_running ? "停止 Xray" : "启动 Xray"}>
           <Power />
@@ -1930,6 +1936,7 @@ function CoreControlPanel({ server, sessionToken, compact = false }: { server: R
   const desired = mode?.intent.desired_core_mode || server.xray_mode || "external";
   const currentHelper = agent?.status?.helper?.version || "";
   const currentCore = agent?.status?.core?.version || "";
+  const coreVersion = serverCoreVersion(server, agent?.status);
   const helperInstalled = Boolean(agent?.status?.helper?.installed);
   const latestHelper = release?.release.latest_helper_version || "";
   const latestCore = release?.release.latest_core_version || "";
@@ -1981,7 +1988,7 @@ function CoreControlPanel({ server, sessionToken, compact = false }: { server: R
       {status !== "healthy" && mode?.configured && <p className="agent-note">尝试次数：{mode.intent.repair_attempts || 0}{mode.intent.next_repair_at ? ` · 下次尝试 ${formatDateTime(mode.intent.next_repair_at)}` : ""}</p>}
       <div className="component-upgrade-grid">
         <article><div><strong>Helper {currentHelper || (helperInstalled ? "版本未知" : "未安装")}</strong>{helperUpdate && <span className="update-dot" title="Helper 有更新" />}</div><small>最新：{latestHelper || (release?.last_error ? "缓存暂不可用" : "读取中")}</small>{helperInstalled && helperNeedsFirstUpgrade && <small>需要首次升级</small>}<small>状态：{componentUpgradeLabel(helperUpgradeState)}</small><button type="button" disabled={!helperInstalled || !helperUpdate || helperPending || busy !== ""} onClick={() => void upgrade("helper")}>{helperPending ? "升级进行中" : helperNeedsFirstUpgrade ? "首次升级 Helper" : "升级 Helper"}</button></article>
-        <article><div><strong>Fork Core {coreVersionLabel(currentCore)}</strong>{coreUpdate && <span className="update-dot" title="Core 有更新" />}</div><small>最新：{latestCore || (release?.last_error ? "缓存暂不可用" : "读取中")}</small><small>状态：{componentUpgradeLabel(coreUpgradeState)}</small><button type="button" disabled={!helperInstalled || !coreUpdate || corePending || busy !== ""} onClick={() => void upgrade("core")}>{corePending ? "升级进行中" : "升级 Core"}</button></article>
+        <article><div><strong>Fork Core {coreVersionLabel(currentCore)}</strong>{coreUpdate && <span className="update-dot" title="Core 有更新" />}</div>{server.xray_mode === "external" && currentCore && <small>来源：Helper 最近上报</small>}{coreVersion.officialVersion && <small>官方 Agent 读数（参考）：{coreVersionLabel(coreVersion.officialVersion)}</small>}<small>最新：{latestCore || (release?.last_error ? "缓存暂不可用" : "读取中")}</small><small>状态：{componentUpgradeLabel(coreUpgradeState)}</small><button type="button" disabled={!helperInstalled || !coreUpdate || corePending || busy !== ""} onClick={() => void upgrade("core")}>{corePending ? "升级进行中" : "升级 Core"}</button></article>
       </div>
       {release?.last_error && release.cached && <p className="agent-note">GitHub 暂时不可达，继续使用 {formatDateTime(release.release.fetched_at)} 的上次成功缓存。</p>}
       {agent?.status?.update?.message && (agent.status.update.phase === "failed" || agent.status.update.phase === "rolled_back") && <div className="agent-notice error">{agent.status.update.message}</div>}
@@ -2021,6 +2028,7 @@ function HelperInstallDialog({ server, sessionToken, connectionMetric }: { serve
   const [error, setError] = useState("");
 	const [agentStatus, setAgentStatus] = useState<CustomAgentStatusResponse["status"]>();
   const helper = helperStatus(connectionMetric);
+  const coreVersion = serverCoreVersion(server, agentStatus);
 
 	useEffect(() => {
 		let active = true;
@@ -2049,13 +2057,14 @@ function HelperInstallDialog({ server, sessionToken, connectionMetric }: { serve
         <InfoBlock label="状态" value={helper.label} />
         <InfoBlock label="版本" value={helper.version || "--"} />
         <InfoBlock label="最近上报" value={helper.updatedAt ? formatRelativeTime(helper.updatedAt) : "--"} />
-		<InfoBlock label="Custom Core" value={agentStatus?.core?.installed ? `${agentStatus.core.version || "installed"} / ${agentStatus.core.ready ? "ready" : "not ready"}` : "未安装"} />
+		<InfoBlock label={server.xray_mode === "external" ? "Custom Core（Helper 上报）" : "Custom Core"} value={agentStatus?.core?.installed ? `${agentStatus.core.version || "installed"} / ${agentStatus.core.ready ? "ready" : "not ready"}` : "未安装"} />
 		<InfoBlock label="Core 模式" value={agentStatus?.core_mode || "--"} />
 		<InfoBlock label="Ownership" value={agentStatus?.external_ownership?.enabled && agentStatus.external_ownership.runtime_owned ? "owned" : "--"} />
 		<InfoBlock label="Single Core" value={agentStatus?.single_core ? "true" : "false"} />
 		<InfoBlock label="官方 Agent" value={agentStatus?.official_agent || "--"} />
 		<InfoBlock label="Takeover" value={agentStatus?.takeover?.status || "--"} />
       </div>
+      {coreVersion.officialVersion && <p className="xray-version-source">官方 Agent 读数（参考）：{coreVersion.officialVersion}</p>}
       <CoreControlPanel server={server} sessionToken={sessionToken} />
       <div className="service-dialog-section">
         <h4>安装 Connections Helper</h4>
@@ -2080,6 +2089,7 @@ type AgentNotice = { kind: "success" | "error" | "info"; text: string };
 type AgentPanel = "status" | "sync" | "config" | "website" | "maintenance";
 
 function AgentManager({ server, sessionToken }: { server: RemoteServer; sessionToken: string }) {
+  const coreModes = useCoreModes([server], sessionToken);
   const [panel, setPanel] = useState<AgentPanel>("status");
   const [versionInfo, setVersionInfo] = useState<AgentVersionInfo | null>(null);
   const [systemInfo, setSystemInfo] = useState<RemoteSystemInfo | null>(null);
@@ -2133,6 +2143,7 @@ function AgentManager({ server, sessionToken }: { server: RemoteServer; sessionT
 
   const currentVersion = formatAgentVersion(versionInfo?.current || systemInfo?.agent_version || server.agent_version);
   const latestVersion = formatAgentVersion(versionInfo?.latest);
+  const coreVersion = serverCoreVersion(server, coreModes[String(server.id)]?.agent_status, serviceStatus?.xray?.version || server.xray_version);
   const canMutate = !busy && server.status === "connected" && !server.is_federated;
 
   async function run(name: string, task: () => Promise<{ message?: string; success?: boolean } | unknown>, successText: string) {
@@ -2238,11 +2249,12 @@ function AgentManager({ server, sessionToken }: { server: RemoteServer; sessionT
             <InfoBlock label="Agent 模式" value={formatConnectionMode(server.connection_mode)} />
             <InfoBlock label="Xray 模式" value={formatXrayMode(server.xray_mode)} />
             <InfoBlock label="Xray 状态" value={serviceStatus?.xray?.running ?? server.xray_running ? "运行中" : "停止"} />
-            <InfoBlock label="Xray 版本" value={formatAgentVersion(serviceStatus?.xray?.version || server.xray_version)} />
+            <InfoBlock label={server.xray_mode === "external" ? `Core 版本（${coreVersion.source}）` : "Xray 版本"} value={formatAgentVersion(coreVersion.version)} />
             <InfoBlock label="Nginx 状态" value={serviceStatus?.nginx?.installed ? (serviceStatus.nginx.running ? "运行中" : "已安装未运行") : "未安装"} />
             <InfoBlock label="主机名" value={systemInfo?.hostname || "--"} />
             <InfoBlock label="系统负载" value={systemInfo?.loadavg || "--"} />
           </div>
+          {coreVersion.officialVersion && <p className="xray-version-source">官方 Agent 读数（参考）：{coreVersion.officialVersion}</p>}
           {versionInfo?.upgrade_available && <div className="agent-notice info">当前 Agent 低于最新版本，可在维护页升级。</div>}
           {(versionInfo?.current_error || versionInfo?.latest_error) && (
             <div className="agent-notice error">{versionInfo.current_error || versionInfo.latest_error}</div>

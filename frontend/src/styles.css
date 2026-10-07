@@ -461,6 +461,16 @@ button {
   min-width: 0;
 }
 
+.xray-version-source {
+  padding: 0 18px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.xray-version-source small { display: block; }
+
 .xray-title-group h2 {
   margin: 0;
   color: var(--text);

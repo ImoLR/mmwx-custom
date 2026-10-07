@@ -1,11 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { supportsCustomCoreFeatures } from "../../frontend/src/xray-capabilities.ts";
+import { serverCoreVersion, supportsCustomCoreFeatures } from "../../frontend/src/xray-capabilities.ts";
 import type { CoreModeResponse } from "../../frontend/src/types.ts";
 
 const now = Date.parse("2026-10-03T12:00:00Z");
 const external = { xray_mode: "external" };
 const embedded = { xray_mode: "embedded" };
+
+test("External Core version prefers the Helper build and identifies the official value as secondary", () => {
+  const server = { ...external, xray_version: "Xray 26.3.27 d2758a0" };
+  const status = { core: { version: "Xray 26.3.27 9f7dc23" }, reported_at: "2026-10-07T20:00:00Z" };
+  assert.deepEqual(serverCoreVersion(server, status), { version: status.core.version, source: "Helper 最近上报", officialVersion: server.xray_version });
+  assert.equal(serverCoreVersion(server, status, "Xray service probe").officialVersion, "Xray service probe");
+  assert.equal(serverCoreVersion(server, status, status.core.version).officialVersion, "");
+});
+
+test("missing Helper version falls back to official and Embedded version display remains official", () => {
+  const server = { ...external, xray_version: "official" };
+  for (const status of [undefined, { core: {} }, { core: { version: "  " } }]) {
+    assert.deepEqual(serverCoreVersion(server, status), { version: "official", source: "官方 Agent", officialVersion: "" });
+  }
+  assert.equal(serverCoreVersion({ ...server, ...embedded }, { core: { version: "unused Custom Core" } }).version, "official");
+  assert.equal(serverCoreVersion(undefined).version, "");
+});
 
 function ownedCore(): CoreModeResponse {
   return {

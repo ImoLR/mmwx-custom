@@ -57,7 +57,7 @@ import {
   updateRemoteServerDomain,
 } from "./api";
 import type { CoreModeResponse, RemoteServer, RoutingRulePreset, XrayNode, XrayObject, XrayServerNIC, XraySystemConfig, XrayWarpStatus } from "./types";
-import { supportsCustomCoreFeatures } from "./xray-capabilities";
+import { serverCoreVersion, supportsCustomCoreFeatures } from "./xray-capabilities";
 import { defaultNodeIPVersion } from "./node-manager-logic";
 import { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, nodeInboundFlow, normalizeInboundFlow, relayPortChangeWarning } from "./inbound-flow";
 import { nodeManagedServer } from "./node-card-logic";
@@ -517,7 +517,7 @@ export function nodeToOutbound(node: XrayNode): XrayObject {
   return { tag, protocol, settings: { servers: [{ address, port, ...(users.length ? { users } : {}) }] }, streamSettings };
 }
 
-function useCoreModes(servers: RemoteServer[], token: string) {
+export function useCoreModes(servers: RemoteServer[], token: string) {
   const serverIds = servers.filter((server) => server.xray_mode === "external").map((server) => server.id).sort((a, b) => a - b).join(",");
   const [state, setState] = useState<{ serverIds: string; token: string; modes: Record<string, CoreModeResponse | undefined> }>({ serverIds: "", token: "", modes: {} });
   useEffect(() => {
@@ -557,6 +557,7 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
   const [busy, setBusy] = useState("");
   const [running, setRunning] = useState(Boolean(server.xray_running));
   const [version, setVersion] = useState(server.xray_version || "");
+  const coreVersion = serverCoreVersion(server, coreModes[String(server.id)]?.agent_status, version);
   const [configPath, setConfigPath] = useState("");
   const [configText, setConfigText] = useState("");
   const [savedConfigText, setSavedConfigText] = useState("");
@@ -868,7 +869,7 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
 
       {!loading && tab === "config" && <>
         <section className="xray-panel xray-status-panel">
-          <div><span className={`xray-status-dot ${running ? "running" : ""}`} /><div><strong>{running ? "运行中" : "已停止"}</strong><p>{version || "未返回版本信息"}</p></div></div>
+          <div><span className={`xray-status-dot ${running ? "running" : ""}`} /><div><strong>{running ? "运行中" : "已停止"}</strong><p>{coreVersion.version || "未返回版本信息"}{server.xray_mode === "external" && ` · ${coreVersion.source}`}</p>{coreVersion.officialVersion && <small>官方 Agent 读数（参考）：{coreVersion.officialVersion}</small>}</div></div>
           <div className="xray-control-row">
             <button type="button" disabled={Boolean(busy)} onClick={() => void runService("start")}><Play />启动</button>
             <button type="button" disabled={Boolean(busy)} onClick={() => void runService("stop")} className="danger"><Square />停止</button>
