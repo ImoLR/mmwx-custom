@@ -28,7 +28,7 @@ const nodes = texts.map((text, i) => {
   const port = Number(hostPort.slice(hostPort.lastIndexOf(":") + 1));
   const host = hostPort.slice(0, hostPort.lastIndexOf(":"));
   let server = servers.find((item) => item.name === original_server);
-  if (!server) { server = { id: servers.length + 1, name: original_server, ip_address: `192.0.2.${servers.length + 1}`, domain: host, status: "connected", xray_mode: "external", xray_running: true }; servers.push(server); }
+  if (!server) { server = { id: servers.length + 1, name: original_server, flag: name.match(/^[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0] || ({ "Dmit T1": "🇭🇰", "Breadcloud US 年付": "🇺🇸", "MiraiGrid SB Nat 家宽": "🇯🇵" })[original_server], ip_address: `192.0.2.${servers.length + 1}`, domain: host, status: "connected", xray_mode: "external", xray_running: true }; servers.push(server); }
   const protocol = parts[addressIndex + 1].toLowerCase();
   const tag = parts.find((part) => part.startsWith("入站 "))?.slice(3) || "";
   const relay = parts.find((part) => part.startsWith("中转原服务器 "))?.slice(7);
@@ -57,6 +57,15 @@ if (spare[2]) owners[spare[2].id] = { ...owners[spare[2].id], users: ["usb", "wi
 if (spare[3]) { spare[3].original_server = ""; spare[3].inbound_tag = ""; spare[3].probe_enabled = true; owners[spare[3].id] = { users: [], source: "none", shared: false, admin_only: false, inbound_backed: false }; }
 if (spare[4]) owners[spare[4].id] = { ...owners[spare[4].id], users: [], admin_only: false, source: "none" };
 const wings = nodes.find((node) => node.inbound_tag === "wings ss 10018" && !node.relay_orig_server);
+// Synthetic long entry addresses exercise wrapping without adding/removing nodes.
+const longAddresses = [
+  [nodes.find((node) => !node.relay_orig_server && node.node_name.includes("强制ipv6")), "2001:db8:1234:5678:90ab:cdef:1234:5678"],
+  [nodes.find((node) => node.original_server === "MiraiGrid SB Nat 家宽"), "a-very-long-entry-address.with-another-long-label.example.test"],
+];
+for (const [node, host] of longAddresses) {
+  const config = { ...JSON.parse(node.clash_config), server: host };
+  node.clash_config = node.parsed_config = JSON.stringify(config);
+}
 const wingServer = servers.find((server) => server.name === wings.original_server);
 const wingConfig = JSON.parse(wings.clash_config);
 const tunnels = [{ kind: "inbound", server_id: servers[0].id, server_name: servers[0].name, tag: "fixture-tunnel", listen_port: 13068, target_address: wingConfig.server, target_port: wingConfig.port }];
@@ -126,11 +135,14 @@ try {
   const screenshot = async (name, fullPage = false) => page.screenshot({ path: path.join(evidence, `${name}.png`), fullPage });
   const measure = async (label) => {
     const data = await page.evaluate(() => {
-      const rows = [...document.querySelectorAll(".node-compact-row")].map((element) => ({ id: element.dataset.nodeId, rect: element.getBoundingClientRect() }));
-      return { width: innerWidth, height: innerHeight, pageHeight: document.documentElement.scrollHeight, rowHeights: [...new Set(rows.map((row) => row.rect.height))], firstScreenNodes: new Set(rows.filter((row) => row.rect.top >= 0 && row.rect.bottom <= innerHeight).map((row) => row.id)).size, visibleRows: rows.length, uniqueNodes: new Set(rows.map((row) => row.id)).size, overflow: document.documentElement.scrollWidth > innerWidth, overflowPixels: Math.max(0, document.documentElement.scrollWidth - innerWidth) };
+      const rows = [...document.querySelectorAll(".node-compact-row")].map((element) => ({ id: element.dataset.nodeId, rect: element.getBoundingClientRect(), addressHeight: element.querySelector(".node-row-address").getBoundingClientRect().height, metaHeight: element.querySelector(".node-row-meta").getBoundingClientRect().height }));
+      const addresses = [...document.querySelectorAll(".node-row-address")];
+      return { width: innerWidth, height: innerHeight, pageHeight: document.documentElement.scrollHeight, rowHeights: [...new Set(rows.map((row) => row.rect.height))], firstScreenNodes: new Set(rows.filter((row) => row.rect.top >= 0 && row.rect.bottom <= innerHeight).map((row) => row.id)).size, visibleRows: rows.length, uniqueNodes: new Set(rows.map((row) => row.id)).size, overflow: document.documentElement.scrollWidth > innerWidth, overflowPixels: Math.max(0, document.documentElement.scrollWidth - innerWidth), addressOverflow: addresses.some((element) => element.scrollWidth > element.clientWidth || element.scrollHeight > element.clientHeight || getComputedStyle(element).textOverflow === "ellipsis"), rowDetails: rows.map((row) => ({ id: row.id, height: row.rect.height, addressHeight: row.addressHeight, metaHeight: row.metaHeight })) };
     });
     assert.equal(data.overflow, false, `${label}: horizontal overflow`);
-    assert.ok(Math.max(...data.rowHeights) <= 60, `${label}: rows too tall`);
+    assert.equal(data.addressOverflow, false, `${label}: clipped address`);
+    assert.ok(data.rowDetails.filter((row) => row.addressHeight === 18 && row.metaHeight === 17).every((row) => row.height <= 84), `${label}: common rows too tall`);
+    if (data.width === 390) assert.ok(data.rowDetails.filter((row) => row.addressHeight === 18).every((row) => row.height <= 84), `${label}: extra wrap without a long address`);
     metrics.push({ label, ...data });
   };
   for (const theme of ["light", "dark"]) {
@@ -140,9 +152,15 @@ try {
     await measure(`390-${theme}`);
     await screenshot(`390-${theme}-grouped`);
     await screenshot(`390-${theme}-full`, true);
+    const relayGroup = page.locator(".node-group").filter({ has: page.locator(`.node-compact-row[data-node-id="${wings.id}"]`) }).last();
+    await relayGroup.getByRole("button", { name: /再显示 \d+ 个中转/ }).click();
+    await relayGroup.evaluate((element) => scrollTo(0, element.getBoundingClientRect().top + scrollY - 10));
+    await screenshot(`390-${theme}-relay`);
+    await relayGroup.getByRole("button", { name: "收起中转" }).click();
     await page.locator(`.node-compact-row[data-node-id="${wings.id}"] .node-row-more`).first().click();
     await screenshot(`390-${theme}-action`);
     const action = page.getByRole("dialog").last();
+    assert.equal(await action.locator("h2").first().textContent(), wings.node_name);
     for (const submenu of ["节点路由 · 链式出站 · 中转组", "测速历史 · 探测与状态", "查看配置 · 临时订阅 · 更多"]) await action.getByText(submenu, { exact: true }).click();
     for (const text of ["复制 URI", "测延迟", "测速", "编辑", "节点路由", "链式出站", "中转组", "新增落地节点 / 整个节点出站", "取消整个节点出站", "编辑名称 / 中转配置", "查看配置", "临时订阅", "解析 IP", "恢复域名", "地区 emoji", "删除节点", "测速历史"]) assert.ok(await action.getByRole("button", { name: text, exact: true }).count(), `missing action ${text}`);
     await action.getByRole("button", { name: "关闭面板" }).click();
@@ -162,6 +180,27 @@ try {
     }
   }
   checks.push("light/dark grouped, action, filter, selection; 360/375/390/412/1440 no overflow; every old action entry");
+  for (const [name, shown] of [
+    ["🇹🇼 台湾 [Boil Hinet 马年] shadowsocks2022-10016", "🇹🇼 shadowsocks2022-10016"],
+    ["🇭🇰 香港 [Boil HKT 99u] max ss-10015", "🇭🇰 max ss-10015"],
+    ["[Dmit T1] vless-hk 自己用", "🇭🇰 vless-hk 自己用"],
+    ["Vless US 自己用", "🇺🇸 Vless US 自己用"],
+  ]) {
+    const node = nodes.find((node) => node.node_name === name);
+    assert.equal(await page.locator(`.node-compact-row[data-node-id="${node.id}"] .node-row-name`).first().textContent(), shown);
+  }
+  for (const node of nodes.filter((node) => node.relay_orig_server)) {
+    const row = page.locator(`.node-compact-row[data-node-id="${node.id}"]`).first();
+    if (!await row.count()) continue;
+    assert.equal(await row.locator(".node-row-relay").textContent(), "中转");
+    const config = JSON.parse(node.clash_config);
+    assert.equal(await row.locator(".node-row-address").textContent(), `${config.server.includes(":") ? `[${config.server}]` : config.server}:${config.port}`);
+  }
+  for (const [node, host] of longAddresses) {
+    const row = page.locator(`.node-compact-row[data-node-id="${node.id}"]`).first();
+    assert.equal(await row.locator(".node-row-address").textContent(), `${host.includes(":") ? `[${host}]` : host}:${JSON.parse(node.clash_config).port}`);
+  }
+  checks.push("four display-name examples, server-region flag fallback, standalone and child relay markers, full relay entries and long IPv6/domain addresses");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "导入", exact: true }).click();
   for (const tab of ["手动输入", "订阅导入", "SOCKS5"]) { await page.getByRole("button", { name: tab, exact: true }).click(); assert.ok(await page.getByRole("button", { name: "解析节点", exact: true }).count()); }
@@ -186,17 +225,21 @@ try {
   await actionPanel.getByText("查看配置 · 临时订阅 · 更多", { exact: true }).click();
   await actionPanel.getByRole("button", { name: "编辑名称 / 中转配置", exact: true }).click();
   const editor = page.getByRole("dialog", { name: "编辑节点", exact: true });
+  assert.equal(await editor.getByLabel("节点名称", { exact: true }).inputValue(), wings.node_name);
   for (const label of ["保存基础信息", "更新地址", "恢复原始域名", "设置/修改中转", "复制为中转节点", "取消中转", "保存配置"]) assert.ok(await editor.getByRole("button", { name: label, exact: true }).count(), label);
   await editor.getByRole("button", { name: "关闭", exact: true }).click();
   actionPanel = page.getByRole("dialog").last();
   await actionPanel.getByText("查看配置 · 临时订阅 · 更多", { exact: true }).click();
   await actionPanel.getByRole("button", { name: "临时订阅", exact: true }).click();
+  assert.ok(await page.getByRole("dialog", { name: "节点详情", exact: true }).getByText(wings.node_name, { exact: true }).count());
   await page.getByRole("button", { name: "生成并复制", exact: true }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('input[readonly]')].some((input) => input.value.endsWith("/t/local-fixture")));
   await page.getByRole("dialog", { name: "节点详情", exact: true }).getByRole("button", { name: "关闭", exact: true }).first().click();
   await page.getByRole("button", { name: "关闭面板", exact: true }).click();
   checks.push("URI, TCPing, throughput and real-latency API callbacks; package dialog; edit subactions; local-origin temporary subscription");
   const search = page.getByRole("textbox", { name: "搜索节点、用户、端口" });
+  await search.fill(wings.node_name);
+  assert.equal(await page.locator(`.node-compact-row[data-node-id="${wings.id}"]`).count(), 1);
   await search.fill("wings");
   assert.ok(await page.locator(".node-compact-row").count());
   await search.fill("");
@@ -236,6 +279,7 @@ try {
   checks.push("ungrouped drag persists node_order once; grouping/collapse UI preferences never write user_config");
   assert.equal(errors.length, 0, errors.join("\n"));
   assert.ok(metrics.filter((item) => item.label.startsWith("390-")).every((item) => item.firstScreenNodes >= 7));
+  assert.equal(requests.filter((request) => request.path === "/api/v3" && request.body.op !== "034e094d05aa3f83" && request.body.op !== "c87c168b92b5f22d" && request.body.op !== "edc667caa2f10498").length, 0, "display must not write node names");
   writeFileSync(path.join(evidence, "metrics.json"), JSON.stringify({ fixtureNodes: nodes.length, metrics, checks, requests, errors }, null, 2));
   console.log(JSON.stringify({ fixtureNodes: nodes.length, metrics, checks }, null, 2));
 } finally {
