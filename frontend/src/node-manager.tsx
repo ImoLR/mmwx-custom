@@ -453,6 +453,7 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
       node={node}
       onClose={() => setActionNodeId(null)}
       onSpeed={() => void speedTests.start([node])}
+      speedBusy={speedTestState(speedTests.latest.get(node.id), speedTests.now) === "running"}
       notice={notice}
       ownerHint={nodeOwnerHint(nodeOwnership(node, owners))}
       packageNames={(packages.memberships[node.id] || []).map((pkg) => pkg.package_name).join("、")}
@@ -471,9 +472,9 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
         onRevertChain={(entry) => { if (window.confirm(`切回源服务器地址?\n节点「${node.node_name}」当前经链式隧道入口 ${entry} 连接。切回后将拆除该节点的中转配置,恢复为源服务器地址。`)) void run("切回源服务器地址", async () => { await cancelNodeRelay(token, node.id); await cardExtras.refresh(); }); }}
         onSwitchWhole={() => setDialog({ kind: "landing", node })} onCancelWhole={() => cancelWholeOutbound(node)} onRepairFlow={() => setDialog({ kind: "flow-repair", node })} />}
       extras={<><NodeCardBadges node={node} state={cardExtras.cards.get(node.id)} servers={servers} />
-        <NodePackageChip token={token} nodeId={node.id} loading={packages.loading} memberships={packages.memberships[String(node.id)] || []} packages={packages.packages} onChanged={async () => { await packages.refresh(); await loadNodes(); }} onNotice={toolNotice} />
         <NodeProbeBadge node={node} state={probeStates.get(node.id)} onClick={() => setDialog({ kind: "node-probe" })} />
       </>}
+      packageAction={<NodePackageChip token={token} nodeId={node.id} loading={packages.loading} memberships={packages.memberships[String(node.id)] || []} packages={packages.packages} onChanged={async () => { await packages.refresh(); await loadNodes(); }} onNotice={toolNotice} />}
       speedActions={<NodeSpeedTestActions node={node} controller={speedTests} onHistory={() => setDialog({ kind: "speed-history", node })} />}
       onLanding={() => setDialog({ kind: "landing", node })}
       onCopy={() => void copyNodeURI(token, node, setNotice)}
@@ -672,7 +673,7 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
       <div className="node-grouping" aria-label="节点分组">{([["user", "按用户"], ["server", "按服务器"], ["package", "按套餐"], ["none", "不分组"]] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={grouping === value} onClick={() => setGrouping(value)}>{label}</button>)}</div>
       {sortMode && <p className="node-sort-hint">{grouping === "none" ? "拖动左侧手柄排序，顺序自动保存。" : <>排序请切换到<button type="button" onClick={() => setGrouping("none")}>不分组</button>视图。</>}</p>}
       {filterOpen && <NodeSheet title="筛选节点" className="node-filter-sheet" onClose={() => setFilterOpen(false)}>
-                <NodeSelect icon={<Filter />} value={protocol} onChange={setProtocol} label="协议" options={[{ value: ALL, label: `全部协议 (${nodes.length})` }, ...protocols.map((item) => ({ value: item.value, label: `${item.value.toUpperCase()} (${item.count})` }))]} />
+        <NodeSelect icon={<Filter />} value={protocol} onChange={setProtocol} label="协议" options={[{ value: ALL, label: `全部协议 (${nodes.length})` }, ...protocols.map((item) => ({ value: item.value, label: `${item.value.toUpperCase()} (${item.count})` }))]} />
         <details className="node-select node-tag-filter" open>
           <summary><Tags />标签{filterTags.length ? ` (${filterTags.length})` : "：全部"}</summary>
           <button type="button" onClick={() => setFilterTags([])}>全部标签</button>
@@ -887,7 +888,7 @@ function SortableNodeCard({ id, disabled, children }: { id: number; disabled: bo
 }
 
 function NodeActionSheet({
-  node, onClose, onSpeed, notice, ownerHint, packageNames,
+  node, onClose, onSpeed, speedBusy, notice, ownerHint, packageNames, packageAction,
   parsed,
   latency,
   onDetails,
@@ -912,9 +913,11 @@ function NodeActionSheet({
   node: XrayNode;
   onClose: () => void;
   onSpeed: () => void;
+  speedBusy: boolean;
   notice: Notice;
   ownerHint: string;
   packageNames: string;
+  packageAction: React.ReactNode;
   parsed: ParsedProxy;
   latency?: { loading?: boolean; text: string; ok?: boolean };
   onDetails: () => void;
@@ -944,38 +947,45 @@ function NodeActionSheet({
     <div className="node-quick-actions">
       <button type="button" onClick={onCopy}><Copy />复制 URI</button>
       <button type="button" onClick={onTcping}><Zap />测延迟</button>
-      <button type="button" onClick={onSpeed}><Zap />测速</button>
+      <button type="button" disabled={speedBusy} onClick={onSpeed}><Zap />测速</button>
       <button type="button" onClick={managed ? onEditInbound : onEdit}><Edit3 />编辑</button>
     </div>
     {latency && <p className={latency.ok ? "node-ok" : "node-error"}>TCPing：{latency.text}</p>}
     <h3 className="node-sheet-section">路由与中转</h3>
     {extraActions}
-    <div className="node-sheet-items">
-      {onRouting && <button type="button" onClick={onRouting}><Route />节点路由</button>}
-      <button type="button" onClick={onChain}><Link2 />链式出站</button>
-      <button type="button" onClick={onRelayGroup}><Link2 />中转组</button>
-      {node.node_type !== "routed" && <button type="button" onClick={onLanding}><Route />新增落地节点 / 整个节点出站</button>}
-      {node.inbound_tag && node.node_type !== "routed" && <button type="button" onClick={onCancelWholeOutbound}><Route />取消整个节点出站</button>}
-    </div>
+    <details className="node-sheet-submenu"><summary>节点路由 · 链式出站 · 中转组</summary>
+      <div className="node-sheet-items">
+        {onRouting && <button type="button" onClick={onRouting}><Route />节点路由</button>}
+        <button type="button" onClick={onChain}><Link2 />链式出站</button>
+        <button type="button" onClick={onRelayGroup}><Link2 />中转组</button>
+        {node.node_type !== "routed" && <button type="button" onClick={onLanding}><Route />新增落地节点 / 整个节点出站</button>}
+        {node.inbound_tag && node.node_type !== "routed" && <button type="button" onClick={onCancelWholeOutbound}><Route />取消整个节点出站</button>}
+      </div>
+    </details>
     <h3 className="node-sheet-section">更多</h3>
-    <div className="node-action-details"><span>套餐归属与状态</span><div className="node-chip-row node-card-badges">{extras}
-      {nodeTags(node).map((tag) => <span key={tag}>{tag}</span>)}
-      {node.inbound_tag && <span>入站 {node.inbound_tag}</span>}
-      {node.chain_proxy_node_id && <span>链式 #{node.chain_proxy_node_id}</span>}
-      {node.node_type === "routed" && <span>路由出站</span>}
-      <span>{stringValue(parsed.network || parsed.transport) || "tcp"}</span>
-      {(parsed["reality-opts"] || parsed.tls) && <span>{parsed["reality-opts"] ? "Reality" : "TLS"}</span>}
-    </div></div>
-    {speedActions}
-    <div className="node-sheet-items">
-      <button type="button" onClick={onEdit}><Edit3 />编辑名称 / 中转配置</button>
-      {managed && <button type="button" onClick={onEditInbound}><Edit3 />编辑节点</button>}
-      <button type="button" onClick={onDetails}><Eye />查看配置</button>
-      <button type="button" onClick={onTemp}><Link2 />临时订阅</button>
-      <button type="button" onClick={onResolve}><Server />解析 IP</button>
-      <button type="button" onClick={onRestore}><RefreshCw />恢复域名</button>
-      <button type="button" onClick={onEmoji}><Tags />地区 emoji</button>
-    </div>
+    <div className="node-sheet-package"><span>套餐归属</span>{packageAction}</div>
+    <details className="node-sheet-submenu"><summary>测速历史 · 探测与状态</summary>
+      <div className="node-action-details"><div className="node-chip-row node-card-badges">{extras}
+        {nodeTags(node).map((tag) => <span key={tag}>{tag}</span>)}
+        {node.inbound_tag && <span>入站 {node.inbound_tag}</span>}
+        {node.chain_proxy_node_id && <span>链式 #{node.chain_proxy_node_id}</span>}
+        {node.node_type === "routed" && <span>路由出站</span>}
+        <span>{stringValue(parsed.network || parsed.transport) || "tcp"}</span>
+        {(parsed["reality-opts"] || parsed.tls) && <span>{parsed["reality-opts"] ? "Reality" : "TLS"}</span>}
+      </div></div>
+      {speedActions}
+    </details>
+    <details className="node-sheet-submenu"><summary>查看配置 · 临时订阅 · 更多</summary>
+      <div className="node-sheet-items">
+        <button type="button" onClick={onEdit}><Edit3 />编辑名称 / 中转配置</button>
+        {managed && <button type="button" onClick={onEditInbound}><Edit3 />编辑节点</button>}
+        <button type="button" onClick={onDetails}><Eye />查看配置</button>
+        <button type="button" onClick={onTemp}><Link2 />临时订阅</button>
+        <button type="button" onClick={onResolve}><Server />解析 IP</button>
+        <button type="button" onClick={onRestore}><RefreshCw />恢复域名</button>
+        <button type="button" onClick={onEmoji}><Tags />地区 emoji</button>
+      </div>
+    </details>
     <button className="node-delete-action danger" type="button" onClick={onDelete}><Trash2 />删除节点</button>
   </NodeSheet>;
 }

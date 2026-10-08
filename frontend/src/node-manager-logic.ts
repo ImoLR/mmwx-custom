@@ -207,7 +207,7 @@ export function matchesNodeFilters(node: XrayNode, parsed: Record<string, unknow
   query: string; protocol: string; tags: string[]; source: "all" | "manual" | "subscription"; server: string; state: string;
 }) {
   const protocol = String(node.protocol || parsed.type || "").trim().toLowerCase().replace(/^shadowsocks$/, "ss").replace(/^socks$/, "socks5");
-  const tags = node.tags?.length ? node.tags : node.tag ? [node.tag] : [];
+  const tags = (node.tags?.length ? node.tags : node.tag ? [node.tag] : []).map((tag) => tag.trim()).filter(Boolean);
   const text = [node.node_name, protocol, parsed.server, parsed.port, node.original_server, node.inbound_tag, node.routed_outbound_tag, node.relay_orig_server, ...tags, ...owner.users, owner.admin_only ? "自用 管理员" : ""].join(" ").toLowerCase();
   return (!filters.query.trim() || text.includes(filters.query.trim().toLowerCase()))
     && (filters.protocol === "all" || protocol === filters.protocol)
