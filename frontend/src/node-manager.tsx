@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DndContext, PointerSensor, TouchSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -44,6 +44,7 @@ import {
   fetchNodeRelatedInbounds,
   fetchNodeSubscription,
   fetchNodeTags,
+  fetchNodeOwners,
   fetchNodeURI,
   fetchXrayNodes,
   parseNodeURIs,
@@ -64,10 +65,11 @@ import { NodeCardBadges, NodeCardExtras, NodeRelayActionDialog, useNodeCardExtra
 import { nodeManagedServer } from "./node-card-logic";
 import { NodePackageChip, useNodePackages } from "./node-package-chip";
 import { NodeProbeBadge, NodeProbeDialog, useNodeProbe } from "./node-probe";
-import { nodeProbeStatesById } from "./node-auxiliary-logic";
+import { nodeProbeStatesById, nodeProbeSummary } from "./node-auxiliary-logic";
 import { RelayCredentialRepairDialog } from "./node-relay-repair";
 import { NodeSpeedTestActions, SpeedTestHistoryDialog, SpeedTesterManagerDialog, useNodeSpeedTests } from "./node-speedtest";
-import { duplicateNodeKey as duplicateKey, duplicateNodeGroups as findDuplicateGroups, subscriptionDefaultTag, batchRenameTransform, matchesNodeSource, moveSelectedNodes } from "./node-manager-logic";
+import { duplicateNodeKey as duplicateKey, duplicateNodeGroups as findDuplicateGroups, subscriptionDefaultTag, batchRenameTransform, moveSelectedNodes, groupNodes, nodeOwnership, nodeOwnerHint, nodeRelayRows, isNodeRelay, toggleNodeSelection, matchesNodeFilters, type NodeGrouping, type NodeOwners } from "./node-manager-logic";
+import { speedTestLatency, speedTestState } from "./node-speedtest-logic";
 import { ManagedNodeCreateDialog, ManagedNodeEditDialog, NodeFlowRepairDialog } from "./xray-manager";
 import {
   ChainProxyDialog,
@@ -143,6 +145,20 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
   const [dialog, setDialog] = useState<Dialog>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [owners, setOwners] = useState<NodeOwners>({});
+  const [ownerError, setOwnerError] = useState("");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectionMenu, setSelectionMenu] = useState(false);
+  const [actionNodeId, setActionNodeId] = useState<number | null>(null);
+  const [grouping, setGrouping] = useState<NodeGrouping>(() => {
+    const value = readNodePreference("grouping", "user");
+    return ["user", "server", "package", "none"].includes(value) ? value as NodeGrouping : "user";
+  });
+  const [collapsed, setCollapsed] = useState<string[]>(() => {
+    try { const value = JSON.parse(readNodePreference("collapsed", "[]")); return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string") : []; } catch { return []; }
+  });
+  const [expandedRelays, setExpandedRelays] = useState<Set<string>>(new Set());
   const [sortMode, setSortMode] = useState(false);
   const [nodeOrder, setNodeOrder] = useState<number[]>([]);
   const [userConfig, setUserConfig] = useState<Record<string, unknown>>({});
@@ -171,13 +187,18 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
   const loadNodes = useCallback(async () => {
     setLoading(true);
     try {
-      const [nodeResp, tagResp, configResp] = await Promise.all([
+      const [nodeResp, tagResp, configResp, ownerResp] = await Promise.all([
         fetchXrayNodes(token),
         fetchNodeTags(token).catch(() => ({ tags: [] })),
         fetchUserConfig(token),
+        fetchNodeOwners(token).then((response) => { setOwnerError(""); return response; }).catch(() => {
+          setOwnerError("节点归属读取失败，请刷新重试；暂时归入外部节点 / 未归属。"); return { owners: {} };
+        }),
       ]);
       const nextNodes = nodeResp.nodes ?? [];
       setNodes(nextNodes);
+      setOwners(ownerResp.owners);
+      setSelected((current) => new Set([...current].filter((id) => nextNodes.some((node) => node.id === id))));
       setTags(tagResp.tags ?? deriveTags(nextNodes));
       setUserConfig(configResp);
       const currentIds = new Set(nextNodes.map((node) => node.id));
@@ -205,36 +226,12 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
   const selectedNodes = useMemo(() => nodes.filter((node) => selected.has(node.id)), [nodes, selected]);
   const duplicateGroups = useMemo(() => findDuplicateGroups(nodes), [nodes]);
 
-  const filtered = useMemo(() => {
-    const text = query.trim().toLowerCase();
-    return parsedNodes.filter(({ node, parsed }) => {
-      const currentProtocol = normalizeProtocol(node.protocol || stringValue(parsed.type));
-      const currentTags = nodeTags(node);
-      const host = stringValue(parsed.server);
-      const port = stringValue(parsed.port);
-      const haystack = [
-        node.node_name,
-        currentProtocol,
-        host,
-        port,
-        node.original_server,
-        node.inbound_tag,
-        node.routed_outbound_tag,
-        node.relay_orig_server,
-        ...currentTags,
-      ].join(" ").toLowerCase();
-      if (text && !haystack.includes(text)) return false;
-      if (protocol !== ALL && currentProtocol !== protocol) return false;
-      if (filterTags.length && !currentTags.some((value) => filterTags.includes(value))) return false;
-      if (!matchesNodeSource(node, sourceFilter)) return false;
-      if (serverName !== ALL && (node.original_server || "外部节点") !== serverName) return false;
-      if (stateFilter === "enabled" && node.enabled === false) return false;
-      if (stateFilter === "disabled" && node.enabled !== false) return false;
-      if (stateFilter === "relay" && !node.relay_orig_server) return false;
-      if (stateFilter === "routed" && node.node_type !== "routed") return false;
-      return true;
-    });
-  }, [parsedNodes, protocol, query, serverName, stateFilter, filterTags, sourceFilter]);
+  const filtered = useMemo(() => parsedNodes.filter(({ node, parsed }) => matchesNodeFilters(node, parsed, nodeOwnership(node, owners), {
+    query, protocol, tags: filterTags, source: sourceFilter, server: serverName, state: stateFilter,
+  })), [parsedNodes, owners, protocol, query, serverName, stateFilter, filterTags, sourceFilter]);
+
+  useEffect(() => { try { localStorage.setItem("mmwx-node-grouping", grouping); } catch { /* Storage may be disabled. */ } }, [grouping]);
+  useEffect(() => { try { localStorage.setItem("mmwx-node-collapsed", JSON.stringify(collapsed)); } catch { /* Storage may be disabled. */ } }, [collapsed]);
 
   const run = useCallback(async (label: string, action: () => Promise<void>) => {
     setBusy(label);
@@ -427,7 +424,7 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
     } finally { setBusy(""); }
   };
   const onDragEnd = async ({ active, over }: DragEndEvent) => {
-    if (!over || active.id === over.id) return;
+    if (grouping !== "none" || !sortMode || !over || active.id === over.id) return;
     const visibleIds = filtered.map(({ node }) => node.id);
     const oldIndex = visibleIds.indexOf(Number(active.id));
     const newIndex = visibleIds.indexOf(Number(over.id));
@@ -438,19 +435,115 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
     const next = nodeOrder.map((id) => visible.has(id) ? nextVisible[cursor++] : id);
     await saveOrder(next);
   };
-  const openTool = (next: NonNullable<Dialog>) => { setMenuOpen(false); setDialog(next); };
+  const openTool = (next: NonNullable<Dialog>) => { setMenuOpen(false); setSelectionMenu(false); setDialog(next); };
+
+  const groups = useMemo(() => groupNodes(filtered.map(({ node }) => node), grouping, owners, packages.memberships), [filtered, grouping, owners, packages.memberships]);
+  const filterChips = [
+    ...(protocol !== ALL ? [{ label: `协议：${protocol.toUpperCase()}`, clear: () => setProtocol(ALL) }] : []),
+    ...filterTags.map((tag) => ({ label: `标签：${tag}`, clear: () => setFilterTags((current) => current.filter((item) => item !== tag)) })),
+    ...(sourceFilter !== ALL ? [{ label: `来源：${sourceFilter === "manual" ? "手动输入" : "订阅导入"}`, clear: () => setSourceFilter("all") }] : []),
+    ...(serverName !== ALL ? [{ label: `服务器：${serverName}`, clear: () => setServerName(ALL) }] : []),
+    ...(stateFilter !== ALL ? [{ label: `状态：${({ enabled: "已启用", disabled: "已禁用", relay: "中转中", routed: "路由出站" } as Record<string, string>)[stateFilter]}`, clear: () => setStateFilter(ALL) }] : []),
+  ];
+  const resetFilters = () => { setProtocol(ALL); setFilterTags([]); setSourceFilter("all"); setServerName(ALL); setStateFilter(ALL); };
+  const actionNode = nodes.find((node) => node.id === actionNodeId);
+  const renderActions = (node: XrayNode) => {
+    const parsed = parseNodeConfig(node);
+    return (<NodeActionSheet
+      node={node}
+      onClose={() => setActionNodeId(null)}
+      onSpeed={() => void speedTests.start([node])}
+      notice={notice}
+      ownerHint={nodeOwnerHint(nodeOwnership(node, owners))}
+      packageNames={(packages.memberships[node.id] || []).map((pkg) => pkg.package_name).join("、")}
+      parsed={parsed}
+      latency={latencies[node.id]}
+      onDetails={() => setDialog({ kind: "details", node })}
+      onEdit={() => setDialog({ kind: "edit", node })}
+      onEditInbound={() => setDialog({ kind: "managed-edit", node })}
+      onChain={() => setDialog({ kind: "chain", node })}
+      onRelayGroup={() => setDialog({ kind: "relay-group", node })}
+      onCancelWholeOutbound={() => cancelWholeOutbound(node)}
+      onRouting={node.inbound_tag && nodeManagedServer(node, servers) ? () => setDialog({ kind: "node-routing", node, server: nodeManagedServer(node, servers)! }) : undefined}
+      extraActions={<NodeCardExtras node={node} state={cardExtras.cards.get(node.id)} servers={servers}
+        onTunnel={(tunnel) => setDialog({ kind: "relay-action", node, tunnel })}
+        onRelay={() => setDialog({ kind: "relay-action", node })}
+        onRevertChain={(entry) => { if (window.confirm(`切回源服务器地址?\n节点「${node.node_name}」当前经链式隧道入口 ${entry} 连接。切回后将拆除该节点的中转配置,恢复为源服务器地址。`)) void run("切回源服务器地址", async () => { await cancelNodeRelay(token, node.id); await cardExtras.refresh(); }); }}
+        onSwitchWhole={() => setDialog({ kind: "landing", node })} onCancelWhole={() => cancelWholeOutbound(node)} onRepairFlow={() => setDialog({ kind: "flow-repair", node })} />}
+      extras={<><NodeCardBadges node={node} state={cardExtras.cards.get(node.id)} servers={servers} />
+        <NodePackageChip token={token} nodeId={node.id} loading={packages.loading} memberships={packages.memberships[String(node.id)] || []} packages={packages.packages} onChanged={async () => { await packages.refresh(); await loadNodes(); }} onNotice={toolNotice} />
+        <NodeProbeBadge node={node} state={probeStates.get(node.id)} onClick={() => setDialog({ kind: "node-probe" })} />
+      </>}
+      speedActions={<NodeSpeedTestActions node={node} controller={speedTests} onHistory={() => setDialog({ kind: "speed-history", node })} />}
+      onLanding={() => setDialog({ kind: "landing", node })}
+      onCopy={() => void copyNodeURI(token, node, setNotice)}
+      onTcping={() => void testOne(node)}
+      onEmoji={() => void run("添加地区 Emoji", async () => {
+        const next = /^[\u{1F1E6}-\u{1F1FF}]{2}/u.test(node.node_name) ? "" : buildRegionNodeName(node, servers);
+        if (!next || next === node.node_name) {
+          setNotice({ tone: "info", text: "没有可添加的地区 Emoji，或节点名称已包含地区 Emoji" });
+          return;
+        }
+        if (!window.confirm(`确认把节点名称改为「${next}」？`)) return;
+        await updateNode(token, node.id, nodeToMutation(node, { node_name: next }));
+      })}
+      onResolve={() => void run("解析 IP", async () => {
+        const host = stringValue(parsed.server);
+        if (!host) throw new Error("节点缺少 server 字段");
+        const resp = await resolveDNSHostname(token, host);
+        const ips = [...new Set(resp.ips ?? [])];
+        if (!ips.length) throw new Error("DNS 未返回可用 IP");
+        if (ips.length > 1) { setDialog({ kind: "resolve", node, ips }); return; }
+        const ip = ips[0];
+        if (!window.confirm(`确认把 ${host} 改成 ${ip}？原域名可通过“恢复原始域名”恢复。`)) return;
+        await updateNodeServer(token, node.id, ip);
+      })}
+      onDelete={() => void run("删除节点", async () => {
+        if (!window.confirm(`确认删除节点「${node.node_name}」？受管节点会同步清理远程资源。`)) return;
+        await deleteNode(token, node.id);
+      })}
+      onTemp={() => setDialog({ kind: "details", node, tab: "temp" })}
+      onRestore={() => void run("恢复域名", async () => {
+        if (!node.original_domain) {
+          setNotice({ tone: "info", text: "这个节点没有记录原始域名" });
+          return;
+        }
+        if (!window.confirm(`确认恢复「${node.node_name}」的原始域名？`)) return;
+        await restoreNodeServer(token, node.id);
+      })}
+              />);
+  };
+  const renderRow = (node: XrayNode, relay = false, relayCount = 0) => {
+    const state = cardExtras.cards.get(node.id), owner = nodeOwnership(node, owners), parsed = parseNodeConfig(node);
+    const probeState = nodeProbeSummary(probeStates.get(node.id));
+    const failures = [state?.blocked && "被墙", state?.flow?.warning && "流控不一致", (probeState.failStreak > 0 || probeState.last?.ok === false) && "探测失败"].filter(Boolean).join(" · ");
+    const badges = [
+      ...(failures ? [{ text: failures.includes(" · ") ? "异常" : failures, tone: "bad", title: failures }] : []),
+      ...(owner.shared ? [{ text: "共用", tone: "shared", title: owner.users.join("、") }] : []),
+      ...(state?.whole ? [{ text: `出站 ${state.whole.label}`, tone: "out", title: `整个节点出站 ${state.whole.label}` }] : []),
+      ...(relay || relayCount ? [{ text: relay ? "中转" : `中转 ${relayCount}`, tone: "relay", title: relay ? "中转节点" : `${relayCount} 个中转节点` }] : []),
+      ...(parsed["reality-opts"] || parsed.tls ? [{ text: parsed["reality-opts"] ? "Reality" : "TLS", tone: "tls", title: "传输安全" }] : []),
+      ...(node.node_type === "routed" ? [{ text: "路由", tone: "out", title: "路由出站" }] : []),
+    ].slice(0, 3);
+    const speed = speedTests.latest.get(node.id), speedState = speedTestState(speed, speedTests.now);
+    const latency = latencies[node.id] || (speed ? { loading: speedState === "running", text: speedState === "running" ? "测试中" : speedState === "timeout" ? "超时" : speedTestLatency(speed), ok: speedState === "ok" && Number(speed.latency_ms) >= 0 } : undefined);
+    return <CompactNodeRow node={node} parsed={parsed} relay={relay} badges={badges} latency={latency}
+      selected={selected.has(node.id)} selectionMode={selectionMode} onSelect={() => toggleSelected(node.id)}
+      onOpen={() => setActionNodeId(node.id)} ownerHint={nodeOwnerHint(owner)}
+      packageNames={(packages.memberships[node.id] || []).map((pkg) => pkg.package_name).join("、")} />;
+  };
 
   return (
-    <div className="node-manager" aria-busy={loading || Boolean(busy)}>
+    <div className="node-manager node-redesign" aria-busy={loading || Boolean(busy)}>
       <section className="node-hero">
-        <div>
-          <h1>节点管理</h1>
-          <p>导入、筛选、编辑、复制 URI、TCPing、批量处理和中转配置。</p>
-        </div>
+        <h1>节点 <small>{nodes.length}</small></h1>
+        {selectionMode ? <button type="button" onClick={() => { setSelectionMode(false); setSelected(new Set()); setSelectionMenu(false); }}>完成</button>
+          : <button type="button" className="primary" onClick={() => setImportOpen(true)}><Plus /> 导入</button>}
         <div className="node-global-menu-wrap">
           <button type="button" onClick={() => setMenuOpen((value) => !value)} disabled={loading || Boolean(busy)} aria-label="节点管理菜单" aria-expanded={menuOpen}><MoreHorizontal /></button>
           {menuOpen && <div className="node-global-menu" role="menu">
-            <button role="menuitem" onClick={() => { setMenuOpen(false); void loadNodes(); }}><RefreshCw />刷新节点</button>
+            <button role="menuitem" onClick={() => { setSelectionMode(true); setMenuOpen(false); }}><CheckCircle2 />选择节点</button>
+            <button role="menuitem" onClick={() => { setMenuOpen(false); void refreshExtras(); }}><RefreshCw />刷新节点</button>
             <button role="menuitem" className={sortMode ? "active" : ""} onClick={() => { setSortMode((value) => !value); setMenuOpen(false); }}><GripVertical />{sortMode ? "退出排序模式" : "排序模式"}</button>
             <button role="menuitem" onClick={() => openTool({ kind: "add-managed" })}><Plus />添加节点</button>
             <button role="menuitem" onClick={() => openTool({ kind: "tunnels" })}><Link2 />Tunnel 管理</button>
@@ -474,18 +567,12 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
       </section>
 
       {notice && <NodeNotice notice={notice} />}
-      {cardExtras.error && <p className="node-form-hint" role="status">{cardExtras.error}</p>}
+      {ownerError && <p className="node-form-hint" role="status">{ownerError}</p>}
+      {cardExtras.error && <details className="node-status-warning"><summary>部分节点状态读取失败</summary><p>{cardExtras.error}</p></details>}
 
-      <section className={`node-import-panel ${importOpen ? "open" : ""}`}>
-        <button className="node-collapse-head" type="button" onClick={() => setImportOpen((value) => !value)} aria-expanded={importOpen}>
-          <div>
-            <h2>导入外部节点</h2>
-            <p>支持 URI、Clash YAML、base64 订阅、Surge 行；保存后同步到订阅文件。</p>
-          </div>
-          <ChevronDown />
-        </button>
-        {importOpen && (
-          <>
+      {importOpen && !dialog && <NodeSheet title="导入外部节点" className="node-import-sheet" onClose={() => setImportOpen(false)}>
+        <p className="node-form-hint">支持 URI、Clash YAML、base64 订阅、Surge 行；保存后同步到订阅文件。</p>
+        {notice && <NodeNotice notice={notice} />}
             <div className="node-section-head compact">
               <div>
                 <h3>{importMode === "manual" ? "手动导入" : importMode === "subscription" ? "订阅导入" : "SOCKS5"}</h3>
@@ -572,17 +659,21 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
                 ))}
               </div>
             )}
-          </>
-        )}
-      </section>
+      </NodeSheet>}
 
       <section className="node-toolbar">
         <label className="node-search">
           <Search />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、地址、标签、入站、出站" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索节点、用户、端口" aria-label="搜索节点、用户、端口" />
         </label>
-        <NodeSelect icon={<Filter />} value={protocol} onChange={setProtocol} label="协议" options={[{ value: ALL, label: `全部协议 (${nodes.length})` }, ...protocols.map((item) => ({ value: item.value, label: `${item.value.toUpperCase()} (${item.count})` }))]} />
-        <details className="node-select node-tag-filter">
+        <button type="button" className="node-filter-button" onClick={() => setFilterOpen(true)}><Filter />筛选{filterChips.length > 0 && <b>{filterChips.length}</b>}</button>
+      </section>
+      {filterChips.length > 0 && <div className="node-active-filters">{filterChips.map((chip) => <button key={chip.label} type="button" onClick={chip.clear} title={`移除${chip.label}`}>{chip.label}<X /></button>)}</div>}
+      <div className="node-grouping" aria-label="节点分组">{([["user", "按用户"], ["server", "按服务器"], ["package", "按套餐"], ["none", "不分组"]] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={grouping === value} onClick={() => setGrouping(value)}>{label}</button>)}</div>
+      {sortMode && <p className="node-sort-hint">{grouping === "none" ? "拖动左侧手柄排序，顺序自动保存。" : <>排序请切换到<button type="button" onClick={() => setGrouping("none")}>不分组</button>视图。</>}</p>}
+      {filterOpen && <NodeSheet title="筛选节点" className="node-filter-sheet" onClose={() => setFilterOpen(false)}>
+                <NodeSelect icon={<Filter />} value={protocol} onChange={setProtocol} label="协议" options={[{ value: ALL, label: `全部协议 (${nodes.length})` }, ...protocols.map((item) => ({ value: item.value, label: `${item.value.toUpperCase()} (${item.count})` }))]} />
+        <details className="node-select node-tag-filter" open>
           <summary><Tags />标签{filterTags.length ? ` (${filterTags.length})` : "：全部"}</summary>
           <button type="button" onClick={() => setFilterTags([])}>全部标签</button>
           {[...new Set([...tagOptions.map((item) => item.value), ...tags])].map((value) => <label className="node-check" key={value}><input type="checkbox" checked={filterTags.includes(value)} onChange={() => setFilterTags((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value])} /><span>{value} ({tagOptions.find((item) => item.value === value)?.count ?? 0})</span></label>)}
@@ -596,105 +687,57 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
           <option value="relay">中转中</option>
           <option value="routed">路由出站</option>
         </select>
+        <div className="node-sheet-footer"><button type="button" onClick={resetFilters}>重置筛选</button><button type="button" className="primary" onClick={() => setFilterOpen(false)}>显示 {filtered.length} 个节点</button></div>
+      </NodeSheet>}
+
+      <section className="node-group-list" aria-label={`节点列表 (${filtered.length})`}>
+        {loading ? <div className="node-empty"><Loader2 /> 正在读取节点</div> : filtered.length === 0 ? <div className="node-empty">没有符合条件的节点</div> : grouping === "none" ? (
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void onDragEnd(event)}>
+            <SortableContext items={filtered.map(({ node }) => node.id)} strategy={verticalListSortingStrategy}>
+              <div className={`node-group ${sortMode ? "sorting" : ""}`}>{filtered.map(({ node }) => <SortableNodeCard key={node.id} id={node.id} disabled={!sortMode}>{renderRow(node)}</SortableNodeCard>)}</div>
+            </SortableContext>
+          </DndContext>
+        ) : groups.map((group) => {
+          const key = `${grouping}:${group.key}`, closed = collapsed.includes(key);
+          const relays = group.nodes.filter(isNodeRelay).length;
+          return <section className="node-group" key={group.key}>
+            <div className="node-group-head">
+              {selectionMode && <GroupCheckbox checked={group.nodes.every((node) => selected.has(node.id))} mixed={group.nodes.some((node) => selected.has(node.id))} label={`选择 ${group.name} 的节点`} onChange={() => setSelected((current) => toggleNodeSelection(current, group.nodes.map((node) => node.id)))} />}
+              <button type="button" className="node-group-toggle" aria-expanded={!closed} onClick={() => setCollapsed((current) => closed ? current.filter((item) => item !== key) : [...current, key])}>
+                <span className={`node-avatar tone-${group.name.charCodeAt(0) % 5}`}>{group.key === "admin" ? "我" : group.name.slice(0, 1)}</span>
+                <span className="node-group-label"><strong>{group.name}</strong><small title={group.subtitle}>{group.subtitle}</small></span>
+                <span className="node-group-count">{group.nodes.length - relays}{relays ? ` + ${relays} 中转` : ""}</span><ChevronDown className={closed ? "closed" : ""} />
+              </button>
+            </div>
+            {!closed && nodeRelayRows(group.nodes, owners).map(({ node, children }) => {
+              const relayKey = `${key}:${node.id}`, expanded = expandedRelays.has(relayKey);
+              return <React.Fragment key={node.id}>
+                {renderRow(node, false, children.length)}
+                {(expanded ? children : children.slice(0, 1)).map((child) => <React.Fragment key={child.id}>{renderRow(child, true)}</React.Fragment>)}
+                {children.length > 1 && <button className="node-relay-expand" type="button" onClick={() => setExpandedRelays((current) => { const next = new Set(current); expanded ? next.delete(relayKey) : next.add(relayKey); return next; })}>{expanded ? "收起中转" : `再显示 ${children.length - 1} 个中转`}<ChevronDown /></button>}
+              </React.Fragment>;
+            })}
+          </section>;
+        })}
       </section>
 
-      <section className="node-list-panel">
-        <div className="node-section-head">
-          <div>
-            <h2>节点列表 ({filtered.length})</h2>
-            <p>更改和删除节点会同步订阅；删除受管节点还会清理关联入站/出站/路由。</p>
-          </div>
-          <div className="node-head-actions">
-            <button type="button" onClick={() => setSelected(new Set(filtered.map(({ node }) => node.id)))}>全选</button>
-            <button type="button" onClick={() => setSelected(new Set())}>清空</button>
-            <button type="button" onClick={() => setDialog({ kind: "batch" })} disabled={selected.size === 0}>批量</button>
-          </div>
+      {selectionMode && <div className="node-selection-bar" aria-label="已选节点操作">
+        <strong>已选 {selectedNodes.length} 个</strong>
+        <button type="button" disabled={!selectedNodes.length || Boolean(busy)} onClick={() => void testSelected()}>测延迟</button>
+        <button type="button" disabled={!selectedNodes.length || Boolean(busy)} onClick={() => openTool({ kind: "batch-rename" })}>改名</button>
+        <button type="button" disabled={!selectedNodes.length || Boolean(busy)} onClick={() => openTool({ kind: "batch-tag" })}>标签</button>
+        <div className="node-selection-menu-wrap"><button type="button" aria-expanded={selectionMenu} onClick={() => setSelectionMenu((value) => !value)}>更多</button>
+          {selectionMenu && <div className="node-selection-menu">
+            <button type="button" onClick={() => setSelected(new Set(filtered.map(({ node }) => node.id)))}>全选筛选结果</button>
+            <button type="button" onClick={() => setSelected(new Set())}>清空选择</button>
+            <button type="button" disabled={!selectedNodes.length || Boolean(busy)} onClick={() => { setSelectionMenu(false); void addSelectedEmoji(); }}>添加 emoji</button>
+            <button type="button" disabled={!selectedNodes.length} onClick={() => openTool({ kind: "batch-temp" })}>临时订阅</button>
+            <button type="button" disabled={!selectedNodes.length} onClick={() => openTool({ kind: "batch" })}>批量操作</button>
+            {sortMode && (["top", "up", "down", "bottom"] as const).map((direction, index) => <button type="button" key={direction} disabled={!selectedNodes.length || Boolean(busy) || grouping !== "none"} onClick={() => void saveOrder(moveSelectedNodes(nodeOrder, selected, direction))}>{["置顶", "上移", "下移", "置底"][index]}</button>)}
+          </div>}
         </div>
-        {selectedNodes.length > 0 && <div className="node-dialog-actions">
-          <button type="button" disabled={Boolean(busy)} onClick={() => void addSelectedEmoji()}>添加emoji ({selectedNodes.length})</button>
-          <button type="button" disabled={Boolean(busy)} onClick={() => setDialog({ kind: "batch-rename" })}>修改名称 ({selectedNodes.length})</button>
-          <button type="button" disabled={Boolean(busy)} onClick={() => setDialog({ kind: "batch-tag" })}>管理标签 ({selectedNodes.length})</button>
-          <button type="button" disabled={Boolean(busy)} onClick={() => setDialog({ kind: "batch-temp" })}>生成临时订阅 ({selectedNodes.length})</button>
-          <button type="button" disabled={Boolean(busy)} onClick={() => void testSelected()}>延迟测试 ({selectedNodes.length})</button>
-          {sortMode && (["top", "up", "down", "bottom"] as const).map((direction, index) => <button type="button" key={direction} disabled={Boolean(busy)} onClick={() => void saveOrder(moveSelectedNodes(nodeOrder, selected, direction))}>{["置顶", "上移", "下移", "置底"][index]}</button>)}
-        </div>}
-        {loading ? (
-          <div className="node-empty"><Loader2 /> 正在读取节点</div>
-        ) : filtered.length === 0 ? (
-          <div className="node-empty">没有符合条件的节点</div>
-        ) : (
-          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void onDragEnd(event)}>
-          <SortableContext items={filtered.map(({ node }) => node.id)} strategy={verticalListSortingStrategy}>
-          <div className={`node-card-list ${sortMode ? "sorting" : ""}`}>
-            {filtered.map(({ node, parsed }) => (
-              <SortableNodeCard key={node.id} id={node.id} disabled={!sortMode}>
-              <NodeCard
-                node={node}
-                parsed={parsed}
-                selected={selected.has(node.id)}
-                latency={latencies[node.id]}
-                onSelect={() => toggleSelected(node.id)}
-                onDetails={() => setDialog({ kind: "details", node })}
-                onEdit={() => setDialog({ kind: "edit", node })}
-                onEditInbound={() => setDialog({ kind: "managed-edit", node })}
-                onChain={() => setDialog({ kind: "chain", node })}
-                onRelayGroup={() => setDialog({ kind: "relay-group", node })}
-                onCancelWholeOutbound={() => cancelWholeOutbound(node)}
-                onRouting={node.inbound_tag && nodeManagedServer(node, servers) ? () => setDialog({ kind: "node-routing", node, server: nodeManagedServer(node, servers)! }) : undefined}
-                extraActions={<NodeCardExtras node={node} state={cardExtras.cards.get(node.id)} servers={servers}
-                  onTunnel={(tunnel) => setDialog({ kind: "relay-action", node, tunnel })}
-                  onRelay={() => setDialog({ kind: "relay-action", node })}
-                  onRevertChain={(entry) => { if (window.confirm(`切回源服务器地址?\n节点「${node.node_name}」当前经链式隧道入口 ${entry} 连接。切回后将拆除该节点的中转配置,恢复为源服务器地址。`)) void run("切回源服务器地址", async () => { await cancelNodeRelay(token, node.id); await cardExtras.refresh(); }); }}
-                  onSwitchWhole={() => setDialog({ kind: "landing", node })} onCancelWhole={() => cancelWholeOutbound(node)} onRepairFlow={() => setDialog({ kind: "flow-repair", node })} />}
-                extras={<><NodeCardBadges node={node} state={cardExtras.cards.get(node.id)} servers={servers} />
-                  <NodePackageChip token={token} nodeId={node.id} loading={packages.loading} memberships={packages.memberships[String(node.id)] || []} packages={packages.packages} onChanged={packages.refresh} onNotice={toolNotice} />
-                  <NodeProbeBadge node={node} state={probeStates.get(node.id)} onClick={() => setDialog({ kind: "node-probe" })} />
-                </>}
-                speedActions={<NodeSpeedTestActions node={node} controller={speedTests} onHistory={() => setDialog({ kind: "speed-history", node })} />}
-                onLanding={() => setDialog({ kind: "landing", node })}
-                onCopy={() => void copyNodeURI(token, node, setNotice)}
-                onTcping={() => void testOne(node)}
-                onEmoji={() => void run("添加地区 Emoji", async () => {
-                  const next = /^[\u{1F1E6}-\u{1F1FF}]{2}/u.test(node.node_name) ? "" : buildRegionNodeName(node, servers);
-                  if (!next || next === node.node_name) {
-                    setNotice({ tone: "info", text: "没有可添加的地区 Emoji，或节点名称已包含地区 Emoji" });
-                    return;
-                  }
-                  if (!window.confirm(`确认把节点名称改为「${next}」？`)) return;
-                  await updateNode(token, node.id, nodeToMutation(node, { node_name: next }));
-                })}
-                onResolve={() => void run("解析 IP", async () => {
-                  const host = stringValue(parsed.server);
-                  if (!host) throw new Error("节点缺少 server 字段");
-                  const resp = await resolveDNSHostname(token, host);
-                  const ips = [...new Set(resp.ips ?? [])];
-                  if (!ips.length) throw new Error("DNS 未返回可用 IP");
-                  if (ips.length > 1) { setDialog({ kind: "resolve", node, ips }); return; }
-                  const ip = ips[0];
-                  if (!window.confirm(`确认把 ${host} 改成 ${ip}？原域名可通过“恢复原始域名”恢复。`)) return;
-                  await updateNodeServer(token, node.id, ip);
-                })}
-                onDelete={() => void run("删除节点", async () => {
-                  if (!window.confirm(`确认删除节点「${node.node_name}」？受管节点会同步清理远程资源。`)) return;
-                  await deleteNode(token, node.id);
-                })}
-                onTemp={() => setDialog({ kind: "details", node, tab: "temp" })}
-                onRestore={() => void run("恢复域名", async () => {
-                  if (!node.original_domain) {
-                    setNotice({ tone: "info", text: "这个节点没有记录原始域名" });
-                    return;
-                  }
-                  if (!window.confirm(`确认恢复「${node.node_name}」的原始域名？`)) return;
-                  await restoreNodeServer(token, node.id);
-                })}
-              />
-              </SortableNodeCard>
-            ))}
-          </div>
-          </SortableContext>
-          </DndContext>
-        )}
-      </section>
+      </div>}
+      {actionNode && !dialog && renderActions(actionNode)}
 
       {dialog?.kind === "details" && (
         <NodeDetailsDialog
@@ -773,6 +816,68 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
   );
 }
 
+function readNodePreference(key: string, fallback: string) {
+  try { return localStorage.getItem(`mmwx-node-${key}`) || fallback; } catch { return fallback; }
+}
+
+function GroupCheckbox({ checked, mixed, label, onChange }: { checked: boolean; mixed: boolean; label: string; onChange: () => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (ref.current) ref.current.indeterminate = !checked && mixed; }, [checked, mixed]);
+  return <input ref={ref} type="checkbox" checked={checked} aria-label={label} onChange={onChange} />;
+}
+
+function CompactNodeRow({ node, parsed, relay, badges, latency, selected, selectionMode, onSelect, onOpen, ownerHint, packageNames }: {
+  node: XrayNode; parsed: ParsedProxy; relay: boolean; badges: Array<{ text: string; tone: string; title: string }>;
+  latency?: { text: string; ok?: boolean; loading?: boolean }; selected: boolean; selectionMode: boolean;
+  onSelect: () => void; onOpen: () => void; ownerHint: string; packageNames: string;
+}) {
+  const protocol = normalizeProtocol(node.protocol || stringValue(parsed.type));
+  return <article className={`node-compact-row${relay ? " is-relay" : ""}${selected && selectionMode ? " selected" : ""}`} data-node-id={node.id}>
+    {selectionMode && <input type="checkbox" checked={selected} onChange={onSelect} aria-label={`选择 ${node.node_name}`} />}
+    <span className={`node-status-dot ${node.enabled === false ? "off" : "on"}`} title={node.enabled === false ? "已禁用" : "已启用"} />
+    <div className="node-row-content">
+      <div className="node-row-title"><button type="button" onClick={onOpen} title={`${node.node_name}\n${ownerHint}`}>{relay && "↳ "}{node.node_name}</button>
+        <span className={`node-row-latency ${latency?.ok ? "ok" : latency ? "bad" : ""}`} title={latency?.text}>{latency?.loading ? "测试中" : latency?.ok ? latency.text : latency ? "失败" : "—"}</span>
+      </div>
+      <div className="node-row-meta">
+        <span className="node-row-protocol">{protocol.toUpperCase() || "NODE"}</span>
+        <span className="node-row-server" title={node.original_server}>{node.original_server || "外部节点"}</span>
+        <span className="node-row-port">:{stringValue(parsed.port) || "—"}</span>
+        {badges.map((badge) => <span key={badge.tone} className={`node-row-tag ${badge.tone}`} title={badge.title}>{badge.text}</span>)}
+        <span className="node-row-desktop" title={`${stringValue(parsed.server)} · ${stringValue(parsed.network || parsed.transport) || "tcp"} · ${packageNames}`}>{stringValue(parsed.server)} · {stringValue(parsed.network || parsed.transport) || "tcp"}{packageNames && ` · ${packageNames}`}</span>
+      </div>
+    </div>
+    <button type="button" className="node-row-more" aria-label={`操作 ${node.node_name}`} onClick={onOpen}><MoreHorizontal /></button>
+  </article>;
+}
+
+function NodeSheet({ title, subtitle, className = "", onClose, children }: { title: string; subtitle?: string; className?: string; onClose: () => void; children: React.ReactNode }) {
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    ref.current?.focus();
+    return () => { document.body.style.overflow = overflow; previous?.focus(); };
+  }, []);
+  return <div className="node-dialog-layer node-sheet-layer" onClick={onClose}>
+    <section ref={ref} className={`node-dialog node-sheet ${className}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
+      if ((event.target as HTMLElement).closest('[role="dialog"]') !== ref.current) return;
+      if (event.key === "Escape") { event.stopPropagation(); onClose(); }
+      if (event.key === "Tab") {
+        const elements = [...ref.current!.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]')].filter((element) => element.getClientRects().length > 0);
+        const first = elements[0], last = elements[elements.length - 1];
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && (document.activeElement === last || document.activeElement === ref.current)) { event.preventDefault(); first?.focus(); }
+      }
+    }}>
+      <div className="node-sheet-grab" />
+      <header><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button type="button" onClick={onClose} aria-label="关闭面板"><X /></button></header>
+      <div className="node-dialog-body">{children}</div>
+    </section>
+  </div>;
+}
+
 function SortableNodeCard({ id, disabled, children }: { id: number; disabled: boolean; children: React.ReactNode }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled });
   return <div ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.55 : 1 }} className="node-sortable-card">
@@ -781,12 +886,10 @@ function SortableNodeCard({ id, disabled, children }: { id: number; disabled: bo
   </div>;
 }
 
-function NodeCard({
-  node,
+function NodeActionSheet({
+  node, onClose, onSpeed, notice, ownerHint, packageNames,
   parsed,
-  selected,
   latency,
-  onSelect,
   onDetails,
   onEdit,
   onLanding,
@@ -807,10 +910,13 @@ function NodeCard({
   onDelete,
 }: {
   node: XrayNode;
+  onClose: () => void;
+  onSpeed: () => void;
+  notice: Notice;
+  ownerHint: string;
+  packageNames: string;
   parsed: ParsedProxy;
-  selected: boolean;
   latency?: { loading?: boolean; text: string; ok?: boolean };
-  onSelect: () => void;
   onDetails: () => void;
   onEdit: () => void;
   onLanding: () => void;
@@ -830,65 +936,48 @@ function NodeCard({
   onTemp: () => void;
   onDelete: () => void;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
   const protocol = normalizeProtocol(node.protocol || stringValue(parsed.type));
-  const host = stringValue(parsed.server);
-  const port = stringValue(parsed.port);
-  const transport = stringValue(parsed.network || parsed.transport) || "tcp";
-  const tls = parsed["reality-opts"] ? "Reality" : parsed.tls ? "TLS" : "";
-  return (
-    <article className="node-card">
-      <div className="node-card-top">
-        <label className="node-card-check">
-          <input type="checkbox" checked={selected} onChange={onSelect} />
-          <span className={node.enabled === false ? "off" : "on"} />
-        </label>
-        <div>
-          <strong>{node.node_name}</strong>
-          <p>{node.original_server || "外部节点"} · {host ? `${host}${port ? `:${port}` : ""}` : "未解析地址"}</p>
-        </div>
-        <span className="node-protocol">{protocol.toUpperCase() || "NODE"}</span>
-      </div>
-      <div className="node-chip-row node-card-badges">
-        {nodeTags(node).map((item) => <span key={item}>{item}</span>)}
-        {node.inbound_tag && <span>入站 {node.inbound_tag}</span>}
-        {node.node_type === "routed" && <span>路由出站</span>}
-        {node.chain_proxy_node_id && <span>链式 #{node.chain_proxy_node_id}</span>}
-        {transport && <span>{transport}</span>}
-        {tls && <span>{tls}</span>}
-        {latency && <span className={latency.ok ? "ok" : "bad"}>{latency.loading ? "测试中" : latency.text}</span>}
-        {extras}
-      </div>
-      <div className="node-card-footer">
-        {speedActions}
-        <button className="node-card-menu-button" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen}>
-          <MoreHorizontal /> 操作 <ChevronDown />
-        </button>
-      </div>
-      {menuOpen && (
-        <div className="node-card-menu">
-          <div className="node-action-row">
-            <button type="button" onClick={onEdit}><Edit3 /> 编辑名称</button>
-            {(node.inbound_tag || node.original_server || node.tag?.startsWith("远程:")) && node.node_type !== "routed" && <button type="button" onClick={onEditInbound}><Edit3 /> 编辑节点</button>}
-            {onRouting && <button type="button" onClick={onRouting}><Route /> 节点路由</button>}
-            <button type="button" onClick={onChain}><Link2 /> 链式出站</button>
-            <button type="button" onClick={onRelayGroup}><Link2 /> 中转组</button>
-            <button type="button" onClick={onEmoji}><Tags /> 地区 emoji</button>
-            <button type="button" onClick={onResolve}><Server /> 解析 IP</button>
-            <button type="button" onClick={onRestore}><RefreshCw /> 恢复域名</button>
-            <button type="button" onClick={onDetails}><Eye /> 查看配置</button>
-            <button type="button" onClick={onCopy}><Copy /> 复制 URI</button>
-            <button type="button" onClick={onTemp}><Link2 /> 临时订阅</button>
-            <button type="button" onClick={onTcping}><Zap /> TCPing</button>
-            {node.node_type !== "routed" && <button type="button" onClick={onLanding}><Route /> 新增落地节点</button>}
-            {node.inbound_tag && node.node_type !== "routed" && <button type="button" onClick={onCancelWholeOutbound}><Route /> 取消整个节点出站</button>}
-            <button className="danger" type="button" onClick={onDelete}><Trash2 /> 删除</button>
-          </div>
-          {extraActions}
-        </div>
-      )}
-    </article>
-  );
+  const managed = (node.inbound_tag || node.original_server || node.tag?.startsWith("远程:")) && node.node_type !== "routed";
+  return <NodeSheet title={node.node_name} subtitle={`${protocol.toUpperCase()} · ${node.original_server || "外部节点"} · ${stringValue(parsed.server)}:${stringValue(parsed.port)} · ${packageNames || "未加入套餐"}`} onClose={onClose} className="node-action-sheet">
+    <p className="node-owner-hint">{ownerHint}</p>
+    {notice && <NodeNotice notice={notice} />}
+    <div className="node-quick-actions">
+      <button type="button" onClick={onCopy}><Copy />复制 URI</button>
+      <button type="button" onClick={onTcping}><Zap />测延迟</button>
+      <button type="button" onClick={onSpeed}><Zap />测速</button>
+      <button type="button" onClick={managed ? onEditInbound : onEdit}><Edit3 />编辑</button>
+    </div>
+    {latency && <p className={latency.ok ? "node-ok" : "node-error"}>TCPing：{latency.text}</p>}
+    <h3 className="node-sheet-section">路由与中转</h3>
+    {extraActions}
+    <div className="node-sheet-items">
+      {onRouting && <button type="button" onClick={onRouting}><Route />节点路由</button>}
+      <button type="button" onClick={onChain}><Link2 />链式出站</button>
+      <button type="button" onClick={onRelayGroup}><Link2 />中转组</button>
+      {node.node_type !== "routed" && <button type="button" onClick={onLanding}><Route />新增落地节点 / 整个节点出站</button>}
+      {node.inbound_tag && node.node_type !== "routed" && <button type="button" onClick={onCancelWholeOutbound}><Route />取消整个节点出站</button>}
+    </div>
+    <h3 className="node-sheet-section">更多</h3>
+    <div className="node-action-details"><span>套餐归属与状态</span><div className="node-chip-row node-card-badges">{extras}
+      {nodeTags(node).map((tag) => <span key={tag}>{tag}</span>)}
+      {node.inbound_tag && <span>入站 {node.inbound_tag}</span>}
+      {node.chain_proxy_node_id && <span>链式 #{node.chain_proxy_node_id}</span>}
+      {node.node_type === "routed" && <span>路由出站</span>}
+      <span>{stringValue(parsed.network || parsed.transport) || "tcp"}</span>
+      {(parsed["reality-opts"] || parsed.tls) && <span>{parsed["reality-opts"] ? "Reality" : "TLS"}</span>}
+    </div></div>
+    {speedActions}
+    <div className="node-sheet-items">
+      <button type="button" onClick={onEdit}><Edit3 />编辑名称 / 中转配置</button>
+      {managed && <button type="button" onClick={onEditInbound}><Edit3 />编辑节点</button>}
+      <button type="button" onClick={onDetails}><Eye />查看配置</button>
+      <button type="button" onClick={onTemp}><Link2 />临时订阅</button>
+      <button type="button" onClick={onResolve}><Server />解析 IP</button>
+      <button type="button" onClick={onRestore}><RefreshCw />恢复域名</button>
+      <button type="button" onClick={onEmoji}><Tags />地区 emoji</button>
+    </div>
+    <button className="node-delete-action danger" type="button" onClick={onDelete}><Trash2 />删除节点</button>
+  </NodeSheet>;
 }
 
 function NodeDetailsDialog({
