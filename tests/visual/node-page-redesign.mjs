@@ -79,7 +79,7 @@ let browser;
 const checks = [];
 const metrics = [];
 try {
-  browser = await chromium.launch({ headless: true, args: ["--disable-dev-shm-usage"] });
+  browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE, args: ["--disable-dev-shm-usage"] });
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, permissions: ["clipboard-read", "clipboard-write"] });
   await context.addInitScript(() => localStorage.setItem("mmwx-session", JSON.stringify({ token: "local-fixture", username: "admin", role: "admin", isAdmin: true, expiresAt: "2099-01-01T00:00:00Z" })));
   await context.route("**/*", async (route) => {
@@ -122,11 +122,12 @@ try {
   await page.waitForSelector(".node-compact-row");
   await page.waitForFunction(() => document.querySelector(".node-manager")?.getAttribute("aria-busy") === "false");
   await page.locator(".node-group-label strong").filter({ hasText: "自用" }).waitFor();
+  await page.locator(".node-row-tag.out").first().waitFor();
   const screenshot = async (name, fullPage = false) => page.screenshot({ path: path.join(evidence, `${name}.png`), fullPage });
   const measure = async (label) => {
     const data = await page.evaluate(() => {
       const rows = [...document.querySelectorAll(".node-compact-row")].map((element) => ({ id: element.dataset.nodeId, rect: element.getBoundingClientRect() }));
-      return { width: innerWidth, height: innerHeight, pageHeight: document.documentElement.scrollHeight, rowHeights: [...new Set(rows.map((row) => row.rect.height))], firstScreenNodes: rows.filter((row) => row.rect.top >= 0 && row.rect.bottom <= innerHeight).length, visibleRows: rows.length, uniqueNodes: new Set(rows.map((row) => row.id)).size, overflow: document.documentElement.scrollWidth > innerWidth };
+      return { width: innerWidth, height: innerHeight, pageHeight: document.documentElement.scrollHeight, rowHeights: [...new Set(rows.map((row) => row.rect.height))], firstScreenNodes: new Set(rows.filter((row) => row.rect.top >= 0 && row.rect.bottom <= innerHeight).map((row) => row.id)).size, visibleRows: rows.length, uniqueNodes: new Set(rows.map((row) => row.id)).size, overflow: document.documentElement.scrollWidth > innerWidth, overflowPixels: Math.max(0, document.documentElement.scrollWidth - innerWidth) };
     });
     assert.equal(data.overflow, false, `${label}: horizontal overflow`);
     assert.ok(Math.max(...data.rowHeights) <= 60, `${label}: rows too tall`);
