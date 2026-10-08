@@ -154,7 +154,7 @@ export type NodeOwner = {
   users: string[];
   admin_only: boolean;
   shared: boolean;
-  source: "credential" | "package" | "none";
+  source: "credential" | "package" | "default-admin" | "none";
   inbound_backed: boolean;
   parent_node_id?: number;
 };
@@ -169,7 +169,7 @@ export function nodeOwnership(node: XrayNode, owners: NodeOwners): NodeOwner {
 
 export function nodeOwnerHint(owner: NodeOwner) {
   const label = owner.admin_only ? "自用（管理员）" : owner.users.join("、") || (owner.inbound_backed ? "未归属" : "外部节点");
-  return `${label} · ${owner.source === "credential" ? "依据入站凭据 / 业务关系" : owner.source === "package" ? "依据唯一非管理员套餐绑定" : "没有可确认的归属"}${owner.shared ? " · 多位用户共用" : ""}`;
+  return `${label} · ${owner.source === "credential" ? "依据入站凭据 / 业务关系" : owner.source === "package" ? owner.shared ? "依据非管理员套餐绑定" : "依据唯一非管理员套餐绑定" : owner.source === "default-admin" ? "无其他用户，默认归管理员" : "没有可确认的归属"}${owner.shared ? " · 多位用户共用" : ""}`;
 }
 
 export function groupNodes(nodes: XrayNode[], grouping: NodeGrouping, owners: NodeOwners, memberships: Memberships): NodeGroup[] {

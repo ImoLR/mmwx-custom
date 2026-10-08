@@ -78,6 +78,14 @@ test("package membership duplicates display only; no package, server and ungroup
   assert.deepEqual(groupNodes(nodes, "server", owners, memberships).find((group) => group.name === "B")!.nodes.map((node) => node.id), [4, 6]);
 });
 
+test("default-admin and shared packages preserve owner groups and explain their source", () => {
+  const updated: NodeOwners = { ...owners, 1: { ...shared, source: "package" }, 4: { ...owners[4], source: "default-admin" } };
+  assert.deepEqual(groupNodes(nodes, "user", updated, memberships), groupNodes(nodes, "user", owners, memberships));
+  assert.equal(nodeOwnerHint(updated[4]), "自用（管理员） · 无其他用户，默认归管理员");
+  assert.equal(nodeOwnerHint(updated[1]), "wings、usb · 依据非管理员套餐绑定 · 多位用户共用");
+  assert.equal(nodeOwnerHint(nodeOwnership(nodes[4], updated)), "外部节点 · 没有可确认的归属");
+});
+
 test("relay rows follow source order, keep all children accessible and remain visible when a filter excludes their parent", () => {
   const rows = nodeRelayRows([nodes[2], nodes[1], nodes[0]], owners);
   assert.deepEqual(rows.map(({ node }) => node.id), [1]);
