@@ -276,7 +276,7 @@ func newMux(api *app, mmwxAPITarget *url.URL, frontendDir string) *http.ServeMux
 	mux.HandleFunc("/api/custom/ui/service-groups", api.withCORS(api.uiServiceGroupsHandler))
 	mux.HandleFunc("/api/custom/ui/routing-presets", api.withCORS(api.uiRoutingPresetsHandler))
 	mux.HandleFunc("/api/custom/users/", api.withCORS(api.userManagementHandler))
-	mux.HandleFunc("/api/admin/nodes/owners", api.withCORS(api.nodeOwnersHandler))
+	mux.HandleFunc("/api/custom/nodes/owners", api.withCORS(api.nodeOwnersHandler))
 	mux.HandleFunc("/api/custom/user-lifecycle", api.withCORS(api.userLifecycleIndexHandler))
 	mux.HandleFunc("/api/custom/packages/", api.withCORS(api.packageTrafficGroupsHandler))
 	mux.HandleFunc("/api/custom/user-status-tasks", api.withCORS(api.userStatusTaskHandler))

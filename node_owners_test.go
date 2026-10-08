@@ -147,7 +147,7 @@ func TestNodeOwnersEndpointAuthorizationAndReadOnly(t *testing.T) {
 		{"GET", "", false, 401}, {"GET", "ordinary", false, 401}, {"POST", "admin", true, 405}, {"GET", "admin", true, 200},
 	} {
 		store.authorized = tc.admin
-		r := httptest.NewRequest(tc.method, "/api/admin/nodes/owners", nil)
+		r := httptest.NewRequest(tc.method, "/api/custom/nodes/owners", nil)
 		r.Header.Set("MM-Authorization", tc.token)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, r)

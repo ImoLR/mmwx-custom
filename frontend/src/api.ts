@@ -1001,7 +1001,7 @@ export function fetchXrayNodes(token: string, includePrivate = false) {
 }
 
 export function fetchNodeOwners(token: string) {
-  return requestCustomOperator<{ owners: import("./node-manager-logic").NodeOwners }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/admin/nodes/owners"), token);
+  return requestCustomOperator<{ owners: import("./node-manager-logic").NodeOwners }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/nodes/owners"), token);
 }
 
 export function fetchNodeTags(token: string) {

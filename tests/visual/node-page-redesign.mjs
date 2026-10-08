@@ -92,7 +92,7 @@ try {
     const serverId = Number(url.searchParams.get("server_id"));
     if (url.pathname === "/api/v3") {
       result = body.op === "034e094d05aa3f83" ? { servers } : body.op === "c87c168b92b5f22d" ? { nodes } : body.op === "edc667caa2f10498" ? { node_ids: [spare[3]?.id].filter(Boolean) } : {};
-    } else if (url.pathname === "/api/admin/nodes/owners") result = { owners };
+    } else if (url.pathname === "/api/custom/nodes/owners") result = { owners };
     else if (url.pathname === "/api/user/config") { if (request.method() === "PUT") order = body.node_order; result = { node_order: order }; }
     else if (url.pathname === "/api/admin/nodes/tags") result = { tags: [...new Set(nodes.map((node) => node.tag))] };
     else if (url.pathname === "/api/admin/nodes/package-membership") result = { memberships, packages };
