@@ -82,6 +82,7 @@ func TestNodeOwnerInheritanceAndPackages(t *testing.T) {
 
 func TestNodeOwnerSnapshotCredentials(t *testing.T) {
 	adminSnapshot := `{"inbounds":[{"tag":"self","protocol":"vless","settings":{"clients":[{"id":"admin-default","email":"MMW@ADMIN.ME"}]}}]}`
+	unknownSnapshot := `{"inbounds":[{"tag":"self","protocol":"vless","settings":{"clients":[{"id":"unknown","email":"unrecognized"}]}}]}`
 	for _, test := range []struct {
 		name     string
 		snapshot string
@@ -95,7 +96,16 @@ func TestNodeOwnerSnapshotCredentials(t *testing.T) {
 		{"SS2022 single default password", `{"inbounds":[{"tag":"self","protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"admin-key","clients":[],"email":"admin__default"}}]}`, nil, nil, nodeOwner{Users: []string{"admin"}, AdminOnly: true, Source: "credential", InboundBacked: true}},
 		{"admin email", `{"inbounds":[{"tag":"self","protocol":"trojan","settings":{"clients":[{"password":"admin-key","email":" Owner@Example.Test "}]}}]}`, nil, nil, nodeOwner{Users: []string{"admin"}, AdminOnly: true, Source: "credential", InboundBacked: true}},
 		{"no snapshot or refs", "", nil, nil, nodeOwner{Users: []string{}, Source: "none", InboundBacked: true}},
-		{"unknown credential prevents package fallback", `{"inbounds":[{"tag":"self","protocol":"vless","settings":{"clients":[{"id":"unknown","email":"unrecognized"}]}}]}`, nil, []ownerPackage{{"wings", "[1]"}}, nodeOwner{Users: []string{}, Source: "none", InboundBacked: true}},
+		{"SS2022 single password without identity defaults to admin", `{"inbounds":[{"tag":"self","protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"legacy-key","clients":[]}}]}`, nil, nil, nodeOwner{Users: []string{"admin"}, AdminOnly: true, Source: "default-admin", InboundBacked: true}},
+		{"unknown credential defaults to admin", unknownSnapshot, nil, nil, nodeOwner{Users: []string{"admin"}, AdminOnly: true, Source: "default-admin", InboundBacked: true}},
+		{"unknown credential allows package fallback", unknownSnapshot, nil, []ownerPackage{{"wings", "[1]"}}, nodeOwner{Users: []string{"wings"}, Source: "package", InboundBacked: true}},
+		{"unknown credential allows shared package fallback", unknownSnapshot, nil, []ownerPackage{{"wings", "[1]"}, {"usb", "[2]"}}, nodeOwner{Users: []string{"usb", "wings"}, Shared: true, Source: "package", InboundBacked: true}},
+		{"child package prevents default admin", unknownSnapshot, nil, []ownerPackage{{"wings", "[3]"}}, nodeOwner{Users: []string{"wings"}, Source: "package", InboundBacked: true}},
+		{"empty inbound defaults to admin", `{"inbounds":[{"tag":"self","protocol":"vless","settings":{"clients":[]}}]}`, nil, nil, nodeOwner{Users: []string{"admin"}, AdminOnly: true, Source: "default-admin", InboundBacked: true}},
+		{"two package users without credentials share", `{"inbounds":[{"tag":"self","protocol":"vless","settings":{"clients":[]}}]}`, nil, []ownerPackage{{"wings", "[1]"}, {"usb", "[3]"}}, nodeOwner{Users: []string{"usb", "wings"}, Shared: true, Source: "package", InboundBacked: true}},
+		{"admin business match wins over packages", unknownSnapshot, []ownerRef{{"admin", 12, "self"}}, []ownerPackage{{"wings", "[1]"}, {"usb", "[2]"}}, nodeOwner{Users: []string{"admin"}, AdminOnly: true, Source: "credential", InboundBacked: true}},
+		{"missing inbound remains unowned", `{"inbounds":[]}`, nil, nil, nodeOwner{Users: []string{}, Source: "none", InboundBacked: true}},
+		{"unreadable snapshot remains unowned", `invalid`, nil, nil, nodeOwner{Users: []string{}, Source: "none", InboundBacked: true}},
 		{"no credential allows package", `{"inbounds":[]}`, nil, []ownerPackage{{"wings", "[1]"}}, nodeOwner{Users: []string{"wings"}, Source: "package", InboundBacked: true}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -105,7 +115,7 @@ func TestNodeOwnerSnapshotCredentials(t *testing.T) {
 					{ID: 2, ServerID: 12, ServerName: "A", InboundTag: "self-relay", RelayHost: "origin"},
 					{ID: 3, ParentID: 2},
 				},
-				Admins: map[string]bool{"admin": true, "wings": false}, AdminEmails: map[string]string{"admin": "owner@example.test"},
+				Admins: map[string]bool{"admin": true, "wings": false, "usb": false}, AdminEmails: map[string]string{"admin": "owner@example.test"},
 				Snapshots: map[int64]string{12: test.snapshot}, Refs: test.refs, Packages: test.packages,
 			}
 			got, err := resolveNodeOwners(data)
@@ -122,6 +132,34 @@ func TestNodeOwnerSnapshotCredentials(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNodeOwnerDefaultAdmins(t *testing.T) {
+	data := nodeOwnerData{
+		Admins: map[string]bool{"owner": true, "admin": true, "wings": false},
+		Nodes: []ownerNode{
+			{ID: 2, ParentID: 1},
+			{ID: 1, ServerID: 12, ServerName: "A", InboundTag: "self"},
+			{ID: 3},
+		},
+		Snapshots: map[int64]string{12: `{"inbounds":[{"tag":"self","protocol":"shadowsocks","settings":{"password":"legacy-key"}}]}`},
+	}
+	got, err := resolveNodeOwners(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{1, 2} {
+		want := nodeOwner{Users: []string{"admin", "owner"}, AdminOnly: true, Source: "default-admin", InboundBacked: true}
+		if id == 2 {
+			want.ParentNodeID = 1
+		}
+		if !reflect.DeepEqual(got[id], want) {
+			t.Fatalf("default admins %d: %+v want %+v", id, got[id], want)
+		}
+	}
+	if want := (nodeOwner{Users: []string{}, Source: "none"}); !reflect.DeepEqual(got[3], want) {
+		t.Fatalf("external without package: %+v want %+v", got[3], want)
 	}
 }
 
@@ -179,14 +217,18 @@ func TestNodeOwnersPostgres(t *testing.T) {
 		`INSERT INTO remote_servers VALUES(12,'Boil Hinet 158'),(13,'No snapshot'),(14,'Non-admin only')`,
 		`INSERT INTO nodes VALUES(1,'SS2022','Boil Hinet 158','ss',NULL,NULL),(2,'relay','Boil Hinet 158','ss-relay',NULL,'origin'),(3,'external',NULL,NULL,NULL,NULL),(4,'admin','Boil Hinet 158','self',NULL,NULL)`,
 		`INSERT INTO nodes VALUES(5,'snapshot admin','Boil Hinet 158','default',NULL,NULL),(6,'relay admin','Boil Hinet 158','default-relay',NULL,'origin'),(7,'SS2022 default','Boil Hinet 158','single',NULL,NULL),(8,'unknown','No snapshot','empty',NULL,NULL),(9,'user','Non-admin only','user',NULL,NULL)`,
+		`INSERT INTO nodes VALUES(10,'legacy single password','Boil Hinet 158','legacy',NULL,NULL),(11,'legacy relay','Boil Hinet 158','legacy-relay',NULL,'origin'),(12,'unknown package','Boil Hinet 158','unknown',NULL,NULL),(13,'shared packages','Boil Hinet 158','shared',NULL,NULL),(14,'external no package',NULL,NULL,NULL,NULL)`,
 		`INSERT INTO user_inbound_configs VALUES('admin',12,'ss','{"password":"default"}'),('admin',12,'self','{}')`,
 		`INSERT INTO user_outbounds VALUES('wings',12,'ss'),('wings',14,'user')`,
 		`INSERT INTO packages VALUES(1,'external','[3,5,7]')`,
 		`INSERT INTO user_package_assignments VALUES(1,'usb',1,'active')`,
+		`INSERT INTO packages VALUES(2,'unknown/shared','[12,13]'),(3,'second shared','[13]')`,
+		`INSERT INTO user_package_assignments VALUES(2,'usb',2,'active'),(3,'wings',3,'active')`,
 		`INSERT INTO server_xray_config_snapshots VALUES(1,12,'{"inbounds":[]}','master_write','2026-10-01'),(2,12,'{"inbounds":[]}','master_write','2026-10-02'),(3,12,'{"inbounds":[{"tag":"default","protocol":"vless","settings":{"clients":[{"id":"default-id","email":"mmw@admin.me"}]}},{"tag":"ss","protocol":"vless","settings":{"clients":[{"id":"default-id","email":"admin"}]}},{"tag":"single","protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"admin-key","email":"admin__default","clients":[]}}]}','agent_sync','2026-10-02'),(4,14,'must not be read','agent_sync','2026-10-02')`,
 	} {
 		auditDeleteExec(t, db, sql)
 	}
+	auditDeleteExec(t, db, `UPDATE server_xray_config_snapshots SET config_json=jsonb_set(config_json::jsonb,'{inbounds}',(config_json::jsonb->'inbounds') || '[{"tag":"legacy","protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"legacy-key","clients":[]}},{"tag":"unknown","protocol":"vless","settings":{"clients":[{"id":"unknown","email":"unrecognized"}]}},{"tag":"shared","protocol":"vless","settings":{"clients":[]}}]'::jsonb)::text WHERE id=3`)
 	// The actual loader must work with writes forbidden and with a whole-port
 	// business relation that has no credential_json/email columns at all.
 	auditDeleteExec(t, db, `SET default_transaction_read_only=on`)
@@ -205,6 +247,17 @@ func TestNodeOwnersPostgres(t *testing.T) {
 	}
 	if got[8].Source != "none" || len(got[8].Users) != 0 || got[9].Users[0] != "wings" {
 		t.Fatalf("missing/unneeded snapshots: %+v", got)
+	}
+	for id, want := range map[int64]nodeOwner{
+		10: {Users: []string{"admin"}, AdminOnly: true, Source: "default-admin", InboundBacked: true},
+		11: {Users: []string{"admin"}, AdminOnly: true, Source: "default-admin", InboundBacked: true, ParentNodeID: 10},
+		12: {Users: []string{"usb"}, Source: "package", InboundBacked: true},
+		13: {Users: []string{"usb", "wings"}, Shared: true, Source: "package", InboundBacked: true},
+		14: {Users: []string{}, Source: "none"},
+	} {
+		if !reflect.DeepEqual(got[id], want) {
+			t.Fatalf("fallback %d: %+v want %+v", id, got[id], want)
+		}
 	}
 	columns, err := (&postgresAdminSessionStore{db: db}).schemaColumns(context.Background())
 	if err != nil {

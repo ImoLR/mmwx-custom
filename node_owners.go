@@ -235,7 +235,7 @@ func resolveNodeOwners(data nodeOwnerData) (map[int64]nodeOwner, error) {
 		}
 	}
 	snapshotRefs := make(map[string]map[string]bool)
-	snapshotEvidence := make(map[string]bool)
+	snapshotInbounds := make(map[string]bool)
 	var resolve func(int64, map[int64]bool) nodeOwner
 	resolve = func(id int64, visiting map[int64]bool) nodeOwner {
 		if owner, ok := result[id]; ok {
@@ -268,9 +268,9 @@ func resolveNodeOwners(data nodeOwnerData) (map[int64]nodeOwner, error) {
 					}
 					snapshotRefs[key] = make(map[string]bool)
 					if inbound := findConfigInbound(snapshots[node.ServerID], tag); inbound != nil {
+						snapshotInbounds[key] = true
 						entries, _, err := accessInboundCredentialEntries(inbound)
 						if err == nil {
-							snapshotEvidence[key] = len(entries) > 0
 							for _, entry := range entries {
 								for username, identities := range adminIdentities {
 									if credentialMatchesAdmin(entry, identities) {
@@ -297,26 +297,39 @@ func resolveNodeOwners(data nodeOwnerData) (map[int64]nodeOwner, error) {
 				}
 				owner.Source = "credential"
 				owner.Shared = !owner.AdminOnly && len(owner.Users) > 1
-			} else if !snapshotEvidence[key] {
+			} else {
 				bound := make(map[string]bool)
 				for user := range packages[id] {
 					bound[user] = true
 				}
-				// A credential-less inbound's aliases share the same fallback.
+				// Inbound aliases share the same package/default-admin fallback.
 				if owner.InboundBacked {
 					for _, alias := range data.Nodes {
-						if alias.ServerName == node.ServerName && strings.TrimSuffix(alias.InboundTag, "-relay") == strings.TrimSuffix(node.InboundTag, "-relay") {
+						ancestor := alias.ID
+						seen := make(map[int64]bool)
+						for parents[ancestor] != 0 && ancestor != id && !seen[ancestor] {
+							seen[ancestor] = true
+							ancestor = parents[ancestor]
+						}
+						if ancestor == id || (alias.ServerName == node.ServerName && strings.TrimSuffix(alias.InboundTag, "-relay") == strings.TrimSuffix(node.InboundTag, "-relay")) {
 							for user := range packages[alias.ID] {
 								bound[user] = true
 							}
 						}
 					}
 				}
-				if len(bound) == 1 {
+				if len(bound) == 1 || (owner.InboundBacked && len(bound) > 1) {
 					for user := range bound {
 						owner.Users = append(owner.Users, user)
 					}
 					owner.Source = "package"
+					owner.Shared = len(owner.Users) > 1
+				} else if owner.InboundBacked && snapshotInbounds[key] {
+					for username := range adminIdentities {
+						owner.Users = append(owner.Users, username)
+					}
+					owner.AdminOnly = true
+					owner.Source = "default-admin"
 				}
 			}
 		}
