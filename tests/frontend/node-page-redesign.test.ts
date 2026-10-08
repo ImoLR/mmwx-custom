@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { groupNodes, matchesNodeFilters, nodeOwnerHint, nodeOwnership, nodeRelayRows, toggleNodeSelection } from "../../frontend/src/node-manager-logic.ts";
+import { groupNodes, matchesNodeFilters, nodeDisplayAddress, nodeDisplayName, nodeOwnerHint, nodeOwnership, nodeRelayRows, toggleNodeSelection } from "../../frontend/src/node-manager-logic.ts";
 import type { NodeOwners } from "../../frontend/src/node-manager-logic.ts";
 import type { XrayNode } from "../../frontend/src/types.ts";
 
@@ -22,6 +22,42 @@ const owners: NodeOwners = {
   7: { users: ["Riczzoe"], admin_only: false, shared: false, source: "package", inbound_backed: false },
 };
 const memberships = { 1: [{ package_id: 1, package_name: "套餐一" }, { package_id: 2, package_name: "套餐二" }], 7: [{ package_id: 3, package_name: "外部套餐" }] };
+
+test("display names strip only leading region and bracket prefixes and preserve original node names for search", () => {
+  const tw = { flag: "🇹🇼", label: "台湾" }, hk = { flag: "🇭🇰", label: "香港" }, us = { flag: "🇺🇸", label: "美国" };
+  const cases: Array<[string, typeof tw | null, string]> = [
+    ["🇹🇼 台湾 [Boil Hinet 马年] shadowsocks2022-10016", tw, "🇹🇼 shadowsocks2022-10016"],
+    ["🇭🇰 香港 [Boil HKT 99u] max ss-10015", hk, "🇭🇰 max ss-10015"],
+    ["[Dmit T1] vless-hk 自己用", hk, "🇭🇰 vless-hk 自己用"],
+    ["Vless US 自己用", us, "🇺🇸 Vless US 自己用"],
+    ["[台湾 家宽 甲] 我的节点", tw, "🇹🇼 我的节点"],
+    ["[Server With Spaces] name [keep this]", us, "🇺🇸 name [keep this]"],
+    ["name [Server With Spaces] suffix", hk, "🇭🇰 name [Server With Spaces] suffix"],
+    ["🇭🇰 香港 [Boil HKT] max [备用]", hk, "🇭🇰 max [备用]"],
+    ["台湾 [Boil Hinet] ss", tw, "🇹🇼 ss"],
+    ["台湾专线 [备用]", tw, "🇹🇼 台湾专线 [备用]"],
+    ["🇭🇰 Boil HKT 自己用", hk, "🇭🇰 Boil HKT 自己用"],
+    ["[未知 地区] ss", null, "ss"],
+    ["plain [keep] name", null, "plain [keep] name"],
+    ["[only bracket]", null, "[only bracket]"],
+    ["[unclosed name", null, "[unclosed name"],
+    ["🇭🇰 original", null, "🇭🇰 original"],
+  ];
+  for (const [name, region, shown] of cases) {
+    const node = { id: 90, node_name: name };
+    assert.equal(nodeDisplayName(node.node_name, region), shown, name);
+    assert.equal(node.node_name, name);
+    assert.equal(matchesNodeFilters(node, {}, nodeOwnership(node, {}), { query: name, protocol: "all", tags: [], source: "all", server: "all", state: "all" }), true);
+  }
+});
+
+test("display addresses include the full host and port and bracket IPv6 exactly once", () => {
+  assert.equal(nodeDisplayAddress("boilhkt99u.imgamer.top", "10015"), "boilhkt99u.imgamer.top:10015");
+  assert.equal(nodeDisplayAddress("192.0.2.1", "443"), "192.0.2.1:443");
+  assert.equal(nodeDisplayAddress("2001:db8:1234:5678:90ab:cdef:1234:5678", "10016"), "[2001:db8:1234:5678:90ab:cdef:1234:5678]:10016");
+  assert.equal(nodeDisplayAddress("[2001:db8::1]", "443"), "[2001:db8::1]:443");
+  assert.equal(nodeDisplayAddress("a-very-long-entry-address.example.test", "10015"), "a-very-long-entry-address.example.test:10015");
+});
 
 test("owner groups sort users alphabetically before admin, external and unowned; shared and relay copies appear in every owner group", () => {
   const groups = groupNodes(nodes, "user", owners, memberships);

@@ -1,5 +1,22 @@
 import type { NodeMutationRequest, RemoteServer, XrayNode } from "./types";
 
+export function nodeDisplayName(name: string, region?: { flag: string; label: string } | null) {
+  const original = name.trim();
+  const flag = original.match(/^[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0] || region?.flag || "";
+  let clean = original.replace(/^[\u{1F1E6}-\u{1F1FF}]{2}\s*/u, "");
+  const label = region?.label;
+  if (label && clean.startsWith(label) && /^(?:\s|\[)/.test(clean.slice(label.length))) clean = clean.slice(label.length).trimStart();
+  // Only a leading bracket prefix is metadata; brackets inside the name stay intact.
+  clean = clean.replace(/^\[[^\[\]]+\]\s+(?=\S)/u, "");
+  if (!clean) return original;
+  return [flag, clean].filter(Boolean).join(" ");
+}
+
+export function nodeDisplayAddress(host: string, port: string) {
+  const address = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return `${address || "—"}:${port || "—"}`;
+}
+
 export function duplicateNodeKey(node: XrayNode) {
   try {
     const config = { ...JSON.parse(node.clash_config || ""), __node_name__: node.node_name };
