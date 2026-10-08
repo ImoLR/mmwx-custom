@@ -43,10 +43,12 @@ type ownerPackage struct {
 }
 
 type nodeOwnerData struct {
-	Nodes    []ownerNode     `json:"nodes"`
-	Refs     []ownerRef      `json:"refs"`
-	Admins   map[string]bool `json:"admins"`
-	Packages []ownerPackage  `json:"packages"`
+	Nodes       []ownerNode       `json:"nodes"`
+	Refs        []ownerRef        `json:"refs"`
+	Admins      map[string]bool   `json:"admins"`
+	AdminEmails map[string]string `json:"admin_emails"`
+	Snapshots   map[int64]string  `json:"snapshots"`
+	Packages    []ownerPackage    `json:"packages"`
 }
 
 type nodeOwnerStore interface {
@@ -117,6 +119,20 @@ func nodeOwnerDataSQL(columns map[string]map[string]bool) string {
 	if hasLifecycleColumns(columns, "user_package_assignments", "username", "package_id") {
 		bindings += ` UNION SELECT username,package_id FROM user_package_assignments a WHERE COALESCE(to_jsonb(a)->>'status','active')='active'`
 	}
+	snapshots := `'{}'::jsonb`
+	if hasLifecycleColumns(columns, "server_xray_config_snapshots", "id", "server_id", "config_json", "created_at") {
+		// Only the latest snapshot is evidence of current access. Unlike deletion,
+		// ownership does not need the historical master_write creation snapshot.
+		// Read each needed server once, even when it has multiple unassigned inbounds.
+		snapshots = `COALESCE((SELECT jsonb_object_agg(needed.id,snapshot.config_json::text)
+			FROM (SELECT DISTINCT s.id FROM nodes n JOIN remote_servers s ON s.name=n.original_server
+				WHERE COALESCE(n.inbound_tag,'')<>'' AND NOT EXISTS (
+					SELECT 1 FROM refs r JOIN users u ON u.username=r.username
+					WHERE u.role<>'admin' AND r.server_id=s.id AND
+					(r.tag=n.inbound_tag OR r.tag=regexp_replace(n.inbound_tag,'-relay$','')))) needed
+			JOIN LATERAL (SELECT config_json FROM server_xray_config_snapshots
+				WHERE server_id=needed.id ORDER BY created_at DESC,id DESC LIMIT 1) snapshot ON true),'{}'::jsonb)`
+	}
 	return `WITH refs AS (` + strings.Join(refs, " UNION ") + `), bindings AS (` + bindings + `)
 	SELECT jsonb_build_object(
 		'nodes', COALESCE((SELECT jsonb_agg(jsonb_build_object(
@@ -127,6 +143,8 @@ func nodeOwnerDataSQL(columns map[string]map[string]bool) string {
 			'config',COALESCE(NULLIF(to_jsonb(n)->>'clash_config',''),to_jsonb(n)->>'parsed_config','')) ORDER BY n.id)
 			FROM nodes n LEFT JOIN remote_servers s ON s.name=n.original_server),'[]'::jsonb),
 		'admins', COALESCE((SELECT jsonb_object_agg(username,role='admin') FROM users),'{}'::jsonb),
+		'admin_emails', COALESCE((SELECT jsonb_object_agg(username,COALESCE(to_jsonb(u)->>'email','')) FROM users u WHERE role='admin'),'{}'::jsonb),
+		'snapshots', ` + snapshots + `,
 		'refs', COALESCE((SELECT jsonb_agg(to_jsonb(r)) FROM refs r JOIN users u ON u.username=r.username),'[]'::jsonb),
 		'packages', COALESCE((SELECT jsonb_agg(jsonb_build_object('username',b.username,'nodes',COALESCE(p.nodes,'[]')))
 			FROM bindings b JOIN users u ON u.username=b.username JOIN packages p ON p.id=b.package_id WHERE u.role<>'admin'),'[]'::jsonb))`
@@ -205,6 +223,19 @@ func resolveNodeOwners(data nodeOwnerData) (map[int64]nodeOwner, error) {
 		}
 	}
 	result := make(map[int64]nodeOwner)
+	snapshots := make(map[int64]map[string]any)
+	adminIdentities := make(map[string]map[string]bool)
+	for username, admin := range data.Admins {
+		if admin {
+			identities := map[string]bool{strings.ToLower(strings.TrimSpace(username)): true}
+			if email := strings.ToLower(strings.TrimSpace(data.AdminEmails[username])); email != "" {
+				identities[email] = true
+			}
+			adminIdentities[username] = identities
+		}
+	}
+	snapshotRefs := make(map[string]map[string]bool)
+	snapshotEvidence := make(map[string]bool)
 	var resolve func(int64, map[int64]bool) nodeOwner
 	resolve = func(id int64, visiting map[int64]bool) nodeOwner {
 		if owner, ok := result[id]; ok {
@@ -221,9 +252,36 @@ func resolveNodeOwners(data nodeOwnerData) (map[int64]nodeOwner, error) {
 			owner = resolve(parent, visiting)
 			owner.ParentNodeID = parent
 		} else {
-			users := refs[lifecycleInboundKey(node.ServerID, node.InboundTag)]
+			tag := node.InboundTag
+			users := refs[lifecycleInboundKey(node.ServerID, tag)]
 			if len(users) == 0 && strings.HasSuffix(node.InboundTag, "-relay") {
-				users = refs[lifecycleInboundKey(node.ServerID, strings.TrimSuffix(node.InboundTag, "-relay"))]
+				tag = strings.TrimSuffix(tag, "-relay")
+				users = refs[lifecycleInboundKey(node.ServerID, tag)]
+			}
+			key := lifecycleInboundKey(node.ServerID, tag)
+			if owner.InboundBacked && len(users) == 0 {
+				if _, checked := snapshotRefs[key]; !checked {
+					if _, loaded := snapshots[node.ServerID]; !loaded {
+						var config map[string]any
+						_ = json.Unmarshal([]byte(data.Snapshots[node.ServerID]), &config)
+						snapshots[node.ServerID] = config
+					}
+					snapshotRefs[key] = make(map[string]bool)
+					if inbound := findConfigInbound(snapshots[node.ServerID], tag); inbound != nil {
+						entries, _, err := accessInboundCredentialEntries(inbound)
+						if err == nil {
+							snapshotEvidence[key] = len(entries) > 0
+							for _, entry := range entries {
+								for username, identities := range adminIdentities {
+									if credentialMatchesAdmin(entry, identities) {
+										snapshotRefs[key][username] = true
+									}
+								}
+							}
+						}
+					}
+				}
+				users = snapshotRefs[key]
 			}
 			if owner.InboundBacked && len(users) > 0 {
 				for user := range users {
@@ -239,7 +297,7 @@ func resolveNodeOwners(data nodeOwnerData) (map[int64]nodeOwner, error) {
 				}
 				owner.Source = "credential"
 				owner.Shared = !owner.AdminOnly && len(owner.Users) > 1
-			} else {
+			} else if !snapshotEvidence[key] {
 				bound := make(map[string]bool)
 				for user := range packages[id] {
 					bound[user] = true

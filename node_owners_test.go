@@ -80,6 +80,51 @@ func TestNodeOwnerInheritanceAndPackages(t *testing.T) {
 	}
 }
 
+func TestNodeOwnerSnapshotCredentials(t *testing.T) {
+	adminSnapshot := `{"inbounds":[{"tag":"self","protocol":"vless","settings":{"clients":[{"id":"admin-default","email":"MMW@ADMIN.ME"}]}}]}`
+	for _, test := range []struct {
+		name     string
+		snapshot string
+		refs     []ownerRef
+		packages []ownerPackage
+		want     nodeOwner
+	}{
+		{"admin default", adminSnapshot, nil, nil, nodeOwner{Users: []string{"admin"}, AdminOnly: true, Source: "credential", InboundBacked: true}},
+		{"non-admin ref wins", adminSnapshot, []ownerRef{{"wings", 12, "self"}}, nil, nodeOwner{Users: []string{"wings"}, Source: "credential", InboundBacked: true}},
+		{"snapshot wins over package", adminSnapshot, nil, []ownerPackage{{"wings", "[1]"}}, nodeOwner{Users: []string{"admin"}, AdminOnly: true, Source: "credential", InboundBacked: true}},
+		{"SS2022 single default password", `{"inbounds":[{"tag":"self","protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"admin-key","clients":[],"email":"admin__default"}}]}`, nil, nil, nodeOwner{Users: []string{"admin"}, AdminOnly: true, Source: "credential", InboundBacked: true}},
+		{"admin email", `{"inbounds":[{"tag":"self","protocol":"trojan","settings":{"clients":[{"password":"admin-key","email":" Owner@Example.Test "}]}}]}`, nil, nil, nodeOwner{Users: []string{"admin"}, AdminOnly: true, Source: "credential", InboundBacked: true}},
+		{"no snapshot or refs", "", nil, nil, nodeOwner{Users: []string{}, Source: "none", InboundBacked: true}},
+		{"unknown credential prevents package fallback", `{"inbounds":[{"tag":"self","protocol":"vless","settings":{"clients":[{"id":"unknown","email":"unrecognized"}]}}]}`, nil, []ownerPackage{{"wings", "[1]"}}, nodeOwner{Users: []string{}, Source: "none", InboundBacked: true}},
+		{"no credential allows package", `{"inbounds":[]}`, nil, []ownerPackage{{"wings", "[1]"}}, nodeOwner{Users: []string{"wings"}, Source: "package", InboundBacked: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := nodeOwnerData{
+				Nodes: []ownerNode{
+					{ID: 1, ServerID: 12, ServerName: "A", InboundTag: "self"},
+					{ID: 2, ServerID: 12, ServerName: "A", InboundTag: "self-relay", RelayHost: "origin"},
+					{ID: 3, ParentID: 2},
+				},
+				Admins: map[string]bool{"admin": true, "wings": false}, AdminEmails: map[string]string{"admin": "owner@example.test"},
+				Snapshots: map[int64]string{12: test.snapshot}, Refs: test.refs, Packages: test.packages,
+			}
+			got, err := resolveNodeOwners(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []int64{1, 2, 3} {
+				want := test.want
+				if id > 1 {
+					want.ParentNodeID = id - 1
+				}
+				if !reflect.DeepEqual(got[id], want) {
+					t.Fatalf("node %d: %+v want %+v", id, got[id], want)
+				}
+			}
+		})
+	}
+}
+
 type fakeNodeOwnerStore struct {
 	fakeAdminSessionStore
 	reads int
@@ -129,13 +174,16 @@ func TestNodeOwnersPostgres(t *testing.T) {
 		`CREATE TABLE nodes(id bigint PRIMARY KEY,node_name text,original_server text,inbound_tag text,parent_node_id bigint,relay_orig_server text)`,
 		`CREATE TABLE user_inbound_configs(username text,server_id bigint,inbound_tag text,credential_json text)`,
 		`CREATE TABLE user_outbounds(username text,server_id bigint,inbound_tag text)`,
+		`CREATE TABLE server_xray_config_snapshots(id bigint,server_id bigint,config_json text,source text,created_at timestamptz)`,
 		`INSERT INTO users(username,role) VALUES('admin','admin'),('wings','user'),('usb','user')`,
-		`INSERT INTO remote_servers VALUES(12,'Boil Hinet 158')`,
+		`INSERT INTO remote_servers VALUES(12,'Boil Hinet 158'),(13,'No snapshot'),(14,'Non-admin only')`,
 		`INSERT INTO nodes VALUES(1,'SS2022','Boil Hinet 158','ss',NULL,NULL),(2,'relay','Boil Hinet 158','ss-relay',NULL,'origin'),(3,'external',NULL,NULL,NULL,NULL),(4,'admin','Boil Hinet 158','self',NULL,NULL)`,
+		`INSERT INTO nodes VALUES(5,'snapshot admin','Boil Hinet 158','default',NULL,NULL),(6,'relay admin','Boil Hinet 158','default-relay',NULL,'origin'),(7,'SS2022 default','Boil Hinet 158','single',NULL,NULL),(8,'unknown','No snapshot','empty',NULL,NULL),(9,'user','Non-admin only','user',NULL,NULL)`,
 		`INSERT INTO user_inbound_configs VALUES('admin',12,'ss','{"password":"default"}'),('admin',12,'self','{}')`,
-		`INSERT INTO user_outbounds VALUES('wings',12,'ss')`,
-		`INSERT INTO packages VALUES(1,'external','[3]')`,
+		`INSERT INTO user_outbounds VALUES('wings',12,'ss'),('wings',14,'user')`,
+		`INSERT INTO packages VALUES(1,'external','[3,5,7]')`,
 		`INSERT INTO user_package_assignments VALUES(1,'usb',1,'active')`,
+		`INSERT INTO server_xray_config_snapshots VALUES(1,12,'{"inbounds":[]}','master_write','2026-10-01'),(2,12,'{"inbounds":[]}','master_write','2026-10-02'),(3,12,'{"inbounds":[{"tag":"default","protocol":"vless","settings":{"clients":[{"id":"default-id","email":"mmw@admin.me"}]}},{"tag":"ss","protocol":"vless","settings":{"clients":[{"id":"default-id","email":"admin"}]}},{"tag":"single","protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"admin-key","email":"admin__default","clients":[]}}]}','agent_sync','2026-10-02'),(4,14,'must not be read','agent_sync','2026-10-02')`,
 	} {
 		auditDeleteExec(t, db, sql)
 	}
@@ -149,5 +197,25 @@ func TestNodeOwnersPostgres(t *testing.T) {
 	}
 	if got[1].Users[0] != "wings" || got[2].Users[0] != "wings" || got[3].Users[0] != "usb" || got[3].Source != "package" || !got[4].AdminOnly {
 		t.Fatalf("owners: %+v", got)
+	}
+	for _, id := range []int64{5, 6, 7} {
+		if !got[id].AdminOnly || got[id].Source != "credential" || !reflect.DeepEqual(got[id].Users, []string{"admin"}) {
+			t.Fatalf("snapshot admin %d: %+v", id, got[id])
+		}
+	}
+	if got[8].Source != "none" || len(got[8].Users) != 0 || got[9].Users[0] != "wings" {
+		t.Fatalf("missing/unneeded snapshots: %+v", got)
+	}
+	columns, err := (&postgresAdminSessionStore{db: db}).schemaColumns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw []byte
+	if err := db.QueryRow(nodeOwnerDataSQL(columns)).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var data nodeOwnerData
+	if err := json.Unmarshal(raw, &data); err != nil || len(data.Snapshots) != 1 || data.Snapshots[12] == "" {
+		t.Fatalf("only one needed server snapshot should be loaded: count=%d err=%v", len(data.Snapshots), err)
 	}
 }
