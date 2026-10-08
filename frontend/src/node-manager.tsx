@@ -971,7 +971,7 @@ function NodeActionSheet({
         {node.chain_proxy_node_id && <span>链式 #{node.chain_proxy_node_id}</span>}
         {node.node_type === "routed" && <span>路由出站</span>}
         <span>{stringValue(parsed.network || parsed.transport) || "tcp"}</span>
-        {(parsed["reality-opts"] || parsed.tls) && <span>{parsed["reality-opts"] ? "Reality" : "TLS"}</span>}
+        {Boolean(parsed["reality-opts"] || parsed.tls) && <span>{parsed["reality-opts"] ? "Reality" : "TLS"}</span>}
       </div></div>
       {speedActions}
     </details>
