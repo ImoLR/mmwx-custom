@@ -68,7 +68,7 @@ import { NodeProbeBadge, NodeProbeDialog, useNodeProbe } from "./node-probe";
 import { nodeProbeStatesById, nodeProbeSummary } from "./node-auxiliary-logic";
 import { RelayCredentialRepairDialog } from "./node-relay-repair";
 import { NodeSpeedTestActions, SpeedTestHistoryDialog, SpeedTesterManagerDialog, useNodeSpeedTests } from "./node-speedtest";
-import { duplicateNodeKey as duplicateKey, duplicateNodeGroups as findDuplicateGroups, subscriptionDefaultTag, batchRenameTransform, moveSelectedNodes, groupNodes, nodeOwnership, nodeOwnerHint, nodeRelayRows, isNodeRelay, toggleNodeSelection, matchesNodeFilters, type NodeGrouping, type NodeOwners } from "./node-manager-logic";
+import { duplicateNodeKey as duplicateKey, duplicateNodeGroups as findDuplicateGroups, subscriptionDefaultTag, batchRenameTransform, moveSelectedNodes, groupNodes, nodeDisplayName, nodeDisplayAddress, nodeOwnership, nodeOwnerHint, nodeRelayRows, isNodeRelay, toggleNodeSelection, matchesNodeFilters, type NodeGrouping, type NodeOwners } from "./node-manager-logic";
 import { speedTestLatency, speedTestState } from "./node-speedtest-logic";
 import { ManagedNodeCreateDialog, ManagedNodeEditDialog, NodeFlowRepairDialog } from "./xray-manager";
 import {
@@ -515,20 +515,24 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
               />);
   };
   const renderRow = (node: XrayNode, relay = false, relayCount = 0) => {
+    relay = relay || isNodeRelay(node);
     const state = cardExtras.cards.get(node.id), owner = nodeOwnership(node, owners), parsed = parseNodeConfig(node);
+    const server = nodeManagedServer(node, servers);
+    const nameFlag = node.node_name.trim().match(/^[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0];
+    const region = nameFlag ? serverRegionFromFields({ id: 0, name: "", flag: nameFlag }) : server ? serverRegionFromFields(server) : null;
     const probeState = nodeProbeSummary(probeStates.get(node.id));
     const failures = [state?.blocked && "被墙", state?.flow?.warning && "流控不一致", (probeState.failStreak > 0 || probeState.last?.ok === false) && "探测失败"].filter(Boolean).join(" · ");
     const badges = [
       ...(failures ? [{ text: failures.includes(" · ") ? "异常" : failures, tone: "bad", title: failures }] : []),
       ...(owner.shared ? [{ text: "共用", tone: "shared", title: owner.users.join("、") }] : []),
       ...(state?.whole ? [{ text: `出站 ${state.whole.label}`, tone: "out", title: `整个节点出站 ${state.whole.label}` }] : []),
-      ...(relay || relayCount ? [{ text: relay ? "中转" : `中转 ${relayCount}`, tone: "relay", title: relay ? "中转节点" : `${relayCount} 个中转节点` }] : []),
+      ...(relayCount ? [{ text: `中转 ${relayCount}`, tone: "relay", title: `${relayCount} 个中转节点` }] : []),
       ...(parsed["reality-opts"] || parsed.tls ? [{ text: parsed["reality-opts"] ? "Reality" : "TLS", tone: "tls", title: "传输安全" }] : []),
       ...(node.node_type === "routed" ? [{ text: "路由", tone: "out", title: "路由出站" }] : []),
-    ].slice(0, 3);
+    ];
     const speed = speedTests.latest.get(node.id), speedState = speedTestState(speed, speedTests.now);
     const latency = latencies[node.id] || (speed ? { loading: speedState === "running", text: speedState === "running" ? "测试中" : speedState === "timeout" ? "超时" : speedTestLatency(speed), ok: speedState === "ok" && Number(speed.latency_ms) >= 0 } : undefined);
-    return <CompactNodeRow node={node} parsed={parsed} relay={relay} badges={badges} latency={latency}
+    return <CompactNodeRow node={node} displayName={nodeDisplayName(node.node_name, region)} parsed={parsed} relay={relay} relayCount={relayCount} badges={badges} latency={latency}
       selected={selected.has(node.id)} selectionMode={selectionMode} onSelect={() => toggleSelected(node.id)}
       onOpen={() => setActionNodeId(node.id)} ownerHint={nodeOwnerHint(owner)}
       packageNames={(packages.memberships[node.id] || []).map((pkg) => pkg.package_name).join("、")} />;
@@ -827,28 +831,28 @@ function GroupCheckbox({ checked, mixed, label, onChange }: { checked: boolean; 
   return <input ref={ref} type="checkbox" checked={checked} aria-label={label} onChange={onChange} />;
 }
 
-function CompactNodeRow({ node, parsed, relay, badges, latency, selected, selectionMode, onSelect, onOpen, ownerHint, packageNames }: {
-  node: XrayNode; parsed: ParsedProxy; relay: boolean; badges: Array<{ text: string; tone: string; title: string }>;
+function CompactNodeRow({ node, displayName, parsed, relay, relayCount, badges, latency, selected, selectionMode, onSelect, onOpen, ownerHint, packageNames }: {
+  node: XrayNode; displayName: string; parsed: ParsedProxy; relay: boolean; relayCount: number; badges: Array<{ text: string; tone: string; title: string }>;
   latency?: { text: string; ok?: boolean; loading?: boolean }; selected: boolean; selectionMode: boolean;
   onSelect: () => void; onOpen: () => void; ownerHint: string; packageNames: string;
 }) {
   const protocol = normalizeProtocol(node.protocol || stringValue(parsed.type));
-  return <article className={`node-compact-row${relay ? " is-relay" : ""}${selected && selectionMode ? " selected" : ""}`} data-node-id={node.id}>
+  return <article className={`node-compact-row${relay ? " is-relay" : ""}${relayCount ? " has-relays" : ""}${selected && selectionMode ? " selected" : ""}`} data-node-id={node.id}>
     {selectionMode && <input type="checkbox" checked={selected} onChange={onSelect} aria-label={`选择 ${node.node_name}`} />}
     <span className={`node-status-dot ${node.enabled === false ? "off" : "on"}`} title={node.enabled === false ? "已禁用" : "已启用"} />
     <div className="node-row-content">
-      <div className="node-row-title"><button type="button" onClick={onOpen} title={`${node.node_name}\n${ownerHint}`}>{relay && "↳ "}{node.node_name}</button>
+      <div className="node-row-title">{relay && <span className="node-row-relay"><Route aria-hidden="true" />中转</span>}<button className="node-row-name" type="button" onClick={onOpen} title={`${node.node_name}\n${ownerHint}`}>{displayName}</button>
         <span className={`node-row-latency ${latency?.ok ? "ok" : latency ? "bad" : ""}`} title={latency?.text}>{latency?.loading ? "测试中" : latency?.ok ? latency.text : latency ? "失败" : "—"}</span>
+        <button type="button" className="node-row-more" aria-label={`操作 ${node.node_name}`} onClick={onOpen}><MoreHorizontal /></button>
       </div>
+      <div className="node-row-address">{nodeDisplayAddress(stringValue(parsed.server), stringValue(parsed.port))}</div>
       <div className="node-row-meta">
         <span className="node-row-protocol">{protocol.toUpperCase() || "NODE"}</span>
         <span className="node-row-server" title={node.original_server}>{node.original_server || "外部节点"}</span>
-        <span className="node-row-port">:{stringValue(parsed.port) || "—"}</span>
         {badges.map((badge) => <span key={badge.tone} className={`node-row-tag ${badge.tone}`} title={badge.title}>{badge.text}</span>)}
-        <span className="node-row-desktop" title={`${stringValue(parsed.server)} · ${stringValue(parsed.network || parsed.transport) || "tcp"} · ${packageNames}`}>{stringValue(parsed.server)} · {stringValue(parsed.network || parsed.transport) || "tcp"}{packageNames && ` · ${packageNames}`}</span>
+        <span className="node-row-desktop" title={packageNames}>{stringValue(parsed.network || parsed.transport) || "tcp"}{packageNames && ` · ${packageNames}`}</span>
       </div>
     </div>
-    <button type="button" className="node-row-more" aria-label={`操作 ${node.node_name}`} onClick={onOpen}><MoreHorizontal /></button>
   </article>;
 }
 
