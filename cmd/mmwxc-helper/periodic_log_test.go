@@ -62,3 +62,16 @@ func TestPeriodicLogLimiterBoundsMemory(t *testing.T) {
 		t.Fatal("unbounded error history")
 	}
 }
+
+func TestPeriodicLogNormalizesIPv6AndNamedPorts(t *testing.T) {
+	limiter := newPeriodicLogLimiter()
+	lines := 0
+	limiter.print = func(string, ...any) { lines++ }
+	for _, port := range []int{12345, 54321} {
+		limiter.report("upload", fmt.Errorf("read tcp [2001:db8::1]:%d: timeout", port))
+		limiter.report("IP limiter", fmt.Errorf("inbound port %d has multiple authenticated users", port))
+	}
+	if lines != 2 {
+		t.Fatalf("port changes produced %d lines, want 2", lines)
+	}
+}

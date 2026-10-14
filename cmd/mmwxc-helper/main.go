@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -253,6 +254,7 @@ func applyNftables(manager *nftablesManager, snapshot detailedConnectionSnapshot
 	policies, warnings := deriveInboundIPPolicies(coreSnapshotFromDetailed(snapshot), settings)
 	var warningErr error
 	if len(warnings) > 0 {
+		sort.Strings(warnings)
 		warningErr = errors.New(strings.Join(warnings, "; "))
 	}
 	logs.report("IP limiter", warningErr)

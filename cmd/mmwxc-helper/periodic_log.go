@@ -11,6 +11,7 @@ const periodicLogInterval = 10 * time.Minute
 var (
 	logTimestamp = regexp.MustCompile(`\b\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?`)
 	logPort      = regexp.MustCompile(`([a-zA-Z0-9_.-]+|\[[0-9a-fA-F:%]+\]):\d{1,5}\b`)
+	logNamedPort = regexp.MustCompile(`\bport[ =:]+\d{1,5}\b`)
 )
 
 type periodicLogSite struct {
@@ -40,6 +41,7 @@ func (limiter *periodicLogLimiter) report(site string, err error) {
 	}
 	now := limiter.now()
 	message := logPort.ReplaceAllString(logTimestamp.ReplaceAllString(err.Error(), "<time>"), "${1}:<port>")
+	message = logNamedPort.ReplaceAllString(message, "port <port>")
 	state := limiter.sites[site]
 	if state == nil {
 		state = &periodicLogSite{seen: make(map[string]bool), since: now}
