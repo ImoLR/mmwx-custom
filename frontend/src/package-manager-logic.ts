@@ -115,7 +115,8 @@ export function validatePackage(form: PackagePayload): string {
 export function updatePackageNodeOverride(form: PackagePayload, key: "node_multipliers" | "node_name_overrides" | "node_speed_limits" | "node_device_limits" | "node_traffic_limits", node: Pick<XrayNode, "id" | "node_name">, value: string): PackagePayload {
   const values = { ...form[key] } as Record<number, number | string>;
   if (key === "node_name_overrides") {
-    if (value === "" || value === node.node_name) delete values[node.id];
+    // Keep "" while editing so a cleared input stays empty instead of snapping back to the original name.
+    if (value === node.node_name) delete values[node.id];
     else values[node.id] = value;
   } else {
     const parsed = key === "node_device_limits" ? parseInt(value, 10) : parseFloat(value);
@@ -125,7 +126,11 @@ export function updatePackageNodeOverride(form: PackagePayload, key: "node_multi
   return { ...form, [key]: values };
 }
 
-export type PackageGrouping = "user" | "server" | "none";
+export function packageSavePayload(form: PackagePayload): PackagePayload {
+  return { ...form, node_name_overrides: Object.fromEntries(Object.entries(form.node_name_overrides).filter(([, name]) => name.trim() !== "")) };
+}
+
+export type PackageGrouping ="user" | "server" | "none";
 export type CompactPackageGroup = { key: string; name: string; packages: ManagedPackage[] };
 
 export function packageBoundUsers(pkg: ManagedPackage, users: ManagedUser[]) {

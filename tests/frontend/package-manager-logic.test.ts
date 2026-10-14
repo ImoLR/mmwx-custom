@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { emptyPackage, newAutoSpeedRule, orderPackageNodes, packageMemberNodeIds, packageResetDay, packageTemplateType, packageToForm, updatePackageNodeOverride, validatePackage } from "../../frontend/src/package-manager-logic.ts";
+import { emptyPackage, newAutoSpeedRule, orderPackageNodes, packageMemberNodeIds, packageResetDay, packageSavePayload, packageTemplateType, packageToForm, updatePackageNodeOverride, validatePackage } from "../../frontend/src/package-manager-logic.ts";
 import { retainTrafficGroupNodes, validateTrafficGroups } from "../../frontend/src/package-traffic-groups.ts";
 import type { ManagedPackage, RemoteServer, XrayNode } from "../../frontend/src/types.ts";
 
@@ -85,7 +85,20 @@ test("overrides distinguish inherited defaults from explicit unlimited and prese
   assert.deepEqual(updatePackageNodeOverride(original, "node_multipliers", node, "").node_multipliers, { 2: 4 });
   assert.deepEqual(updatePackageNodeOverride(original, "node_multipliers", node, "0").node_multipliers, { 1: 0, 2: 4 });
   assert.deepEqual(updatePackageNodeOverride(original, "node_name_overrides", node, "原名").node_name_overrides, { 2: "其他" });
-  assert.deepEqual(updatePackageNodeOverride(original, "node_name_overrides", node, "").node_name_overrides, { 2: "其他" });
+  assert.deepEqual(updatePackageNodeOverride(original, "node_name_overrides", node, "").node_name_overrides, { 1: "", 2: "其他" });
   assert.deepEqual(updatePackageNodeOverride(original, "node_device_limits", node, "12.8").node_device_limits, { 1: 12 });
   assert.deepEqual(original.node_name_overrides, { 1: "覆盖名", 2: "其他" });
+});
+
+test("clearing a package node name keeps the input empty while editing and inherits the original name on save", () => {
+  const node = { id: 1, node_name: "原名" };
+  let form = { ...emptyPackage(), node_name_overrides: { 1: "覆盖名", 2: "其他" } as Record<number, string> };
+  for (const value of ["覆盖", "覆", ""]) {
+    form = updatePackageNodeOverride(form, "node_name_overrides", node, value);
+    assert.equal(form.node_name_overrides[1] ?? node.node_name, value);
+  }
+  assert.equal(updatePackageNodeOverride(form, "node_name_overrides", node, "新").node_name_overrides[1], "新");
+  assert.deepEqual(packageSavePayload(form).node_name_overrides, { 2: "其他" });
+  assert.deepEqual(packageSavePayload({ ...form, node_name_overrides: { 1: "  ", 2: " 节点 " } }).node_name_overrides, { 2: " 节点 " });
+  assert.deepEqual(form.node_name_overrides, { 1: "", 2: "其他" });
 });

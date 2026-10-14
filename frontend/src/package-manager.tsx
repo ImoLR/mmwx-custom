@@ -48,7 +48,7 @@ import type {
 } from "./types";
 import { TRAFFIC_GB, retainTrafficGroupNodes, trafficGroupDraft, trafficGroupNodeWarning, trafficGroupPayload, trafficGroupUsageStatus, validateTrafficGroups } from "./package-traffic-groups";
 import type { PackageTrafficGroupDraft } from "./package-traffic-groups";
-import { emptyPackage, packageToForm, packageTemplateType, orderPackageNodes, packageResetDay, packageMemberNodeIds, newAutoSpeedRule, validatePackage, updatePackageNodeOverride } from "./package-manager-logic";
+import { emptyPackage, packageToForm, packageTemplateType, orderPackageNodes, packageResetDay, packageMemberNodeIds, newAutoSpeedRule, validatePackage, updatePackageNodeOverride, packageSavePayload } from "./package-manager-logic";
 
 import { CompactSheet, CompactSegments, CompactGroupHeader } from "./compact-ui";
 import { groupPackages, packageBoundUsers, packageServers, searchPackages, packageOverrideCount, type PackageGrouping } from "./package-manager-logic";
@@ -394,7 +394,7 @@ function PackageEditor({ token, pkg, nodes, allNodes, servers, templates, chains
     setError("");
     let packageSaved = false;
     try {
-      const payload = { ...form };
+      const payload = packageSavePayload(form);
       let packageId = savedPackageId;
       if (packageId) await updatePackage(token, { ...payload, id: packageId });
       else {
