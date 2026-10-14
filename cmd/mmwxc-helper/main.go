@@ -24,7 +24,7 @@ const (
 	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
 	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
 	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
-	helperVersion        = "v0.6.8"
+	helperVersion        = "v0.6.9"
 )
 
 type config struct {
@@ -149,68 +149,9 @@ func main() {
 		return
 	}
 
+	periodicLogs := newPeriodicLogLimiter()
 	runOnce := func() {
-		reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := lifecycle.reconcileExternalOwnership(reconcileCtx, &state.ExternalOwnership); err != nil {
-			log.Printf("[mmwxc-helper] external ownership reconcile failed: %v", err)
-		}
-		cancelReconcile()
-		applyCtx, cancelApply := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := core.apply(applyCtx, state.Settings); err != nil {
-			log.Printf("[mmwxc-helper] core config unavailable: %v", err)
-		}
-		cancelApply()
-		snapshot := collectDetailedSnapshot(context.Background(), core, onlineTracker, state.Settings)
-		machineCtx, cancelMachine := context.WithTimeout(context.Background(), 5*time.Second)
-		machineStatus := machineProtection.reconcile(machineCtx, state.Settings.MachineProtection, snapshot.System, machineControlledPorts(snapshot))
-		cancelMachine()
-		snapshot.MachineProtection = &machineStatus
-		state.MachineProtection = machineStatus
-		if snapshot.Core.Available {
-			applyNftables(nftables, snapshot, state.Settings)
-		}
-		state.HeartbeatAt = time.Now().UTC()
-		state.HelperVersion = helperVersion
-		if err := saveLocalState(cfg.StatePath, state); err != nil {
-			log.Printf("[mmwxc-helper] save heartbeat failed: %v", err)
-		}
-		report := &managementReport{Status: executor.status(context.Background()), Result: state.PendingResult}
-		response, err := uploadDetailedMetrics(context.Background(), client, cfg, snapshot, report)
-		if err != nil {
-			log.Printf("[mmwxc-helper] upload failed: %v", err)
-			return
-		}
-		if state.PendingResult != nil {
-			state.PendingResult = nil
-		}
-		state.ControllerConnectedAt = time.Now().UTC()
-		state.updateSettings(response.Settings)
-		if response.Command != nil && !completedCommand(state.CompletedCommandIDs, response.Command.ID) {
-			commandCtx, cancelCommand := context.WithTimeout(context.Background(), 31*time.Minute)
-			result := executor.execute(commandCtx, *response.Command, cfg.Token)
-			cancelCommand()
-			state.PendingResult = &result
-			state.LastOperation = &result
-			rememberCompletedCommand(&state, response.Command.ID)
-		}
-		if err := saveLocalState(cfg.StatePath, state); err != nil {
-			log.Printf("[mmwxc-helper] save state failed: %v", err)
-		}
-		applyCtx, cancelApply = context.WithTimeout(context.Background(), 5*time.Second)
-		if err := core.apply(applyCtx, state.Settings); err != nil {
-			log.Printf("[mmwxc-helper] apply updated core config failed: %v", err)
-		}
-		cancelApply()
-		if snapshot.Core.Available {
-			applyNftables(nftables, snapshot, state.Settings)
-		}
-		machineCtx, cancelMachine = context.WithTimeout(context.Background(), 5*time.Second)
-		machineStatus = machineProtection.reconcile(machineCtx, state.Settings.MachineProtection, snapshot.System, machineControlledPorts(snapshot))
-		cancelMachine()
-		state.MachineProtection = machineStatus
-		if err := saveLocalState(cfg.StatePath, state); err != nil {
-			log.Printf("[mmwxc-helper] save machine protection state failed: %v", err)
-		}
+		executor.runOnce(onlineTracker, nftables, machineProtection, periodicLogs)
 	}
 
 	runOnce()
@@ -225,27 +166,81 @@ func main() {
 	}
 }
 
-func applyNftables(manager *nftablesManager, snapshot detailedConnectionSnapshot, settings connectionSettings) {
+func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftables *nftablesManager, machineProtection *machineProtectionManager, logs *periodicLogLimiter) {
+	cfg, client, core, state, lifecycle := executor.config, executor.client, executor.core, executor.state, executor.lifecycle
+	reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), 30*time.Second)
+	logs.report("external ownership reconcile failed", lifecycle.reconcileExternalOwnership(reconcileCtx, &state.ExternalOwnership))
+	cancelReconcile()
+	applyCtx, cancelApply := context.WithTimeout(context.Background(), 5*time.Second)
+	logs.report("core config unavailable", executor.applyCoreSettings(applyCtx))
+	cancelApply()
+	snapshot := collectDetailedSnapshot(context.Background(), core, onlineTracker, state.Settings)
+	machineCtx, cancelMachine := context.WithTimeout(context.Background(), 5*time.Second)
+	machineStatus := machineProtection.reconcile(machineCtx, state.Settings.MachineProtection, snapshot.System, machineControlledPorts(snapshot))
+	cancelMachine()
+	snapshot.MachineProtection = &machineStatus
+	state.MachineProtection = machineStatus
+	if snapshot.Core.Available {
+		applyNftables(nftables, snapshot, state.Settings, logs)
+	}
+	state.HeartbeatAt = time.Now().UTC()
+	state.HelperVersion = helperVersion
+	logs.report("save heartbeat failed", saveLocalState(cfg.StatePath, *state))
+	report := &managementReport{Status: executor.status(context.Background()), Result: state.PendingResult}
+	response, err := uploadDetailedMetrics(context.Background(), client, cfg, snapshot, report)
+	logs.report("upload failed", err)
+	if err != nil {
+		return
+	}
+	if state.PendingResult != nil {
+		state.PendingResult = nil
+	}
+	state.ControllerConnectedAt = time.Now().UTC()
+	state.updateSettings(response.Settings)
+	if response.Command != nil && !completedCommand(state.CompletedCommandIDs, response.Command.ID) {
+		commandCtx, cancelCommand := context.WithTimeout(context.Background(), 31*time.Minute)
+		result := executor.execute(commandCtx, *response.Command, cfg.Token)
+		cancelCommand()
+		state.PendingResult = &result
+		state.LastOperation = &result
+		rememberCompletedCommand(state, response.Command.ID)
+	}
+	logs.report("save state failed", saveLocalState(cfg.StatePath, *state))
+	applyCtx, cancelApply = context.WithTimeout(context.Background(), 5*time.Second)
+	logs.report("apply updated core config failed", executor.applyCoreSettings(applyCtx))
+	cancelApply()
+	if snapshot.Core.Available {
+		applyNftables(nftables, snapshot, state.Settings, logs)
+	}
+	machineCtx, cancelMachine = context.WithTimeout(context.Background(), 5*time.Second)
+	machineStatus = machineProtection.reconcile(machineCtx, state.Settings.MachineProtection, snapshot.System, machineControlledPorts(snapshot))
+	cancelMachine()
+	state.MachineProtection = machineStatus
+	logs.report("save machine protection state failed", saveLocalState(cfg.StatePath, *state))
+}
+
+func applyNftables(manager *nftablesManager, snapshot detailedConnectionSnapshot, settings connectionSettings, logs *periodicLogLimiter) {
 	if snapshot.Core.Version >= 2 {
 		// Modern Core interfaces enforce authenticated online-IP limits inside
 		// the Core. Remove the legacy nftables approximation instead of
 		// double-limiting; API v4 applies management-user and port limits.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := manager.apply(ctx, nil, 0); err != nil {
-			log.Printf("[mmwxc-helper] legacy IP limiter removal failed: %v", err)
-		}
+		logs.report("legacy IP limiter removal failed", manager.apply(ctx, nil, 0))
+		logs.report("IP limiter", nil)
+		logs.report("IP limiter apply failed", nil)
 		return
 	}
 	policies, warnings := deriveInboundIPPolicies(coreSnapshotFromDetailed(snapshot), settings)
-	for _, warning := range warnings {
-		log.Printf("[mmwxc-helper] IP limiter: %s", warning)
+	var warningErr error
+	if len(warnings) > 0 {
+		warningErr = errors.New(strings.Join(warnings, "; "))
 	}
+	logs.report("IP limiter", warningErr)
+	logs.report("legacy IP limiter removal failed", nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := manager.apply(ctx, policies, time.Duration(settings.OnlineIPGracePeriodSeconds)*time.Second); err != nil {
-		log.Printf("[mmwxc-helper] IP limiter apply failed: %v", err)
-	}
+	logs.report("IP limiter apply failed", manager.apply(ctx, policies, time.Duration(settings.OnlineIPGracePeriodSeconds)*time.Second))
 }
 
 func loadConfig(path string) (config, error) {

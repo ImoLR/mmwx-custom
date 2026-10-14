@@ -53,6 +53,25 @@ func (client *coreClient) snapshot(ctx context.Context) (coreSnapshotResponse, e
 	return snapshot, nil
 }
 
+func (executor *commandExecutor) applyCoreSettings(ctx context.Context) error {
+	mode, _ := readAgentXrayMode(officialAgentConfigPath)
+	return executor.core.applyIfRunning(ctx, executor.state.Settings, executor.state.ExternalOwnership.Enabled, mode)
+}
+
+func (client *coreClient) applyIfRunning(ctx context.Context, settings connectionSettings, owned bool, mode string) error {
+	if !owned || mode == "embedded" {
+		client.trafficBlockSupported = false
+		return nil
+	}
+	// A stale socket can outlive the Core. Probe readiness on every tick so a
+	// newly started External Core receives the persisted settings immediately.
+	if _, err := client.snapshot(ctx); err != nil {
+		client.trafficBlockSupported = false
+		return nil
+	}
+	return client.apply(ctx, settings)
+}
+
 func (client *coreClient) apply(ctx context.Context, settings connectionSettings) error {
 	client.trafficBlockSupported = false
 	config := settings.coreConfig()

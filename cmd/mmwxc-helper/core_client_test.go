@@ -3,12 +3,65 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestCoreConfigOnlyWhileOwnedExternalReady(t *testing.T) {
+	var requests, applies int
+	var received []byte
+	ready := true
+	path := serveUnixHTTP(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method == http.MethodGet {
+			if !ready {
+				http.Error(w, "starting", http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = w.Write([]byte(`{"version":7}`))
+			return
+		}
+		applies++
+		received, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	client := newCoreClient(path)
+	settings := defaultConnectionSettings()
+	settings.BlockedIdentities = []coreIdentity{{InboundTag: "test-inbound", User: "blocked-user"}}
+	for _, mode := range []string{"embedded", "external"} {
+		if err := client.applyIfRunning(context.Background(), settings, false, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := client.applyIfRunning(context.Background(), settings, true, "embedded"); err != nil || requests != 0 {
+		t.Fatalf("Embedded/disabled ownership contacted Core: requests=%d err=%v", requests, err)
+	}
+	for _, mode := range []string{"external", "embedded", "external"} {
+		if err := client.applyIfRunning(context.Background(), settings, true, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, _ := json.Marshal(settings.coreConfig())
+	if applies != 2 || string(received) != string(want) {
+		t.Fatalf("switch-back lost settings: applies=%d body=%s want=%s", applies, received, want)
+	}
+	ready = false
+	if err := client.applyIfRunning(context.Background(), settings, true, "external"); err != nil || applies != 2 || client.trafficBlockSupported {
+		t.Fatalf("unready Core received config or retained capability: applies=%d err=%v", applies, err)
+	}
+	ready = true
+	if err := client.applyIfRunning(context.Background(), settings, true, "external"); err != nil || applies != 3 {
+		t.Fatalf("ready Core did not receive config on first tick: applies=%d err=%v", applies, err)
+	}
+	missing := newCoreClient(filepath.Join(t.TempDir(), "absent.sock"))
+	if err := missing.applyIfRunning(context.Background(), settings, true, "external"); err != nil {
+		t.Fatalf("absent socket should skip: %v", err)
+	}
+}
 
 func serveUnixHTTP(t *testing.T, handler http.Handler) string {
 	t.Helper()
