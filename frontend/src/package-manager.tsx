@@ -419,7 +419,7 @@ function PackageEditor({ token, pkg, nodes, allNodes, servers, templates, chains
 
   return (
     <>
-      <CompactSheet dialogRef={editorRef} className="package-editor" title={pkg ? "编辑套餐模板" : "创建套餐模板"} subtitle="配置套餐额度、节点、模板、限速与转发权限" closeLabel="关闭" closeDisabled={saving} onClose={() => { if (!saving) { if (confirmEmptyNodes) setConfirmEmptyNodes(false); else onClose(); } }} bodyClassName="package-editor-body" onChangeCapture={(event) => { if (event.target instanceof HTMLInputElement && event.target.type === "number") event.target.dataset.edited = "true"; }} footer={<><button type="button" disabled={saving} onClick={onClose}>取消</button><button className="primary" type="button" disabled={saving || groupsLoading || Boolean(groupsError) || creationUnresolved} onClick={() => void save()}><Save />{saving ? "保存中..." : "保存套餐"}</button></>}>
+      <CompactSheet backdropClose="mousedown" dialogRef={editorRef} className="package-editor" title={pkg ? "编辑套餐模板" : "创建套餐模板"} subtitle="配置套餐额度、节点、模板、限速与转发权限" closeLabel="关闭" closeDisabled={saving} onClose={() => { if (!saving) { if (confirmEmptyNodes) setConfirmEmptyNodes(false); else onClose(); } }} bodyClassName="package-editor-body" onChangeCapture={(event) => { if (event.target instanceof HTMLInputElement && event.target.type === "number") event.target.dataset.edited = "true"; }} footer={<><button type="button" disabled={saving} onClick={onClose}>取消</button><button className="primary" type="button" disabled={saving || groupsLoading || Boolean(groupsError) || creationUnresolved} onClick={() => void save()}><Save />{saving ? "保存中..." : "保存套餐"}</button></>}>
           {error && <div className="package-notice error"><span>{error}</span></div>}
           {pkg && <p className="package-section-note">节点与额度配置修改会影响已绑定用户；计量周期和默认重置日期的修改不会重写已有分配的有效期与重置设置。</p>}
           <fieldset className="package-form-section" disabled={saving}>
@@ -576,7 +576,7 @@ function PackageTrafficUsageDialog({ token, pkg, onClose }: { token: string; pkg
     return <li key={node.node_id} className={warning ? "package-group-warning" : ""}><strong>{node.node_name || `节点 ${node.node_id}`}</strong><span>{node.server_name || "外部节点"} · {warning || "可执行共享组额度"}</span></li>;
   }
 
-  return <CompactSheet title="共享组用量" subtitle={`${pkg.name} · 按用户当前套餐周期统计`} onClose={onClose} closeLabel="关闭" className="package-editor" bodyClassName="package-editor-body" footer={<><button type="button" onClick={onClose}>关闭</button><button type="button" disabled={loading} onClick={() => void load()}><RefreshCw />刷新用量</button></>}>
+  return <CompactSheet backdropClose="mousedown" title="共享组用量" subtitle={`${pkg.name} · 按用户当前套餐周期统计`} onClose={onClose} closeLabel="关闭" className="package-editor" bodyClassName="package-editor-body" footer={<><button type="button" onClick={onClose}>关闭</button><button type="button" disabled={loading} onClick={() => void load()}><RefreshCw />刷新用量</button></>}>
         <p className="package-section-note">流量采集和额度检查可能延迟数分钟。未具备执行能力的节点会继续产生流量，请检查下方状态。</p>
         {error && <div className="package-notice error"><span>{error}</span></div>}
         {loading ? <p className="package-field-help">正在读取共享组用量...</p> : !error && (data?.usage?.length ? data.usage.map((row) => {

@@ -97,6 +97,25 @@ try {
     }
   };
   const close = async () => { await page.keyboard.press("Escape"); await page.getByRole("dialog").waitFor({ state: "hidden" }); };
+  const checkBackdropMouseDown = async (title) => {
+    const dialog = page.getByRole("dialog", { name: title, exact: true });
+    await dialog.waitFor();
+    const input = dialog.locator("input").first();
+    await input.fill("unsaved-draft");
+    const box = await input.boundingBox();
+    assert.ok(box, `${title}: input visible`);
+    assert.equal(await page.locator(".cx-sheet-layer").evaluate((layer) => document.elementFromPoint(2, 2) === layer), true, `${title}: backdrop exposed`);
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    assert.equal(await dialog.isVisible(), true, `${title}: input mousedown must not close`);
+    await page.mouse.move(2, 2, { steps: 5 });
+    await page.mouse.up();
+    assert.equal(await dialog.isVisible(), true, `${title}: drag-out must not close`);
+    assert.equal(await input.inputValue(), "unsaved-draft", `${title}: draft preserved`);
+    await page.mouse.down();
+    try { await dialog.waitFor({ state: "hidden" }); } finally { await page.mouse.up(); }
+    checks.push(`${title}: input drag-out preserves draft; backdrop mousedown closes before mouseup`);
+  };
   const userSheet = async (username = "atlas") => { await page.getByRole("button", { name: `操作 ${username}`, exact: true }).click(); return page.getByRole("dialog", { name: username, exact: true }); };
   const packageSheet = async () => { await page.locator('.package-compact-row[data-package-id="1"] .cx-row-more').first().click(); return page.getByRole("dialog", { name: packages[0].name, exact: true }); };
   for (const theme of ["light", "dark"]) {
@@ -162,7 +181,12 @@ try {
       await page.getByRole("dialog").waitFor(); assert.notEqual(await page.getByRole("dialog").getAttribute("aria-label"), "atlas", action);
       await close();
     }
-    await page.getByRole("button", { name: "新增", exact: true }).click(); await page.getByRole("dialog", { name: "新增用户", exact: true }).waitFor(); await close();
+    await page.getByRole("button", { name: "新增", exact: true }).click(); await checkBackdropMouseDown("新增用户");
+    sheet = await userSheet(); await sheet.waitFor();
+    await page.mouse.move(2, 2); await page.mouse.down();
+    assert.equal(await sheet.isVisible(), true, "user action sheet must remain open on backdrop mousedown");
+    await page.mouse.up(); await sheet.waitFor({ state: "hidden" });
+    checks.push("user action sheet still closes on backdrop click, not mousedown");
     sheet = await userSheet("dusk"); assert.ok(await sheet.getByRole("button", { name: "启用 (1)", exact: true }).count()); assert.ok(await sheet.getByRole("button", { name: "重试禁用", exact: true }).count()); assert.ok(await sheet.getByLabel("禁用状态", { exact: true }).count()); await close();
     sheet = await userSheet("ember"); assert.equal(await sheet.getByRole("button", { name: "禁用", exact: true }).count(), 0); assert.match(await sheet.innerText(), /删除未完成，还有 2 个项目待清理/); assert.equal(await sheet.getByRole("button", { name: "+30 天", exact: true }).isDisabled(), true); await close();
     sheet = await userSheet("glade"); assert.equal(await sheet.getByRole("button", { name: "重新绑定上次套餐并续期", exact: true }).isDisabled(), true); assert.match(await sheet.innerText(), /上次套餐已绑定其他用户/); await close();
@@ -177,7 +201,7 @@ try {
     await page.getByRole("button", { name: "按用户", exact: true }).click();
     for (const action of ["编辑", "共享组用量"]) { sheet = await packageSheet(); await sheet.getByRole("button", { name: action, exact: true }).click(); await page.getByRole("dialog").waitFor(); await close(); }
     sheet = await packageSheet(); await sheet.getByText("节点限速配置", { exact: true }).click(); assert.match(await sheet.innerText(), /80 Mbps/); await sheet.getByRole("button", { name: "删除", exact: true }).click(); await page.getByRole("alertdialog").waitFor(); await page.getByRole("button", { name: "取消", exact: true }).click();
-    await page.getByRole("button", { name: "创建", exact: true }).click(); await page.getByRole("dialog", { name: "创建套餐模板", exact: true }).waitFor(); await close();
+    await page.getByRole("button", { name: "创建", exact: true }).click(); await checkBackdropMouseDown("创建套餐模板");
     checks.push("package shared/multi-server/all-nodes groups, search, collapse and grouping storage; editor/usage/delete/create entries");
     assert.equal(requests.filter((request) => request.path === "/api/user/config" && request.method !== "GET").length, 0);
     assert.deepEqual(requests.filter((request) => request.method !== "GET" && request.path !== "/api/v3" && request.path !== "/api/v3u"), [], "preview must be read-only");

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import { ChevronDown, X } from "lucide-react";
 
-export function CompactSheet({ title, subtitle, className = "", onClose, children, footer, header, bodyClassName = "", closeLabel = "关闭面板", dialogRef, onChangeCapture, closeDisabled = false }: { title: string; subtitle?: string; className?: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode; header?: React.ReactNode; bodyClassName?: string; closeLabel?: string; dialogRef?: React.RefObject<HTMLElement | null>; onChangeCapture?: React.FormEventHandler<HTMLElement>; closeDisabled?: boolean }) {
+export function CompactSheet({ title, subtitle, className = "", onClose, children, footer, header, bodyClassName = "", closeLabel = "关闭面板", dialogRef, onChangeCapture, closeDisabled = false, backdropClose = "click" }: { title: string; subtitle?: string; className?: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode; header?: React.ReactNode; bodyClassName?: string; closeLabel?: string; dialogRef?: React.RefObject<HTMLElement | null>; onChangeCapture?: React.FormEventHandler<HTMLElement>; closeDisabled?: boolean; backdropClose?: "click" | "mousedown" }) {
   const localRef = useRef<HTMLElement>(null);
   const ref = dialogRef || localRef;
   useEffect(() => {
@@ -11,8 +11,8 @@ export function CompactSheet({ title, subtitle, className = "", onClose, childre
     ref.current?.focus();
     return () => { document.body.style.overflow = overflow; previous?.focus(); };
   }, []);
-  return <div className="cx-dialog-layer cx-sheet-layer" onClick={onClose}>
-    <section ref={ref} onChangeCapture={onChangeCapture} className={`cx-dialog cx-sheet ${className}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
+  return <div className="cx-dialog-layer cx-sheet-layer" onClick={backdropClose === "click" ? onClose : undefined} onMouseDown={backdropClose === "mousedown" ? onClose : undefined}>
+    <section ref={ref} onChangeCapture={onChangeCapture} className={`cx-dialog cx-sheet ${className}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} onClick={(event) => event.stopPropagation()} onMouseDown={backdropClose === "mousedown" ? (event) => event.stopPropagation() : undefined} onKeyDown={(event) => {
       if ((event.target as HTMLElement).closest('[role="dialog"]') !== ref.current) return;
       if (event.key === "Escape") { event.stopPropagation(); onClose(); }
       if (event.key === "Tab") {

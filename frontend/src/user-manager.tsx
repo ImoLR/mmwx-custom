@@ -596,7 +596,7 @@ function AdminCredentialsDialog({ token, user, lifecycle, repair, onClose, onSav
 }
 
 function DialogShell({ title, subtitle, onClose, children, footer, wide = false }: { title: string; subtitle?: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode; wide?: boolean }) {
-  return <CompactSheet title={title} subtitle={subtitle} onClose={onClose} closeLabel="关闭" className={`user-dialog${wide ? " wide" : ""}`} bodyClassName="user-dialog-body" footer={footer}>{children}</CompactSheet>;
+  return <CompactSheet title={title} subtitle={subtitle} onClose={onClose} backdropClose="mousedown" closeLabel="关闭" className={`user-dialog${wide ? " wide" : ""}`} bodyClassName="user-dialog-body" footer={footer}>{children}</CompactSheet>;
 }
 
 function CreateUserDialog({ token, onClose, onCreated }: { token: string; onClose: () => void; onCreated: (password: string) => Promise<void> }) {
