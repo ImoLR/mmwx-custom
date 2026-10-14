@@ -165,9 +165,11 @@ func (executor *commandExecutor) status(ctx context.Context) agentStatus {
 	if current, err := user.Current(); err == nil {
 		username = current.Username
 	}
-	coreStatus := executor.lifecycle.coreStatus(ctx)
+	var coreStatus componentStatus
 	if executor.state.ExternalOwnership.Enabled {
 		coreStatus = executor.lifecycle.externalOwnedCoreStatus(ctx)
+	} else {
+		coreStatus = executor.lifecycle.coreStatus(ctx)
 	}
 	status := agentStatus{
 		Helper: componentStatus{Installed: true, Prepared: true, Version: helperVersion, BinaryPath: helperBinaryPath, ConfigPath: defaultConfigPath, Service: helperServiceName, Active: serviceActive(ctx, helperServiceName), Ready: true},

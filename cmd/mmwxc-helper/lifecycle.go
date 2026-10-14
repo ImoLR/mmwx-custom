@@ -395,6 +395,9 @@ func writeCoreService() error {
 	if err := os.WriteFile(temporary, []byte(coreServiceUnit), 0644); err != nil {
 		return err
 	}
+	if err := os.Chmod(temporary, 0644); err != nil {
+		return err
+	}
 	if err := os.Rename(temporary, coreServicePath); err != nil {
 		os.Remove(temporary)
 		return err
@@ -880,10 +883,16 @@ func (manager *lifecycleManager) coreStatus(ctx context.Context) componentStatus
 }
 
 func serviceActive(ctx context.Context, service string) bool {
+	if service == coreServiceName {
+		return coreServiceActive(ctx)
+	}
 	return systemctl(ctx, "is-active", "--quiet", service) == nil
 }
 
 func systemctl(ctx context.Context, args ...string) error {
+	if len(args) > 0 && args[0] != "is-active" && args[0] != "is-enabled" {
+		inactiveCoreService.invalidate()
+	}
 	command := exec.CommandContext(ctx, "systemctl", args...)
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))

@@ -309,10 +309,13 @@ ExecStart=/usr/local/bin/mmwxc-helper
 StateDirectory=mmwxc-helper
 Restart=on-failure
 RestartSec=3
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=300
 
 [Install]
 WantedBy=multi-user.target
 EOF
+chmod 644 "$HELPER_UNIT.new"
 mv -f "$HELPER_UNIT.new" "$HELPER_UNIT"
 
 core_was_active=false
@@ -345,6 +348,7 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
+chmod 644 "$CORE_UNIT.new"
 mv -f "$CORE_UNIT.new" "$CORE_UNIT"
 
 core_is_ready() {

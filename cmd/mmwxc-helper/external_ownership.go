@@ -684,6 +684,9 @@ func writeExactFile(path, contents string, mode os.FileMode) error {
 	if err := os.WriteFile(temporary, []byte(contents), mode); err != nil {
 		return err
 	}
+	if err := os.Chmod(temporary, mode); err != nil {
+		return err
+	}
 	if err := os.Rename(temporary, path); err != nil {
 		_ = os.Remove(temporary)
 		return err
@@ -802,6 +805,9 @@ func restoreOwnershipPath(path, directory string, backup ownershipPathBackup) er
 	}
 	if backup.Symlink {
 		return os.Symlink(backup.SymlinkTarget, path)
+	}
+	if path == ownershipDropInPath && exactFileContents(filepath.Join(directory, backup.BackupName), ownershipDropIn) {
+		return writeExactFile(path, ownershipDropIn, 0644)
 	}
 	return copyFile(filepath.Join(directory, backup.BackupName), path, backup.Mode)
 }

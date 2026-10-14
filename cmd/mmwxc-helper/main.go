@@ -148,6 +148,25 @@ func main() {
 		_ = json.NewEncoder(os.Stdout).Encode(snapshot)
 		return
 	}
+	unitsChanged := false
+	for _, unit := range []struct{ path, contents string }{
+		{coreServicePath, coreServiceUnit},
+		{helperServicePath, helperServiceUnit},
+		{ownershipDropInPath, ownershipDropIn},
+	} {
+		changed, err := repairOwnedServiceFile(unit.path, unit.contents)
+		unitsChanged = unitsChanged || changed
+		if err != nil {
+			log.Printf("[mmwxc-helper] unit repair: %v", err)
+		}
+	}
+	if unitsChanged {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := systemctl(ctx, "daemon-reload"); err != nil {
+			log.Printf("[mmwxc-helper] reload repaired units: %v", err)
+		}
+		cancel()
+	}
 
 	periodicLogs := newPeriodicLogLimiter()
 	runOnce := func() {
