@@ -1,3 +1,4 @@
+import { CompactSheet as NodeSheet, CompactSegments, CompactGroupHeader } from "./compact-ui";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DndContext, PointerSensor, TouchSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -671,10 +672,10 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
           <Search />
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索节点、用户、端口" aria-label="搜索节点、用户、端口" />
         </label>
-        <button type="button" className="node-filter-button" onClick={() => setFilterOpen(true)}><Filter />筛选{filterChips.length > 0 && <b>{filterChips.length}</b>}</button>
+        <button type="button" className="cx-filter-button node-filter-button" onClick={() => setFilterOpen(true)}><Filter />筛选{filterChips.length > 0 && <b>{filterChips.length}</b>}</button>
       </section>
-      {filterChips.length > 0 && <div className="node-active-filters">{filterChips.map((chip) => <button key={chip.label} type="button" onClick={chip.clear} title={`移除${chip.label}`}>{chip.label}<X /></button>)}</div>}
-      <div className="node-grouping" aria-label="节点分组">{([["user", "按用户"], ["server", "按服务器"], ["package", "按套餐"], ["none", "不分组"]] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={grouping === value} onClick={() => setGrouping(value)}>{label}</button>)}</div>
+      {filterChips.length > 0 && <div className="cx-active-filters node-active-filters">{filterChips.map((chip) => <button key={chip.label} type="button" onClick={chip.clear} title={`移除${chip.label}`}>{chip.label}<X /></button>)}</div>}
+      <CompactSegments className="node-grouping" label="节点分组" value={grouping} options={[["user", "按用户"], ["server", "按服务器"], ["package", "按套餐"], ["none", "不分组"]]} onChange={setGrouping} />
       {sortMode && <p className="node-sort-hint">{grouping === "none" ? "拖动左侧手柄排序，顺序自动保存。" : <>排序请切换到<button type="button" onClick={() => setGrouping("none")}>不分组</button>视图。</>}</p>}
       {filterOpen && <NodeSheet title="筛选节点" className="node-filter-sheet" onClose={() => setFilterOpen(false)}>
         <NodeSelect icon={<Filter />} value={protocol} onChange={setProtocol} label="协议" options={[{ value: ALL, label: `全部协议 (${nodes.length})` }, ...protocols.map((item) => ({ value: item.value, label: `${item.value.toUpperCase()} (${item.count})` }))]} />
@@ -692,28 +693,23 @@ export function NodeManagementPage({ token, servers, username }: NodeManagementP
           <option value="relay">中转中</option>
           <option value="routed">路由出站</option>
         </select>
-        <div className="node-sheet-footer"><button type="button" onClick={resetFilters}>重置筛选</button><button type="button" className="primary" onClick={() => setFilterOpen(false)}>显示 {filtered.length} 个节点</button></div>
+        <div className="cx-sheet-footer node-sheet-footer"><button type="button" onClick={resetFilters}>重置筛选</button><button type="button" className="primary" onClick={() => setFilterOpen(false)}>显示 {filtered.length} 个节点</button></div>
       </NodeSheet>}
 
-      <section className="node-group-list" aria-label={`节点列表 (${filtered.length})`}>
+      <section className="cx-group-list node-group-list" aria-label={`节点列表 (${filtered.length})`}>
         {loading ? <div className="node-empty"><Loader2 /> 正在读取节点</div> : filtered.length === 0 ? <div className="node-empty">没有符合条件的节点</div> : grouping === "none" ? (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void onDragEnd(event)}>
             <SortableContext items={filtered.map(({ node }) => node.id)} strategy={verticalListSortingStrategy}>
-              <div className={`node-group ${sortMode ? "sorting" : ""}`}>{filtered.map(({ node }) => <SortableNodeCard key={node.id} id={node.id} disabled={!sortMode}>{renderRow(node)}</SortableNodeCard>)}</div>
+              <div className={`cx-group node-group ${sortMode ? "sorting" : ""}`}>{filtered.map(({ node }) => <SortableNodeCard key={node.id} id={node.id} disabled={!sortMode}>{renderRow(node)}</SortableNodeCard>)}</div>
             </SortableContext>
           </DndContext>
         ) : groups.map((group) => {
           const key = `${grouping}:${group.key}`, closed = collapsed.includes(key);
           const relays = group.nodes.filter(isNodeRelay).length;
-          return <section className="node-group" key={group.key}>
-            <div className="node-group-head">
+          return <section className="cx-group node-group" key={group.key}>
+            <CompactGroupHeader name={group.name} subtitle={group.subtitle} avatar={group.key === "admin" ? "我" : undefined} count={<>{group.nodes.length - relays}{relays ? ` + ${relays} 中转` : ""}</>} closed={closed} onToggle={() => setCollapsed((current) => closed ? current.filter((item) => item !== key) : [...current, key])}>
               {selectionMode && <GroupCheckbox checked={group.nodes.every((node) => selected.has(node.id))} mixed={group.nodes.some((node) => selected.has(node.id))} label={`选择 ${group.name} 的节点`} onChange={() => setSelected((current) => toggleNodeSelection(current, group.nodes.map((node) => node.id)))} />}
-              <button type="button" className="node-group-toggle" aria-expanded={!closed} onClick={() => setCollapsed((current) => closed ? current.filter((item) => item !== key) : [...current, key])}>
-                <span className={`node-avatar tone-${group.name.charCodeAt(0) % 5}`}>{group.key === "admin" ? "我" : group.name.slice(0, 1)}</span>
-                <span className="node-group-label"><strong>{group.name}</strong><small title={group.subtitle}>{group.subtitle}</small></span>
-                <span className="node-group-count">{group.nodes.length - relays}{relays ? ` + ${relays} 中转` : ""}</span><ChevronDown className={closed ? "closed" : ""} />
-              </button>
-            </div>
+            </CompactGroupHeader>
             {!closed && nodeRelayRows(group.nodes, owners).map(({ node, children }) => {
               const relayKey = `${key}:${node.id}`, expanded = expandedRelays.has(relayKey);
               return <React.Fragment key={node.id}>
@@ -837,51 +833,25 @@ function CompactNodeRow({ node, displayName, parsed, relay, relayCount, badges, 
   onSelect: () => void; onOpen: () => void; ownerHint: string; packageNames: string;
 }) {
   const protocol = normalizeProtocol(node.protocol || stringValue(parsed.type));
-  return <article className={`node-compact-row${relay ? " is-relay" : ""}${relayCount ? " has-relays" : ""}${selected && selectionMode ? " selected" : ""}`} data-node-id={node.id}>
+  return <article className={`cx-row node-compact-row${relay ? " is-relay" : ""}${relayCount ? " has-relays" : ""}${selected && selectionMode ? " selected" : ""}`} data-node-id={node.id}>
     {selectionMode && <input type="checkbox" checked={selected} onChange={onSelect} aria-label={`选择 ${node.node_name}`} />}
     <span className={`node-status-dot ${node.enabled === false ? "off" : "on"}`} title={node.enabled === false ? "已禁用" : "已启用"} />
-    <div className="node-row-content">
-      <div className="node-row-title">{relay && <span className="node-row-relay"><Route aria-hidden="true" />中转</span>}<button className="node-row-name" type="button" onClick={onOpen} title={`${node.node_name}\n${ownerHint}`}>{displayName}</button>
+    <div className="cx-row-content node-row-content">
+      <div className="cx-row-title node-row-title">{relay && <span className="node-row-relay"><Route aria-hidden="true" />中转</span>}<button className="cx-row-name node-row-name" type="button" onClick={onOpen} title={`${node.node_name}\n${ownerHint}`}>{displayName}</button>
         <span className={`node-row-latency ${latency?.ok ? "ok" : latency ? "bad" : ""}`} title={latency?.text}>{latency?.loading ? "测试中" : latency?.ok ? latency.text : latency ? "失败" : "—"}</span>
-        <button type="button" className="node-row-more" aria-label={`操作 ${node.node_name}`} onClick={onOpen}><MoreHorizontal /></button>
+        <button type="button" className="cx-row-more node-row-more" aria-label={`操作 ${node.node_name}`} onClick={onOpen}><MoreHorizontal /></button>
       </div>
       <div className="node-row-address">{nodeDisplayAddress(stringValue(parsed.server), stringValue(parsed.port))}</div>
       <div className="node-row-meta">
         <span className="node-row-protocol">{protocol.toUpperCase() || "NODE"}</span>
         <span className="node-row-server" title={node.original_server}>{node.original_server || "外部节点"}</span>
-        {badges.map((badge) => <span key={badge.tone} className={`node-row-tag ${badge.tone}`} title={badge.title}>{badge.text}</span>)}
+        {badges.map((badge) => <span key={badge.tone} className={`cx-tag node-row-tag ${badge.tone}`} title={badge.title}>{badge.text}</span>)}
         <span className="node-row-desktop" title={packageNames}>{stringValue(parsed.network || parsed.transport) || "tcp"}{packageNames && ` · ${packageNames}`}</span>
       </div>
     </div>
   </article>;
 }
 
-function NodeSheet({ title, subtitle, className = "", onClose, children }: { title: string; subtitle?: string; className?: string; onClose: () => void; children: React.ReactNode }) {
-  const ref = useRef<HTMLElement>(null);
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const overflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    ref.current?.focus();
-    return () => { document.body.style.overflow = overflow; previous?.focus(); };
-  }, []);
-  return <div className="node-dialog-layer node-sheet-layer" onClick={onClose}>
-    <section ref={ref} className={`node-dialog node-sheet ${className}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
-      if ((event.target as HTMLElement).closest('[role="dialog"]') !== ref.current) return;
-      if (event.key === "Escape") { event.stopPropagation(); onClose(); }
-      if (event.key === "Tab") {
-        const elements = [...ref.current!.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]')].filter((element) => element.getClientRects().length > 0);
-        const first = elements[0], last = elements[elements.length - 1];
-        if (event.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) { event.preventDefault(); last?.focus(); }
-        else if (!event.shiftKey && (document.activeElement === last || document.activeElement === ref.current)) { event.preventDefault(); first?.focus(); }
-      }
-    }}>
-      <div className="node-sheet-grab" />
-      <header><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button type="button" onClick={onClose} aria-label="关闭面板"><X /></button></header>
-      <div className="node-dialog-body">{children}</div>
-    </section>
-  </div>;
-}
 
 function SortableNodeCard({ id, disabled, children }: { id: number; disabled: boolean; children: React.ReactNode }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled });
@@ -948,17 +918,17 @@ function NodeActionSheet({
   return <NodeSheet title={node.node_name} subtitle={`${protocol.toUpperCase()} · ${node.original_server || "外部节点"} · ${stringValue(parsed.server)}:${stringValue(parsed.port)} · ${packageNames || "未加入套餐"}`} onClose={onClose} className="node-action-sheet">
     <p className="node-owner-hint">{ownerHint}</p>
     {notice && <NodeNotice notice={notice} />}
-    <div className="node-quick-actions">
+    <div className="cx-quick-actions node-quick-actions">
       <button type="button" onClick={onCopy}><Copy />复制 URI</button>
       <button type="button" onClick={onTcping}><Zap />测延迟</button>
       <button type="button" disabled={speedBusy} onClick={onSpeed}><Zap />测速</button>
       <button type="button" onClick={managed ? onEditInbound : onEdit}><Edit3 />编辑</button>
     </div>
     {latency && <p className={latency.ok ? "node-ok" : "node-error"}>TCPing：{latency.text}</p>}
-    <h3 className="node-sheet-section">路由与中转</h3>
+    <h3 className="cx-sheet-section node-sheet-section">路由与中转</h3>
     {extraActions}
     <details className="node-sheet-submenu"><summary>节点路由 · 链式出站 · 中转组</summary>
-      <div className="node-sheet-items">
+      <div className="cx-sheet-items node-sheet-items">
         {onRouting && <button type="button" onClick={onRouting}><Route />节点路由</button>}
         <button type="button" onClick={onChain}><Link2 />链式出站</button>
         <button type="button" onClick={onRelayGroup}><Link2 />中转组</button>
@@ -966,7 +936,7 @@ function NodeActionSheet({
         {node.inbound_tag && node.node_type !== "routed" && <button type="button" onClick={onCancelWholeOutbound}><Route />取消整个节点出站</button>}
       </div>
     </details>
-    <h3 className="node-sheet-section">更多</h3>
+    <h3 className="cx-sheet-section node-sheet-section">更多</h3>
     <div className="node-sheet-package"><span>套餐归属</span>{packageAction}</div>
     <details className="node-sheet-submenu"><summary>测速历史 · 探测与状态</summary>
       <div className="node-action-details"><div className="node-chip-row node-card-badges">{extras}
@@ -980,7 +950,7 @@ function NodeActionSheet({
       {speedActions}
     </details>
     <details className="node-sheet-submenu"><summary>查看配置 · 临时订阅 · 更多</summary>
-      <div className="node-sheet-items">
+      <div className="cx-sheet-items node-sheet-items">
         <button type="button" onClick={onEdit}><Edit3 />编辑名称 / 中转配置</button>
         {managed && <button type="button" onClick={onEditInbound}><Edit3 />编辑节点</button>}
         <button type="button" onClick={onDetails}><Eye />查看配置</button>
