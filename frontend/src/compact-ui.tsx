@@ -1,8 +1,9 @@
 import React, { useEffect, useRef } from "react";
 import { ChevronDown, X } from "lucide-react";
 
-export function CompactSheet({ title, subtitle, className = "", onClose, children, footer, header, bodyClassName = "", closeLabel = "关闭面板" }: { title: string; subtitle?: string; className?: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode; header?: React.ReactNode; bodyClassName?: string; closeLabel?: string }) {
-  const ref = useRef<HTMLElement>(null);
+export function CompactSheet({ title, subtitle, className = "", onClose, children, footer, header, bodyClassName = "", closeLabel = "关闭面板", dialogRef, onChangeCapture, closeDisabled = false }: { title: string; subtitle?: string; className?: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode; header?: React.ReactNode; bodyClassName?: string; closeLabel?: string; dialogRef?: React.RefObject<HTMLElement | null>; onChangeCapture?: React.FormEventHandler<HTMLElement>; closeDisabled?: boolean }) {
+  const localRef = useRef<HTMLElement>(null);
+  const ref = dialogRef || localRef;
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const overflow = document.body.style.overflow;
@@ -11,7 +12,7 @@ export function CompactSheet({ title, subtitle, className = "", onClose, childre
     return () => { document.body.style.overflow = overflow; previous?.focus(); };
   }, []);
   return <div className="cx-dialog-layer cx-sheet-layer" onClick={onClose}>
-    <section ref={ref} className={`cx-dialog cx-sheet ${className}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
+    <section ref={ref} onChangeCapture={onChangeCapture} className={`cx-dialog cx-sheet ${className}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
       if ((event.target as HTMLElement).closest('[role="dialog"]') !== ref.current) return;
       if (event.key === "Escape") { event.stopPropagation(); onClose(); }
       if (event.key === "Tab") {
@@ -22,7 +23,7 @@ export function CompactSheet({ title, subtitle, className = "", onClose, childre
       }
     }}>
       <div className="cx-sheet-grab" />
-      <header><div>{header || <h2>{title}</h2>}{subtitle && <p>{subtitle}</p>}</div><button type="button" onClick={onClose} aria-label={closeLabel}><X /></button></header>
+      <header><div>{header || <h2>{title}</h2>}{subtitle && <p>{subtitle}</p>}</div><button type="button" disabled={closeDisabled} onClick={onClose} aria-label={closeLabel}><X /></button></header>
       <div className={`cx-dialog-body ${bodyClassName}`}>{children}</div>{footer && <footer className="cx-sheet-footer">{footer}</footer>}
     </section>
   </div>;

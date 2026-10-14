@@ -1,4 +1,4 @@
-import type { ManagedPackage, PackagePayload, PackageAutoSpeedRule, RemoteServer, XrayNode } from "./types";
+import type { ManagedPackage, ManagedUser, PackagePayload, PackageAutoSpeedRule, RemoteServer, XrayNode } from "./types";
 
 export const emptyPackage = (): PackagePayload => ({
   name: "",
@@ -123,4 +123,42 @@ export function updatePackageNodeOverride(form: PackagePayload, key: "node_multi
     else if (Number.isFinite(parsed) && parsed >= 0) values[node.id] = parsed;
   }
   return { ...form, [key]: values };
+}
+
+export type PackageGrouping = "user" | "server" | "none";
+export type CompactPackageGroup = { key: string; name: string; packages: ManagedPackage[] };
+
+export function packageBoundUsers(pkg: ManagedPackage, users: ManagedUser[]) {
+  return users.filter((user) => user.role !== "admin" && (user.package_id === pkg.id || user.assignment_package_ids?.includes(pkg.id)));
+}
+
+export function packageServers(pkg: ManagedPackage, nodes: XrayNode[]) {
+  return [...new Set((pkg.nodes ?? []).map((id) => nodes.find((node) => node.id === id)?.original_server || "外部节点"))];
+}
+
+export function groupPackages(packages: ManagedPackage[], users: ManagedUser[], nodes: XrayNode[], grouping: PackageGrouping): CompactPackageGroup[] {
+  if (grouping === "none") return [{ key: "all", name: "全部套餐", packages }];
+  const groups = new Map<string, CompactPackageGroup>();
+  for (const pkg of packages) {
+    const keys = grouping === "user"
+      ? packageBoundUsers(pkg, users).map((user) => ({ key: `user:${user.username}`, name: user.username }))
+      : packageServers(pkg, nodes).map((name) => ({ key: `server:${name}`, name }));
+    if (!keys.length) keys.push(grouping === "user" ? { key: "unbound", name: "未绑定" } : { key: "all-nodes", name: "全部节点" });
+    for (const { key, name } of keys) {
+      const group = groups.get(key) || { key, name, packages: [] };
+      group.packages.push(pkg);
+      groups.set(key, group);
+    }
+  }
+  return [...groups.values()].sort((a, b) => Number(a.key === "unbound") - Number(b.key === "unbound") || a.name.localeCompare(b.name));
+}
+
+export function searchPackages(packages: ManagedPackage[], nodes: XrayNode[], query: string) {
+  const term = query.trim().toLowerCase();
+  if (!term) return packages;
+  return packages.filter((pkg) => [pkg.name, pkg.short_code, pkg.description, ...nodes.filter((node) => !pkg.nodes?.length || pkg.nodes.includes(node.id)).map((node) => node.node_name)].some((text) => text?.toLowerCase().includes(term)));
+}
+
+export function packageOverrideCount(pkg: ManagedPackage) {
+  return new Set([pkg.node_speed_limits, pkg.node_device_limits, pkg.node_traffic_limits, pkg.node_multipliers, pkg.node_name_overrides].flatMap((values) => Object.keys(values ?? {}))).size;
 }

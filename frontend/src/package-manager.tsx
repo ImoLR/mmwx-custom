@@ -6,9 +6,8 @@ import {
   Boxes,
   Edit3,
   GripVertical,
-  LayoutGrid,
-  List,
-  PackagePlus,
+  Search,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   Save,
@@ -26,6 +25,7 @@ import {
   deletePackage,
   fetchPackageForwardChains,
   fetchPackages,
+  fetchManagedUsers,
   fetchUserConfig,
   fetchPackageTemplates,
   fetchPackageTrafficGroups,
@@ -37,6 +37,7 @@ import {
 } from "./api";
 import type {
   ManagedPackage,
+  ManagedUser,
   PackageForwardChain,
   PackagePayload,
   PackageTemplate,
@@ -48,6 +49,11 @@ import type {
 import { TRAFFIC_GB, retainTrafficGroupNodes, trafficGroupDraft, trafficGroupNodeWarning, trafficGroupPayload, trafficGroupUsageStatus, validateTrafficGroups } from "./package-traffic-groups";
 import type { PackageTrafficGroupDraft } from "./package-traffic-groups";
 import { emptyPackage, packageToForm, packageTemplateType, orderPackageNodes, packageResetDay, packageMemberNodeIds, newAutoSpeedRule, validatePackage, updatePackageNodeOverride } from "./package-manager-logic";
+
+import { CompactSheet, CompactSegments, CompactGroupHeader } from "./compact-ui";
+import { groupPackages, packageBoundUsers, packageServers, searchPackages, packageOverrideCount, type PackageGrouping } from "./package-manager-logic";
+import { nodeDisplayName } from "./node-manager-logic";
+import { serverRegionFromFields } from "./geo";
 
 type Notice = { tone: "success" | "error" | "info"; text: string } | null;
 type ConfirmState = { kind: "delete"; pkg: ManagedPackage } | null;
@@ -62,7 +68,17 @@ export function PackageManagementPage({ token }: { token: string }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
-  const [view, setView] = useState<"cards" | "list">(() => localStorage.getItem("packages-view-mode") === "list" ? "list" : "cards");
+  const [users, setUsers] = useState<ManagedUser[]>([]);
+  const [usersError, setUsersError] = useState("");
+  const [query, setQuery] = useState("");
+  const [grouping, setGrouping] = useState<PackageGrouping>(() => {
+    const value = localStorage.getItem("mmwx-package-grouping");
+    return value === "server" || value === "none" ? value : "user";
+  });
+  const [collapsed, setCollapsed] = useState<string[]>(() => {
+    try { const value = JSON.parse(localStorage.getItem("mmwx-package-collapsed") || "[]"); return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []; } catch { return []; }
+  });
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [editor, setEditor] = useState<{ pkg?: ManagedPackage } | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [groupCounts, setGroupCounts] = useState<Record<number, number>>({});
@@ -71,7 +87,7 @@ export function PackageManagementPage({ token }: { token: string }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [packageResult, nodeResult, serverResult, templateResult, chainResult, configResult, allNodeResult] = await Promise.all([
+      const [packageResult, nodeResult, serverResult, templateResult, chainResult, configResult, allNodeResult, userResult] = await Promise.all([
         fetchPackages(token),
         fetchXrayNodes(token),
         fetchRemoteServers(token),
@@ -79,8 +95,11 @@ export function PackageManagementPage({ token }: { token: string }) {
         fetchPackageForwardChains(token).catch(() => ({ chains: [] })),
         fetchUserConfig(token).catch(() => ({ node_order: [] })),
         fetchXrayNodes(token, true),
+        fetchManagedUsers(token).then((result) => ({ users: result.users ?? [], error: "" })).catch(() => ({ users: null, error: "用户绑定读取失败，请刷新后核对分组" })),
       ]);
       setPackages(packageResult.packages ?? []);
+      if (userResult.users) setUsers(userResult.users);
+      setUsersError(userResult.error);
       const availableNodes = nodeResult.nodes ?? [];
       const nodeOrder = orderPackageNodes(availableNodes.map((node) => node.id), configResult.node_order ?? []);
       setNodes(nodeOrder.map((id) => availableNodes.find((node) => node.id === id)!));
@@ -106,6 +125,17 @@ export function PackageManagementPage({ token }: { token: string }) {
 
   const nodeById = useMemo(() => new Map(allNodes.map((node) => [node.id, node])), [allNodes]);
 
+  useEffect(() => { localStorage.setItem("mmwx-package-grouping", grouping); }, [grouping]);
+  useEffect(() => { localStorage.setItem("mmwx-package-collapsed", JSON.stringify(collapsed)); }, [collapsed]);
+  const visible = useMemo(() => searchPackages(packages, allNodes, query), [packages, allNodes, query]);
+  const groups = useMemo(() => groupPackages(visible, users, allNodes, grouping), [visible, users, allNodes, grouping]);
+  const selectedPackage = packages.find((pkg) => pkg.id === selectedId);
+  function displayNode(node: XrayNode) {
+    const flag = node.node_name.match(/^[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0];
+    const server = servers.find((server) => server.name === node.original_server);
+    return nodeDisplayName(node.node_name, flag ? serverRegionFromFields({ id: 0, name: "", flag }) : server ? serverRegionFromFields(server) : null);
+  }
+
   async function handleConfirm() {
     if (!confirm || busy) return;
     const key = `${confirm.kind}-${confirm.pkg.id}`;
@@ -122,48 +152,12 @@ export function PackageManagementPage({ token }: { token: string }) {
     }
   }
 
-  return (
-    <div className="package-manager">
-      <section className="package-hero">
-        <div>
-          <h1>套餐模板管理</h1>
-          <p>管理流量套餐模板，可在用户管理中为用户分配套餐</p>
-        </div>
-        <div className="package-head-actions">
-          <button type="button" onClick={() => void load()} aria-label="刷新套餐" title="刷新套餐"><RefreshCw /></button>
-          <button className="primary" type="button" onClick={() => setEditor({})}><PackagePlus /><span>创建套餐模板</span></button>
-        </div>
-      </section>
-
-      {notice && <div className={`package-notice ${notice.tone}`}><span>{notice.text}</span><button type="button" onClick={() => setNotice(null)} aria-label="关闭提示"><X /></button></div>}
-
-      <section className="package-toolbar" aria-label="套餐显示方式">
-        <strong>套餐模板（{packages.length}）</strong>
-        <div>
-          <button className={view === "cards" ? "active" : ""} type="button" onClick={() => { setView("cards"); localStorage.setItem("packages-view-mode", "cards"); }} aria-label="卡片视图"><LayoutGrid /></button>
-          <button className={view === "list" ? "active" : ""} type="button" onClick={() => { setView("list"); localStorage.setItem("packages-view-mode", "list"); }} aria-label="列表视图"><List /></button>
-        </div>
-      </section>
-
-      {loading ? <div className="package-empty">正在读取套餐...</div> : packages.length === 0 ? (
-        <div className="package-empty"><Boxes /><strong>还没有套餐</strong><span>点击“创建套餐”开始配置</span></div>
-      ) : (
-        <div className={`package-list ${view}`}>
-          {packages.map((pkg) => {
-            const linked = (pkg.nodes ?? []).map((id) => nodeById.get(id) ?? { id, node_name: `(已删除 #${id})` } as XrayNode);
-            const overrides = new Set([
-              ...Object.keys(pkg.node_speed_limits ?? {}),
-              ...Object.keys(pkg.node_device_limits ?? {}),
-              ...Object.keys(pkg.node_traffic_limits ?? {}),
-              ...Object.keys(pkg.node_multipliers ?? {}),
-              ...Object.keys(pkg.node_name_overrides ?? {}),
-            ]).size;
-            return (
-              <article className="package-card" key={pkg.id}>
-                <header>
-                  <div><h2>{pkg.name}</h2><p>{pkg.description || "暂无说明"}</p></div>
-                  {pkg.short_code && <span className="package-code">{pkg.short_code}</span>}
-                </header>
+  function renderPackageSheet(pkg: ManagedPackage) {
+    const linked = (pkg.nodes ?? []).map((id) => nodeById.get(id) ?? { id, node_name: `(已删除 #${id})` } as XrayNode);
+    const overrides = packageOverrideCount(pkg);
+    return <CompactSheet title={pkg.name} subtitle={[pkg.short_code, pkg.description || "暂无说明"].filter(Boolean).join(" · ")} onClose={() => setSelectedId(null)} className="package-action-sheet">
+      <div className="cx-quick-actions package-quick-actions"><button type="button" onClick={() => { setSelectedId(null); setEditor({ pkg }); }}><Edit3 />编辑</button><button type="button" onClick={() => { setSelectedId(null); setUsagePackage(pkg); }}><Share2 />共享组用量</button></div>
+      <h3 className="cx-sheet-section">详情</h3>
                 <div className="package-facts">
                   <PackageFact label="流量额度" value={pkg.traffic_limit_gb > 0 ? `${formatNumber(pkg.traffic_limit_gb)} GB` : "不限"} />
                   <PackageFact label="计量周期" value={`${pkg.cycle_days} 天`} />
@@ -183,18 +177,50 @@ export function PackageManagementPage({ token }: { token: string }) {
                     <span>{linked.length > 0 ? linked.map((node) => node.node_name).join("、") : "未指定节点，使用全部节点"}</span>
                   </div>
                 </div>
-                {linked.length > 0 && <details className="package-node-details"><summary>节点限速配置</summary>{linked.map((node) => <div key={node.id}><strong>{node.node_name}</strong><span>{(pkg.node_speed_limits?.[node.id] ?? pkg.speed_limit_mbps) > 0 ? `${formatNumber(pkg.node_speed_limits?.[node.id] ?? pkg.speed_limit_mbps)} Mbps` : "不限速"} · {(pkg.node_device_limits?.[node.id] ?? pkg.device_limit) > 0 ? `${pkg.node_device_limits?.[node.id] ?? pkg.device_limit} 连接` : "连接数不限"}</span></div>)}</details>}
+                <h3 className="cx-sheet-section">节点</h3>
+                <div className="package-sheet-nodes">{(linked.length ? linked : allNodes).map((node) => <div key={node.id} title={node.node_name}>{displayNode(node)}</div>)}</div>
+                {linked.length > 0 && <details className="package-node-details"><summary>节点限速配置</summary>{linked.map((node) => <div key={node.id}><strong title={node.node_name}>{displayNode(node)}</strong><span>{(pkg.node_speed_limits?.[node.id] ?? pkg.speed_limit_mbps) > 0 ? `${formatNumber(pkg.node_speed_limits?.[node.id] ?? pkg.speed_limit_mbps)} Mbps` : "不限速"} · {(pkg.node_device_limits?.[node.id] ?? pkg.device_limit) > 0 ? `${pkg.node_device_limits?.[node.id] ?? pkg.device_limit} 连接` : "连接数不限"}</span></div>)}</details>}
                 {pkg.forward_rule_limit > 0 && <div className="package-forward-summary"><Share2 />转发：{pkg.forward_rule_limit} 条规则 · {pkg.forward_port_limit || "不限"} 端口 · {(pkg.forward_chains ?? []).length} 条链</div>}
-                <footer>
-                  <button type="button" onClick={() => setEditor({ pkg })}><Edit3 />编辑</button>
-                  <button type="button" onClick={() => setUsagePackage(pkg)}><Share2 />共享组用量</button>
-                  <button className="danger" type="button" onClick={() => setConfirm({ kind: "delete", pkg })}><Trash2 />删除</button>
-                </footer>
-              </article>
-            );
-          })}
-        </div>
-      )}
+
+      <button className="danger package-sheet-delete" type="button" onClick={() => { setSelectedId(null); setConfirm({ kind: "delete", pkg }); }}><Trash2 />删除</button>
+    </CompactSheet>;
+  }
+
+  return (
+    <div className="package-manager cx-manager" aria-busy={loading}>
+      <section className="cx-hero"><h1>套餐 <small>{packages.length}</small></h1><button type="button" onClick={() => void load()} aria-label="刷新套餐"><RefreshCw /></button><button className="primary" type="button" onClick={() => setEditor({})}><Plus />创建</button></section>
+      {notice && <div className={`package-notice ${notice.tone}`}><span>{notice.text}</span><button type="button" onClick={() => setNotice(null)} aria-label="关闭提示"><X /></button></div>}
+      {usersError && <p className="package-notice error">{usersError}</p>}
+      <section className="cx-toolbar"><label className="cx-search"><Search /><input aria-label="搜索套餐" placeholder="搜索套餐、短码、说明或节点" value={query} onChange={(event) => setQuery(event.target.value)} /></label></section>
+      <CompactSegments label="套餐分组" value={grouping} options={[["user", "按用户"], ["server", "按服务器"], ["none", "不分组"]]} onChange={setGrouping} />
+      {loading ? <div className="package-empty">正在读取套餐...</div> : !visible.length ? <div className="package-empty"><Boxes /><strong>{packages.length ? "没有符合条件的套餐" : "还没有套餐"}</strong></div> : <section className="cx-group-list" aria-label="套餐列表">
+        {groups.map((group) => {
+          const key = `${grouping}:${group.key}`, closed = collapsed.includes(key);
+          return <div className="cx-group" key={key}>
+            {grouping !== "none" && <CompactGroupHeader name={group.name} count={group.packages.length} closed={closed} onToggle={() => setCollapsed((current) => closed ? current.filter((item) => item !== key) : [...current, key])} />}
+            {(!closed || grouping === "none") && group.packages.map((pkg) => {
+              const bound = packageBoundUsers(pkg, users), linkedServers = packageServers(pkg, allNodes), overrides = packageOverrideCount(pkg);
+              const open = () => setSelectedId(pkg.id);
+              return <article className="cx-row package-compact-row" key={pkg.id} data-package-id={pkg.id} onClick={open}>
+                <div className="cx-row-content">
+                  <div className="cx-row-title"><button className="cx-row-name" type="button" title={pkg.name} onClick={(event) => { event.stopPropagation(); open(); }}>{pkg.name}</button>{pkg.short_code && <span className="cx-tag package-row-code">{pkg.short_code}</span>}{grouping === "user" && bound.length > 1 && <span className="cx-tag shared">共用</span>}{grouping === "server" && linkedServers.length > 1 && <span className="cx-tag shared">多服务器</span>}<button type="button" className="cx-row-more" aria-label={`操作 ${pkg.name}`} onClick={(event) => { event.stopPropagation(); open(); }}><MoreHorizontal /></button></div>
+                  <div className="package-row-cycle">{pkg.traffic_limit_gb > 0 ? `${formatNumber(pkg.traffic_limit_gb)} GB` : "不限"} · {pkg.cycle_days} 天 · {pkg.is_reset ? `每月 ${pkg.reset_day} 日重置` : "不重置"} · {pkg.traffic_mode === "twoway" ? "双向×2" : "单向"}</div>
+                  <div className="package-row-meta">
+                    <span className="package-row-nodes" title={linkedServers.join("、")}>{pkg.nodes?.length || allNodes.length} 个节点{linkedServers.length ? ` · ${linkedServers.join(" / ")}` : " · 全部节点"}</span>
+                    <span className="package-row-users" title={bound.map((user) => user.username).join("、")}>{usersError ? "绑定待核对" : bound.map((user) => user.username).join("、") || "未绑定"}</span>
+                    {(groupCounts[pkg.id] ?? 0) > 0 && <span className="cx-tag">共享组 {groupCounts[pkg.id]}</span>}
+                    {groupCounts[pkg.id] === undefined && <span className="cx-tag bad">共享组待核对</span>}
+                    {overrides > 0 && <span className="cx-tag">节点覆盖 {overrides}</span>}
+                    {(pkg.speed_limit_mbps > 0 || pkg.device_limit > 0) && <span className="cx-tag">{[pkg.speed_limit_mbps > 0 ? "限速" : "", pkg.device_limit > 0 ? "连接" : ""].filter(Boolean).join("/")}</span>}
+                    {pkg.forward_rule_limit > 0 && <span className="cx-tag">转发</span>}
+                  </div>
+                </div>
+              </article>;
+            })}
+          </div>;
+        })}
+      </section>}
+      {selectedPackage && renderPackageSheet(selectedPackage)}
 
       {editor && (
         <PackageEditor
@@ -392,10 +418,8 @@ function PackageEditor({ token, pkg, nodes, allNodes, servers, templates, chains
   }
 
   return (
-    <div className="package-dialog-layer" role="presentation" onMouseDown={() => { if (!saving) onClose(); }}>
-      <section ref={editorRef} className="package-editor" role="dialog" aria-modal="true" onChangeCapture={(event) => { if (event.target instanceof HTMLInputElement && event.target.type === "number") event.target.dataset.edited = "true"; }} aria-label={pkg ? "编辑套餐模板" : "创建套餐模板"} onMouseDown={(event) => event.stopPropagation()}>
-        <header><div><h2>{pkg ? "编辑套餐模板" : "创建套餐模板"}</h2><p>配置套餐额度、节点、模板、限速与转发权限</p></div><button type="button" disabled={saving} onClick={onClose} aria-label="关闭"><X /></button></header>
-        <div className="package-editor-body">
+    <>
+      <CompactSheet dialogRef={editorRef} className="package-editor" title={pkg ? "编辑套餐模板" : "创建套餐模板"} subtitle="配置套餐额度、节点、模板、限速与转发权限" closeLabel="关闭" closeDisabled={saving} onClose={() => { if (!saving) { if (confirmEmptyNodes) setConfirmEmptyNodes(false); else onClose(); } }} bodyClassName="package-editor-body" onChangeCapture={(event) => { if (event.target instanceof HTMLInputElement && event.target.type === "number") event.target.dataset.edited = "true"; }} footer={<><button type="button" disabled={saving} onClick={onClose}>取消</button><button className="primary" type="button" disabled={saving || groupsLoading || Boolean(groupsError) || creationUnresolved} onClick={() => void save()}><Save />{saving ? "保存中..." : "保存套餐"}</button></>}>
           {error && <div className="package-notice error"><span>{error}</span></div>}
           {pkg && <p className="package-section-note">节点与额度配置修改会影响已绑定用户；计量周期和默认重置日期的修改不会重写已有分配的有效期与重置设置。</p>}
           <fieldset className="package-form-section" disabled={saving}>
@@ -522,11 +546,9 @@ function PackageEditor({ token, pkg, nodes, allNodes, servers, templates, chains
             <p className="package-field-help">流量采集和检查存在数分钟延迟。新建或修改成员后，请在“共享组用量”中确认每个节点的执行状态。</p>
           </fieldset>
           {groupsError && <div className="package-notice error"><span>读取共享组失败，暂时不能保存套餐：{groupsError}</span><button type="button" onClick={() => void loadGroups()}>重试</button></div>}
-        </div>
-        <footer><button type="button" disabled={saving} onClick={onClose}>取消</button><button className="primary" type="button" disabled={saving || groupsLoading || Boolean(groupsError) || creationUnresolved} onClick={() => void save()}><Save />{saving ? "保存中..." : "保存套餐"}</button></footer>
-      </section>
+      </CompactSheet>
       {confirmEmptyNodes && <div className="package-dialog-layer" role="presentation" onMouseDown={(event) => event.stopPropagation()}><section className="package-confirm-dialog" role="alertdialog" aria-modal="true" aria-label="未选择任何节点"><AlertTriangle /><h2>未选择任何节点</h2><p>这个套餐没有勾选任何关联节点。留空表示「包含全部节点」—— 绑定该套餐的用户将可以使用所有节点，而不是拿不到节点。确认要这样保存吗？</p><div><button type="button" onClick={() => setConfirmEmptyNodes(false)}>取消</button><button className="primary" type="button" onClick={() => void save(true)}>确认保存</button></div></section></div>}
-    </div>
+    </>
   );
 }
 
@@ -554,10 +576,7 @@ function PackageTrafficUsageDialog({ token, pkg, onClose }: { token: string; pkg
     return <li key={node.node_id} className={warning ? "package-group-warning" : ""}><strong>{node.node_name || `节点 ${node.node_id}`}</strong><span>{node.server_name || "外部节点"} · {warning || "可执行共享组额度"}</span></li>;
   }
 
-  return <div className="package-dialog-layer" role="presentation" onMouseDown={onClose}>
-    <section className="package-editor" role="dialog" aria-modal="true" aria-label="共享组用量" onMouseDown={(event) => event.stopPropagation()}>
-      <header><div><h2>共享组用量</h2><p>{pkg.name} · 按用户当前套餐周期统计</p></div><button type="button" onClick={onClose} aria-label="关闭"><X /></button></header>
-      <div className="package-editor-body">
+  return <CompactSheet title="共享组用量" subtitle={`${pkg.name} · 按用户当前套餐周期统计`} onClose={onClose} closeLabel="关闭" className="package-editor" bodyClassName="package-editor-body" footer={<><button type="button" onClick={onClose}>关闭</button><button type="button" disabled={loading} onClick={() => void load()}><RefreshCw />刷新用量</button></>}>
         <p className="package-section-note">流量采集和额度检查可能延迟数分钟。未具备执行能力的节点会继续产生流量，请检查下方状态。</p>
         {error && <div className="package-notice error"><span>{error}</span></div>}
         {loading ? <p className="package-field-help">正在读取共享组用量...</p> : !error && (data?.usage?.length ? data.usage.map((row) => {
@@ -573,10 +592,7 @@ function PackageTrafficUsageDialog({ token, pkg, onClose }: { token: string; pkg
           </article>;
         }) : <p className="package-field-help">暂无绑定用户的共享组用量。</p>)}
         {!loading && !error && data?.nodes?.some((node) => node.status !== "enforced") && <div className="package-form-section"><strong>节点执行提醒</strong><ul className="package-group-node-status">{data.nodes.filter((node) => node.status !== "enforced").map(nodeStatus)}</ul></div>}
-      </div>
-      <footer><button type="button" onClick={onClose}>关闭</button><button type="button" disabled={loading} onClick={() => void load()}><RefreshCw />刷新用量</button></footer>
-    </section>
-  </div>;
+  </CompactSheet>;
 }
 
 function formatCycleDate(value: string | null) {
