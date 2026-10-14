@@ -126,7 +126,7 @@ export function managedUserStatus(user: ManagedUser, lifecycle?: ManagedUserLife
   return { admin, officialInactive, deleting, pending, accessState, accessDisabled, accessPending, enableAction, displayedStatus };
 }
 
-export function matchesUserQuickFilter(user: ManagedUser, filter: UserQuickFilter, lifecycle?: ManagedUserLifecycle, lastPackage?: ManagedUserExpiredPackage, ManagedUserLifecycle, now = Date.now()) {
+export function matchesUserQuickFilter(user: ManagedUser, filter: UserQuickFilter, lifecycle?: ManagedUserLifecycle, lastPackage?: ManagedUserExpiredPackage, now = Date.now()) {
   if (filter === "all") return true;
   if (filter === "disabled") {
     const status = managedUserStatus(user, lifecycle);
@@ -150,7 +150,7 @@ export function sortManagedUsers(users: ManagedUser[], sort: UserSort, expiredPa
     || (sort === "expiry" ? (end(a) - end(b) || 0) : 0) || a.username.localeCompare(b.username));
 }
 
-export function userRowTags(user: ManagedUser, lifecycle?: ManagedUserLifecycle, expiredPackage?: ManagedUserExpiredPackage, ManagedUserLifecycle, now = Date.now()) {
+export function userRowTags(user: ManagedUser, lifecycle?: ManagedUserLifecycle, expiredPackage?: ManagedUserExpiredPackage, now = Date.now()) {
   const status = managedUserStatus(user, lifecycle);
   const lastPackage = expiredUnboundPackage(user, expiredPackage);
   const days = remainingDays(user.package_end_date, now);

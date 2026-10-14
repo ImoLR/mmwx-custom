@@ -2,28 +2,28 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { credentialWriteState, expiredUnboundPackage, rebindPackageInput, parseRenewDays, renewedDate, eligiblePackages, parseTrafficOverride, remainingDays, matchesExpiry } from "../../frontend/src/user-manager-logic.ts";
+import { credentialWriteState, expiredUnboundPackage, rebindPackageInput, parseRenewDays, renewedDate, eligiblePackages, parseTrafficOverride, remainingDays, matchesExpiry, managedUserStatus, sortManagedUsers, matchesUserQuickFilter } from "../../frontend/src/user-manager-logic.ts";
 
-// Compile the real, unexported card in isolation. API calls and the page's
+// Compile the real, unexported sheet in isolation. API calls and the page's
 // effects are deliberately excluded; no product export is needed for these tests.
-function renderUserCard(user: Record<string, unknown>, lifecycle?: Record<string, unknown>, props: Record<string, unknown> = {}) {
+function renderUserSheet(user: Record<string, unknown>, lifecycle?: Record<string, unknown>, props: Record<string, unknown> = {}) {
   const require = createRequire(new URL("../../frontend/package.json", import.meta.url));
   const ts = require("typescript");
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
   const source = readFileSync(new URL("../../frontend/src/user-manager.tsx", import.meta.url), "utf8");
   const file = ts.createSourceFile("user-manager.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const names = new Set(["UserCard", "UserFact", "UserAccessStatus", "formatLimit", "formatBytes"]);
+  const names = new Set(["UserSheet", "UserFact", "UserAccessStatus", "formatLimit", "formatBytes"]);
   const functions = file.statements.filter((node: any) => ts.isFunctionDeclaration(node) && names.has(node.name?.text));
   const iconImport = file.statements.find((node: any) => ts.isImportDeclaration(node) && node.moduleSpecifier.text === "lucide-react");
   const iconNames = iconImport.importClause.namedBindings.elements.map((element: any) => element.name.text);
   const compiled = ts.transpileModule(functions.map((node: any) => node.getText(file)).join("\n"), {
     compilerOptions: { target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.React },
   }).outputText;
-  const UserCard = new Function("React", "remainingDays", "expiredUnboundPackage", ...iconNames, `${compiled}\nreturn UserCard;`)(React, remainingDays, expiredUnboundPackage, ...iconNames.map(() => () => null));
+  const UserSheet = new Function("React", "remainingDays", "expiredUnboundPackage", "managedUserStatus", "CompactSheet", ...iconNames, `${compiled}\nreturn UserSheet;`)(React, remainingDays, expiredUnboundPackage, managedUserStatus, ({ header, children }: any) => React.createElement("section", null, header, children), ...iconNames.map(() => () => null));
   const noop = () => undefined;
-  return renderToStaticMarkup(React.createElement(UserCard, {
-    user, lifecycle, busy: "", view: "full", onDialog: noop, onStatus: noop,
+  return renderToStaticMarkup(React.createElement(UserSheet, {
+    user, lifecycle, busy: "", onClose: noop, onDialog: noop, onStatus: noop,
     onExtend: noop, onResetTraffic: noop, onDelete: noop,
     ...props,
   }));
@@ -31,12 +31,12 @@ function renderUserCard(user: Record<string, unknown>, lifecycle?: Record<string
 
 test("UA-D03 official inactive state remains visible alongside Custom lifecycle state", () => {
   for (const lifecycle of [undefined, { effective_state: "enabled", pending_count: 0 }, { effective_state: "disabled", pending_count: 0 }, { effective_state: "delete_partial", pending_count: 1 }]) {
-    const html = renderUserCard({ username: "alice", role: "user", is_active: false }, lifecycle);
+    const html = renderUserSheet({ username: "alice", role: "user", is_active: false }, lifecycle);
     assert.doesNotMatch(html, /已启用/, "officially inactive account must not be labelled enabled");
     assert.match(html, /官方已停用/, "official inactive state must remain visible");
     assert.match(html, /class="off"/, "official inactive state must use the inactive badge");
   }
-  assert.match(renderUserCard({ username: "alice", role: "user", is_active: true }), />已启用</);
+  assert.match(renderUserSheet({ username: "alice", role: "user", is_active: true }), />已启用</);
 });
 
 test("UA-A08 disabled cards retain intent after official renew and explain every node's protection", () => {
@@ -47,7 +47,7 @@ test("UA-A08 disabled cards retain intent after official renew and explain every
     { server_id: 1, server_name: "封禁服务器", inbound_tag: "d", node_id: 40, node_name: "新增节点", status: "pending", reason: "封禁已安排，等待服务器确认" },
   ];
   for (const is_active of [false, true]) {
-    const html = renderUserCard({ username: "alice", role: "user", is_active }, { desired_state: "disabled", effective_state: "disabled", pending_count: 0, access });
+    const html = renderUserSheet({ username: "alice", role: "user", is_active }, { desired_state: "disabled", effective_state: "disabled", pending_count: 0, access });
     assert.match(html, /已禁用/);
     assert.match(html, /已封禁/);
     assert.match(html, /尽力禁用/);
@@ -62,7 +62,7 @@ test("UA-A08 disabled cards retain intent after official renew and explain every
 });
 
 test("a partially disabled user can enable again or retry unresolved nodes", () => {
-  const html = renderUserCard({ username: "alice", role: "user", is_active: false }, {
+  const html = renderUserSheet({ username: "alice", role: "user", is_active: false }, {
     desired_state: "disabled", effective_state: "partially_disabled", operation: "disable", pending_count: 1,
     access: [{ server_id: 1, server_name: "共享服务器", node_name: "共享节点", status: "conflict", reason: "该节点与其他用户共用身份，不能封禁" }],
   });
@@ -208,30 +208,30 @@ test("history query notices preserve disabled lifecycle on page load and polling
 });
 
 test("delete_partial hides access, admin hides destructive actions", () => {
-  const partial = renderUserCard({ username: "alice", role: "user", is_active: true }, {
+  const partial = renderUserSheet({ username: "alice", role: "user", is_active: true }, {
     effective_state: "delete_partial", operation: "delete", pending_count: 1,
   });
   assert.match(partial, /删除未完成/);
   assert.doesNotMatch(partial, />(启用|禁用)<\/button>/);
-  const admin = renderUserCard({ username: "admin", role: "admin", is_active: true });
+  const admin = renderUserSheet({ username: "admin", role: "admin", is_active: true });
   assert.doesNotMatch(admin, />(启用|禁用|重置密码|重置流量)<\/button>/);
   assert.doesNotMatch(admin, /<b>删除<\/b>/);
 });
 
 test("assignment-only users can open subscription and custom renewal without a legacy short code", () => {
-  const html = renderUserCard({ username: "alice", role: "user", is_active: true, assignment_package_ids: [2] }, undefined, { view: "renewal" });
+  const html = renderUserSheet({ username: "alice", role: "user", is_active: true, assignment_package_ids: [2] }, undefined, { view: "renewal" });
   assert.match(html, /<button type="button">订阅<\/button>/);
   assert.match(html, /<button type="button">自定义续期<\/button>/);
   assert.match(html, /已绑定 1 个套餐/);
-  const partial = renderUserCard({ username: "alice", role: "user", is_active: true, assignment_package_ids: [2] }, { effective_state: "delete_partial" }, { view: "renewal" });
+  const partial = renderUserSheet({ username: "alice", role: "user", is_active: true, assignment_package_ids: [2] }, { effective_state: "delete_partial" }, { view: "renewal" });
   assert.match(partial, /<button type="button" disabled="">自定义续期<\/button>/);
 });
 
 test("admin credential actions only target the current signed-in administrator", () => {
   const admin = { username: "admin", role: "admin", is_active: true };
-  assert.match(renderUserCard(admin, undefined, { currentUsername: "admin" }), /更换订阅凭据/);
-  assert.match(renderUserCard(admin, undefined, { currentUsername: "admin" }), /修复自己节点凭据/);
-  assert.doesNotMatch(renderUserCard(admin, undefined, { currentUsername: "someone-else" }), /更换订阅凭据|修复自己节点凭据/);
+  assert.match(renderUserSheet(admin, undefined, { currentUsername: "admin" }), /更换订阅凭据/);
+  assert.match(renderUserSheet(admin, undefined, { currentUsername: "admin" }), /修复自己节点凭据/);
+  assert.doesNotMatch(renderUserSheet(admin, undefined, { currentUsername: "someone-else" }), /更换订阅凭据|修复自己节点凭据/);
 });
 
 test("UA-D06 saving an existing package preserves permanent and finite expiry", async () => {
@@ -292,7 +292,7 @@ test("UA-D07 package counts and filters use every assignment with legacy fallbac
     const compiled = ts.transpileModule(`${helper.getText(file)}\nconst compute = ${callback.getText(file)};`, {
       compilerOptions: { target: ts.ScriptTarget.ES2020 },
     }).outputText;
-    return new Function("users", "packages", "query", "packageFilter", "view", "expiryFilter", "matchesExpiry", `${compiled}\nreturn compute();`)(users, packages, "", filter, "full", "all", matchesExpiry);
+    return new Function("users", "packages", "query", "packageFilter", "quickFilter", "expiryFilter", "matchesExpiry", "sortManagedUsers", "matchesUserQuickFilter", "expiredUnboundPackage", "sort", "expiredPackages", "lifecycles", `${compiled}\nreturn compute();`)(users, packages, "", filter, "all", "all", matchesExpiry, sortManagedUsers, matchesUserQuickFilter, expiredUnboundPackage, "username", {}, {});
   };
   assert.deepEqual({ count: compute("counts").get("2"), visible: compute("visible").map((user: { username: string }) => user.username) }, {
     count: 3, visible: ["alice", "bob", "fallback"],
@@ -456,7 +456,7 @@ const expiredPackage = { role: "user", last_package_id: 3, last_package_name: "B
 test("expired-unbound card shows history and rebind choices, never-bound keeps its text", () => {
   const user = { username: "Riczzoe", role: "user", package_id: null, package_end_date: null };
   for (const view of ["full", "renewal"]) {
-    const html = renderUserCard(user, undefined, { view, expiredPackage });
+    const html = renderUserSheet(user, undefined, { view, expiredPackage });
     assert.match(html, />已过期</);
     assert.match(html, /上次套餐 Boil HKT 用户2，到期 2026-08-25（官方已解绑）/);
     assert.doesNotMatch(html, /未绑定套餐/);
@@ -466,7 +466,7 @@ test("expired-unbound card shows history and rebind choices, never-bound keeps i
       assert.match(html, /<button type="button">自定义续期<\/button>/);
     }
   }
-  const never = renderUserCard(user, undefined, { view: "renewal" });
+  const never = renderUserSheet(user, undefined, { view: "renewal" });
   assert.match(never, /未绑定套餐/);
   assert.match(never, /可绑定套餐后生成订阅/);
   assert.doesNotMatch(never, /重新绑定上次套餐并续期|官方已解绑/);
@@ -474,11 +474,11 @@ test("expired-unbound card shows history and rebind choices, never-bound keeps i
 
 test("rebind card excludes admins and current bindings and explains unavailable packages", () => {
   for (const extra of [{ role: "admin" }, { package_id: 4 }, { assignment_package_ids: [4] }]) {
-    const html = renderUserCard({ username: "alice", role: "user", ...extra }, undefined, { view: "renewal", expiredPackage });
+    const html = renderUserSheet({ username: "alice", role: "user", ...extra }, undefined, { view: "renewal", expiredPackage });
     assert.doesNotMatch(html, /重新绑定上次套餐并续期|官方已解绑/);
   }
   for (const reason of ["上次套餐已删除或不存在，请在「套餐」中选择其他套餐", "上次套餐已绑定其他用户，请在「套餐」中选择其他套餐"]) {
-    const html = renderUserCard({ username: "alice", role: "user" }, undefined, { view: "renewal", expiredPackage: { ...expiredPackage, rebindable: false, reason } });
+    const html = renderUserSheet({ username: "alice", role: "user" }, undefined, { view: "renewal", expiredPackage: { ...expiredPackage, rebindable: false, reason } });
     assert.match(html, /<button type="button" disabled="">重新绑定上次套餐并续期<\/button>/);
     assert.ok(html.includes(reason));
     assert.match(html, /请打开下方「套餐」管理/);
@@ -495,7 +495,7 @@ test("card rebind buttons submit the existing assign-package API only after conf
     const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, path.endsWith("tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
     return ts.transpileModule(file.statements.filter((node: any) => ts.isFunctionDeclaration(node) && names.includes(node.name?.text)).map((node: any) => node.getText(file).replace(/^export /, "")).join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.React } }).outputText;
   }
-  const ui = compile("../../frontend/src/user-manager.tsx", ["UserCard", "RenewDialog", "confirmCredentialWrite", "messageOf"]);
+  const ui = compile("../../frontend/src/user-manager.tsx", ["UserSheet", "UserFact", "formatLimit", "RenewDialog", "confirmCredentialWrite", "messageOf"]);
   const api = compile("../../frontend/src/api.ts", ["managedUserFeature", "assignManagedUserPackage"]);
   const find = (element: any, predicate: (element: any) => boolean): any => {
     if (!element || typeof element !== "object") return undefined;
@@ -513,7 +513,7 @@ test("card rebind buttons submit the existing assign-package API only after conf
     let saved = 0;
     const icons = Object.fromEntries(["Link2", "PackageCheck", "Edit3", "SlidersHorizontal", "UserRoundCog", "KeyRound", "RefreshCw", "Send", "RotateCcw", "Power", "PowerOff", "Trash2"].map((name) => [name, () => null]));
     const deps = {
-      React, remainingDays, expiredUnboundPackage, parseRenewDays, renewedDate, credentialWriteState,
+      React, remainingDays, expiredUnboundPackage, parseRenewDays, renewedDate, credentialWriteState, managedUserStatus, CompactSheet: () => null,
       rebindPackageInput: (user: any, last: any, days: number) => rebindPackageInput(user, last, days, false, new Date("2026-10-07T16:30:00Z")),
       formatBytes: () => "0", UserAccessStatus: () => null, DialogShell: () => null,
       useState: (initial: unknown) => { const slot = index++; if (!(slot in states)) states[slot] = initial; return [states[slot], (value: unknown) => { states[slot] = value; }]; },
@@ -523,11 +523,11 @@ test("card rebind buttons submit the existing assign-package API only after conf
       requestCustomOperator: async (url: string, token: string, options: any) => { requests.push({ url, token, options }); return { success: true }; },
       ...icons,
     };
-    const { UserCard, RenewDialog } = new Function(...Object.keys(deps), `${api}\n${ui}\nreturn { UserCard, RenewDialog };`)(...Object.values(deps));
+    const { UserSheet, RenewDialog } = new Function(...Object.keys(deps), `${api}\n${ui}\nreturn { UserSheet, RenewDialog };`)(...Object.values(deps));
     const user = { username: "Riczzoe", role: "user", is_active: false, package_id: null, package_end_date: null, is_reset: true, reset_day: 12, traffic_limit_override_gb: 25 };
     const lifecycle = { desired_state: "disabled", effective_state: "disabled", pending_count: 0, access: [{ status: "blocked" }] };
     let dialog: any;
-    const card = UserCard({ user, lifecycle, expiredPackage, busy: "", view: "renewal", onDialog: (value: any) => { dialog = value; }, onExtend: () => assert.fail("legacy renew triggered") });
+    const card = UserSheet({ user, lifecycle, expiredPackage, busy: "", view: "renewal", onDialog: (value: any) => { dialog = value; }, onExtend: () => assert.fail("legacy renew triggered") });
     const quick = [30, 90, 365].includes(Number(choice));
     const button = find(card, (element) => element.type === "button" && (quick ? element.props.children?.join?.("") === `+${choice} 天` : element.props.children === "重新绑定上次套餐并续期"));
     assert.ok(button);
