@@ -72,7 +72,7 @@ const tunnels = [{ kind: "inbound", server_id: servers[0].id, server_name: serve
 let order = nodes.map((node) => node.id);
 const requests = [];
 const errors = [];
-const dist = path.join(root, "frontend/dist");
+const dist = process.env.NODE_REDESIGN_DIST || path.join(root, "frontend/dist");
 assert.ok(existsSync(path.join(dist, "index.html")), "Build the UI before running this harness");
 const server = createServer((req, res) => {
   const pathname = new URL(req.url, "http://127.0.0.1").pathname;

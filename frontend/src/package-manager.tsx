@@ -128,7 +128,7 @@ export function PackageManagementPage({ token }: { token: string }) {
   useEffect(() => { localStorage.setItem("mmwx-package-grouping", grouping); }, [grouping]);
   useEffect(() => { localStorage.setItem("mmwx-package-collapsed", JSON.stringify(collapsed)); }, [collapsed]);
   const visible = useMemo(() => searchPackages(packages, allNodes, query), [packages, allNodes, query]);
-  const groups = useMemo(() => groupPackages(visible, users, allNodes, grouping), [visible, users, allNodes, grouping]);
+  const groups = useMemo(() => usersError && grouping === "user" ? [{ key: "unknown", name: "绑定待核对", packages: visible }] : groupPackages(visible, users, allNodes, grouping), [visible, users, allNodes, grouping, usersError]);
   const selectedPackage = packages.find((pkg) => pkg.id === selectedId);
   function displayNode(node: XrayNode) {
     const flag = node.node_name.match(/^[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0];

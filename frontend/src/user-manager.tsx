@@ -608,7 +608,7 @@ function CreateUserDialog({ token, onClose, onCreated }: { token: string; onClos
       <label><span>用户名</span><input required minLength={3} maxLength={20} pattern="[A-Za-z0-9\-]{3,20}" title="3–20 个字母、数字或连字符，不支持下划线" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /><small>3–20 个字母、数字或连字符，不支持下划线。</small></label>
       <label><span>邮箱</span><input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label>
       <label><span>昵称</span><input value={form.nickname} onChange={(event) => setForm({ ...form, nickname: event.target.value })} /></label>
-      <label><span>初始密码</span><div className="user-input-action"><input required value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /><button type="button" onClick={() => setForm({ ...form, password: randomPassword() })}><RefreshCw /></button></div></label>
+      <label><span>初始密码</span><div className="user-input-action"><input required value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /><button type="button" aria-label="生成随机初始密码" onClick={() => setForm({ ...form, password: randomPassword() })}><RefreshCw /></button></div></label>
       <label className="wide"><span>备注（可选）</span><input value={form.remark} onChange={(event) => setForm({ ...form, remark: event.target.value })} /></label>
       {error && <p className="user-form-error wide">{error}</p>}
     </form>
@@ -619,7 +619,7 @@ function PasswordDialog({ token, user, onClose, onSaved }: { token: string; user
   const [password, setPassword] = useState(randomPassword()); const [saving, setSaving] = useState(false); const [error, setError] = useState("");
   async function save() { setSaving(true); setError(""); try { const result = await resetManagedUserPassword(token, user.username, password); await copyText(result.password); onSaved(result.password); } catch (err) { setError(messageOf(err, "重置密码失败")); } finally { setSaving(false); } }
   return <DialogShell title="重置密码" subtitle={`用户：${user.username}`} onClose={onClose} footer={<><button type="button" onClick={onClose}>取消</button><button className="primary" type="button" onClick={() => void save()} disabled={saving || !password}>{saving ? "保存中..." : "重置并复制"}</button></>}>
-    <div className="user-form one"><label><span>新密码</span><div className="user-input-action"><input value={password} onChange={(event) => setPassword(event.target.value)} /><button type="button" onClick={() => setPassword(randomPassword())}><RefreshCw /></button></div></label>{error && <p className="user-form-error">{error}</p>}</div>
+    <div className="user-form one"><label><span>新密码</span><div className="user-input-action"><input value={password} onChange={(event) => setPassword(event.target.value)} /><button type="button" aria-label="生成随机新密码" onClick={() => setPassword(randomPassword())}><RefreshCw /></button></div></label>{error && <p className="user-form-error">{error}</p>}</div>
   </DialogShell>;
 }
 
