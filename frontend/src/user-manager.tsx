@@ -6,6 +6,8 @@ import {
   Edit3,
   KeyRound,
   Link2,
+  MoreHorizontal,
+  Filter,
   PackageCheck,
   Plus,
   Power,
@@ -64,7 +66,9 @@ import {
 import type { HelperUserConnectionsResponse, RemoteServer, UserConnectionsResponse, NodeURIItem, ManagedPackage, ManagedUser, ManagedUserImportedNode, ManagedUserDeleteResult, ManagedUserDeletionPreview, ManagedUserLifecycle, ManagedUserLifecycleItem, ManagedUserExpiredPackage, ManagedUserPackageAssignment, UserAccessNodeStatus, UserSubaccount, XrayNode } from "./types";
 import { fetchUserManagementData } from "./user-management-state";
 import { credentialWriteState, eligiblePackages, expiredUnboundPackage, rebindPackageInput, matchesExpiry, parseRenewDays, parseTrafficOverride, remainingDays, renewedDate, searchUserURIs, trafficOverrideGB, userConnectionCoverage, validUsername } from "./user-manager-logic";
-import type { ExpiryFilter } from "./user-manager-logic";
+import { CompactSheet, CompactSegments, CompactGroupHeader } from "./compact-ui";
+import { managedUserStatus, matchesUserQuickFilter, userQuickCounts, sortManagedUsers, userRowTags } from "./user-manager-logic";
+import type { UserQuickFilter, UserSort, ExpiryFilter } from "./user-manager-logic";
 import autoIcon from "./assets/client-icons/auto.svg";
 import clashIcon from "./assets/client-icons/clash_color.png";
 import stashIcon from "./assets/client-icons/stash_color.png";
@@ -138,7 +142,11 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
   const [servers, setServers] = useState<RemoteServer[] | null>(null);
   const coverage = userConnectionCoverage(connections, helperConnections, servers);
   const [realtimeError, setRealtimeError] = useState("");
-  const [view, setView] = useState<"full" | "renewal">(() => localStorage.getItem("users-view-mode") === "package" ? "renewal" : "full");
+  const [quickFilter, setQuickFilter] = useState<UserQuickFilter>("all");
+  const [sort, setSort] = useState<UserSort>(() => localStorage.getItem("mmwx-user-sort") === "username" ? "username" : "expiry");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [selectedUsername, setSelectedUsername] = useState<string | null>(null);
+  const [adminClosed, setAdminClosed] = useState(false);
 
   const load = useCallback(async (options?: { background?: boolean; success?: string }) => {
     if (!options?.background) setLoading(true);
@@ -210,14 +218,18 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
   }, [packages, users]);
   const visible = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return users.filter((user) => {
+    return sortManagedUsers(users.filter((user) => {
       const packageIds = managedUserPackageIds(user);
       const filterMatch = packageFilter === "all" || (packageFilter === "none" ? packageIds.length === 0 : packageIds.includes(Number(packageFilter)));
       const searchMatch = !normalized || [user.username, user.nickname, user.email, user.remark, user.package_name, user.telegram_username]
         .some((value) => value?.toLowerCase().includes(normalized));
-      return filterMatch && searchMatch && (view !== "renewal" || matchesExpiry(user.package_end_date, expiryFilter, Date.now(), expiredUnboundPackage(user, expiredPackages[user.username])?.last_package_end_date));
-    });
-  }, [packageFilter, query, users, view, expiryFilter, expiredPackages]);
+      return filterMatch && searchMatch && (matchesUserQuickFilter(user, quickFilter, lifecycles[user.username], expiredPackages[user.username]) && matchesExpiry(user.package_end_date, expiryFilter, Date.now(), expiredUnboundPackage(user, expiredPackages[user.username])?.last_package_end_date));
+    }), sort, expiredPackages);
+  }, [packageFilter, query, users, quickFilter, sort, expiryFilter, expiredPackages, lifecycles]);
+
+  const quickCounts = userQuickCounts(users, lifecycles, expiredPackages);
+  const selectedUser = users.find((user) => user.username === selectedUsername);
+  const expiryOptions = [["all", "全部到期时间"], ["expired", "已过期"], ["d7", "7 日内"], ["d30", "30 日内"], ["permanent", "长期"]] as const;
 
   async function run(key: string, action: () => Promise<unknown>, success: string) {
     if (busy) return;
@@ -251,52 +263,12 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
     }
   }
 
-  function setViewMode(next: "full" | "renewal") {
-    setView(next);
-    localStorage.setItem("users-view-mode", next === "renewal" ? "package" : "full");
-  }
-
-  return (
-    <div className="user-manager">
-      <section className="user-hero">
-        <div><h1>用户管理</h1><p>查看系统用户，管理账号、套餐、订阅与用户级限制。</p></div>
-        <div className="user-head-actions">
-          <button type="button" onClick={() => void load()} aria-label="刷新用户"><RefreshCw /></button>
-          <button className="primary" type="button" onClick={() => setDialog({ kind: "create" })}><Plus />新增用户</button>
-        </div>
-      </section>
-
-      {notice && <div className={`user-notice ${notice.tone}`}><span>{notice.text}</span><button type="button" onClick={() => setNotice(null)} aria-label="关闭提示"><X /></button></div>}
-
-      <section className="user-toolbar">
-        <label className="user-search"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索用户名、昵称、邮箱、备注或套餐" /></label>
-        <div className="user-view-tabs" aria-label="用户显示方式">
-          <button className={view === "full" ? "active" : ""} type="button" onClick={() => setViewMode("full")}>完整视图</button>
-          <button className={view === "renewal" ? "active" : ""} type="button" onClick={() => setViewMode("renewal")}>续费视图</button>
-        </div>
-      </section>
-
-      <section className="user-package-filters" aria-label="按套餐筛选">
-        <button className={packageFilter === "all" ? "active" : ""} type="button" onClick={() => setPackageFilter("all")}>全部（{counts.get("all") ?? 0}）</button>
-        {packages.map((pkg) => <button className={packageFilter === String(pkg.id) ? "active" : ""} key={pkg.id} type="button" onClick={() => setPackageFilter(String(pkg.id))}>{pkg.name}（{counts.get(String(pkg.id)) ?? 0}）</button>)}
-        <button className={packageFilter === "none" ? "active" : ""} type="button" onClick={() => setPackageFilter("none")}>无套餐（{counts.get("none") ?? 0}）</button>
-      </section>
-
-      {view === "renewal" && <section className="user-package-filters" aria-label="按到期时间筛选">
-        {([["all", "全部到期时间"], ["expired", "已过期"], ["d7", "7 日内"], ["d30", "30 日内"], ["permanent", "长期"]] as const).map(([value, label]) => <button key={value} type="button" className={expiryFilter === value ? "active" : ""} onClick={() => setExpiryFilter(value)}>{label}</button>)}
-      </section>}
-
-      {(realtimeError || coverage.message) && <p className="user-delete-pending">{[realtimeError, coverage.message].filter(Boolean).join("。")}</p>}
-
-      {loading ? <div className="user-empty">正在读取用户...</div> : visible.length === 0 ? <div className="user-empty">没有符合条件的用户</div> : (
-        <section className={`user-list ${view}`}>
-          {visible.map((user) => {
-            const pkg = user.package_id ? packageById.get(user.package_id) : undefined;
-            return <UserCard key={user.username} user={user} lifecycle={lifecycles[user.username]} expiredPackage={expiredPackages[user.username]} pkg={pkg} busy={busy} view={view} currentUsername={currentUsername}
-              realtime={<UserRealtime user={user} connections={connections} helper={helperConnections} incomplete={coverage.incomplete} />}
-              onDialog={setDialog}
+  function renderUserSheet(user: ManagedUser) {
+    return <UserSheet user={user} lifecycle={lifecycles[user.username]} expiredPackage={expiredPackages[user.username]} pkg={user.package_id ? packageById.get(user.package_id) : undefined} busy={busy} currentUsername={currentUsername} onClose={() => setSelectedUsername(null)}
+      realtime={<UserRealtime user={user} connections={connections} helper={helperConnections} incomplete={coverage.incomplete} />}
+              onDialog={(next) => { setSelectedUsername(null); setDialog(next); }}
               onStatus={(enable) => {
-                if (!enable) { setDialog({ kind: "disable", user }); return; }
+                if (!enable) { setSelectedUsername(null); setDialog({ kind: "disable", user }); return; }
                 if (!window.confirm(`确认启用用户 ${user.username}？将解除该用户的禁用，并恢复禁用前的官方账号状态；流量超限造成的封禁会保留。`)) return;
                 void changeAccess(user, true);
               }}
@@ -310,11 +282,45 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
                 void run(`traffic-${user.username}`, () => resetManagedUserTraffic(token, user.username), `用户 ${user.username} 流量已重置`);
               }}
               onDelete={() => {
-                setDialog({ kind: "delete", user });
+                setSelectedUsername(null); setDialog({ kind: "delete", user });
               }} />;
-          })}
-        </section>
-      )}
+  }
+
+  function renderRow(user: ManagedUser) {
+    return <CompactUserRow key={user.username} user={user} lifecycle={lifecycles[user.username]} expiredPackage={expiredPackages[user.username]} connections={connections} helper={helperConnections} incomplete={coverage.incomplete} onOpen={() => setSelectedUsername(user.username)} />;
+  }
+
+  return (
+    <div className="user-manager cx-manager" aria-busy={loading}>
+      <section className="cx-hero">
+        <h1>用户 <small>{users.length}</small></h1>
+        <button type="button" onClick={() => void load()} aria-label="刷新用户"><RefreshCw /></button>
+        <button className="primary" type="button" onClick={() => setDialog({ kind: "create" })}><Plus />新增</button>
+      </section>
+      {notice && <div className={`user-notice ${notice.tone}`}><span>{notice.text}</span><button type="button" onClick={() => setNotice(null)} aria-label="关闭提示"><X /></button></div>}
+      <section className="cx-toolbar">
+        <label className="cx-search"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="搜索用户" placeholder="搜索用户名、昵称、邮箱、备注或套餐" /></label>
+        <button type="button" className="cx-filter-button" onClick={() => setFilterOpen(true)}><Filter />筛选{(packageFilter !== "all" || expiryFilter !== "all") && <b>{Number(packageFilter !== "all") + Number(expiryFilter !== "all")}</b>}</button>
+      </section>
+      {(packageFilter !== "all" || expiryFilter !== "all") && <div className="cx-active-filters">
+        {packageFilter !== "all" && <button type="button" onClick={() => setPackageFilter("all")} aria-label="移除套餐筛选">{packageFilter === "none" ? "无套餐" : packageById.get(Number(packageFilter))?.name}<X /></button>}
+        {expiryFilter !== "all" && <button type="button" onClick={() => setExpiryFilter("all")} aria-label="移除到期筛选">{expiryOptions.find(([value]) => value === expiryFilter)?.[1]}<X /></button>}
+      </div>}
+      <CompactSegments label="用户快捷筛选" value={quickFilter} options={[["all", `全部 ${quickCounts.all}`], ["d7", `快到期 ${quickCounts.d7}`], ["expired", `已过期 ${quickCounts.expired}`], ["disabled", `已禁用 ${quickCounts.disabled}`]]} onChange={setQuickFilter} />
+      <div className="user-list-options">
+        {(realtimeError || coverage.message) && <details className="user-coverage"><summary>连接数据部分来自 Helper · 详情</summary><p>{[realtimeError, coverage.message].filter(Boolean).join("。")}</p></details>}
+        <select aria-label="用户排序" value={sort} onChange={(event) => { const next = event.target.value as UserSort; setSort(next); localStorage.setItem("mmwx-user-sort", next); }}><option value="expiry">按到期</option><option value="username">按用户名</option></select>
+      </div>
+      {loading ? <div className="user-empty">正在读取用户...</div> : visible.length === 0 ? <div className="user-empty">没有符合条件的用户</div> : <section className="cx-group-list" aria-label="用户列表">
+        {visible.some((user) => user.role !== "admin") && <div className="cx-group">{visible.filter((user) => user.role !== "admin").map(renderRow)}</div>}
+        {visible.some((user) => user.role === "admin") && <div className="cx-group"><CompactGroupHeader name="管理员" count={visible.filter((user) => user.role === "admin").length} closed={adminClosed} onToggle={() => setAdminClosed(!adminClosed)} />{!adminClosed && visible.filter((user) => user.role === "admin").map(renderRow)}</div>}
+      </section>}
+      {selectedUser && !dialog && renderUserSheet(selectedUser)}
+      {filterOpen && <CompactSheet title="筛选用户" onClose={() => setFilterOpen(false)} className="cx-filter-sheet">
+        <label>套餐<select aria-label="套餐筛选" value={packageFilter} onChange={(event) => setPackageFilter(event.target.value)}><option value="all">全部（{counts.get("all") ?? 0}）</option>{packages.map((pkg) => <option value={pkg.id} key={pkg.id}>{pkg.name}（{counts.get(String(pkg.id)) ?? 0}）</option>)}<option value="none">无套餐（{counts.get("none") ?? 0}）</option></select></label>
+        <label>到期时间<select aria-label="到期筛选" value={expiryFilter} onChange={(event) => setExpiryFilter(event.target.value as ExpiryFilter)}>{expiryOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <div className="cx-sheet-footer"><button type="button" onClick={() => { setPackageFilter("all"); setExpiryFilter("all"); setQuickFilter("all"); }}>重置筛选</button><button className="primary" type="button" onClick={() => setFilterOpen(false)}>显示 {visible.length} 个用户</button></div>
+      </CompactSheet>}
 
       {dialog?.kind === "create" && <CreateUserDialog token={token} onClose={() => setDialog(null)} onCreated={async (password) => { setDialog(null); setNotice({ tone: "success", text: `用户已创建，初始密码 ${password} 已复制` }); await load(); }} />}
       {dialog?.kind === "disable" && <DisableUserDialog token={token} user={dialog.user} onClose={() => setDialog(null)} onConfirm={() => { setDialog(null); void changeAccess(dialog.user, false); }} />}
@@ -343,54 +349,79 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
   );
 }
 
-function UserCard({ user, lifecycle, expiredPackage, pkg, busy, view, currentUsername, realtime, onDialog, onStatus, onExtend, onResetTraffic, onDelete }: {
-  user: ManagedUser; lifecycle?: ManagedUserLifecycle; expiredPackage?: ManagedUserExpiredPackage; pkg?: ManagedPackage; busy: string; view: "full" | "renewal";
+function CompactUserRow({ user, lifecycle, expiredPackage, connections, helper, incomplete, onOpen }: {
+  user: ManagedUser; lifecycle?: ManagedUserLifecycle; expiredPackage?: ManagedUserExpiredPackage; connections: UserConnectionsResponse | null; helper: HelperUserConnectionsResponse | null; incomplete: boolean; onOpen: () => void;
+}) {
+  const tags = userRowTags(user, lifecycle, expiredPackage);
+  const lastPackage = expiredUnboundPackage(user, expiredPackage);
+  const used = Number(user.traffic_used) || 0, limit = Number(user.traffic_limit) || 0;
+  const percent = limit > 0 ? Math.min(100, used / limit * 100) : 0;
+  const count = (connections?.connections?.[user.username] ?? 0) + (helper?.connections?.[user.username] ?? 0);
+  const rate = helper?.user_rates?.[user.username];
+  const packageName = lastPackage ? `已过期 · 上次 ${lastPackage.last_package_name || "未知"}` : user.package_name || (managedUserPackageIds(user).length ? `已绑定 ${managedUserPackageIds(user).length} 个套餐` : "未绑定套餐");
+  const end = (user.package_end_date || lastPackage?.last_package_end_date)?.slice(0, 10);
+  return <article className="cx-row user-compact-row" data-username={user.username} onClick={onOpen}>
+    <div className="cx-row-content">
+      <div className="cx-row-title">
+        <span className="cx-avatar user-row-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span>
+        <button className="cx-row-name" type="button" onClick={(event) => { event.stopPropagation(); onOpen(); }} title={user.nickname || user.username}>{user.username}{user.nickname && user.nickname !== user.username && <span className="user-row-nickname"> · {user.nickname}</span>}</button>
+        {tags.status && !tags.critical.some((tag) => tags.status.startsWith(tag.replace(/ \d+$/, ""))) && <span className={`cx-tag ${user.role === "admin" ? "" : "bad"}`} title={tags.status}>{tags.status}</span>}
+        {tags.critical.map((tag) => <span key={tag} className="cx-tag bad" title={tag === "无法重绑" ? lastPackage?.reason : tag}>{tag}</span>)}
+        <button type="button" className="cx-row-more" aria-label={`操作 ${user.username}`} onClick={(event) => { event.stopPropagation(); onOpen(); }}><MoreHorizontal /></button>
+      </div>
+      <div className={`user-row-package ${tags.tone}`}><span title={packageName}>{packageName}</span><time>{end}</time><span className="user-row-expiry">{tags.expiry}</span></div>
+      <div className="user-row-metrics">
+        <span className="user-row-traffic-bar" aria-hidden="true"><i style={{ width: `${percent}%` }} /></span>
+        <span>{limit > 0 ? `${formatBytes(used)} / ${formatBytes(limit)} · ${percent.toFixed(percent < 10 ? 1 : 0)}%` : "流量不限"}</span>
+        <span title="实时连接数">{connections || helper ? `${count}${incomplete ? "+" : ""}` : "—"} 连接</span>
+        {rate?.rate_fresh && <span title="实时网速 · 5 秒">↑{formatBytes(rate.upload_bytes_per_second)}/s ↓{formatBytes(rate.download_bytes_per_second)}/s</span>}
+      </div>
+    </div>
+  </article>;
+}
+
+function UserSheet({ user, lifecycle, expiredPackage, pkg, busy, onClose, currentUsername, realtime, onDialog, onStatus, onExtend, onResetTraffic, onDelete }: {
+  user: ManagedUser; lifecycle?: ManagedUserLifecycle; expiredPackage?: ManagedUserExpiredPackage; pkg?: ManagedPackage; busy: string; onClose: () => void;
   currentUsername?: string; realtime?: React.ReactNode;
   onDialog: (dialog: Dialog) => void; onStatus: (enable: boolean) => void; onExtend: (days: number) => void; onResetTraffic: () => void; onDelete: () => void;
 }) {
   const used = Number(user.traffic_used) || 0;
   const limit = Number(user.traffic_limit) || 0;
   const percent = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
-  const admin = user.role === "admin";
   const hasPackage = Boolean(user.package_id || user.assignment_package_ids?.length);
   const lastPackage = expiredUnboundPackage(user, expiredPackage);
   const days = remainingDays(user.package_end_date);
-  const officialInactive = user.is_active === false;
-  const deleting = lifecycle?.effective_state === "deleting" || lifecycle?.effective_state === "delete_partial";
-  const pending = deleting ? lifecycle?.pending_count ?? 0 : 0;
-  const accessState = lifecycle?.effective_state ?? "enabled";
-  const accessDisabled = accessState === "disabled" || accessState === "partially_disabled" || accessState === "partially_enabled" || accessState === "enabling";
-  const accessPending = !deleting && (lifecycle?.pending_count ?? 0) > 0;
-  const enableAction = lifecycle?.desired_state === "disabled" || accessState === "disabled" || accessState === "partially_enabled" || accessState === "enabling";
-  const accessOperationLabel = lifecycle?.operation === "enable" ? "启用" : "禁用";
-  const statusLabel = deleting ? pending > 0 ? "删除未完成" : "正在删除"
-    : accessPending ? `${accessOperationLabel}未完成`
-      : accessState === "disabling" ? "正在禁用" : accessState === "enabling" ? "正在启用" : accessDisabled ? "已禁用" : "已启用";
-  const displayedStatus = officialInactive ? statusLabel === "已启用" ? "官方已停用" : `${statusLabel}（官方已停用）` : statusLabel;
+  const { admin, officialInactive, deleting, pending, accessState, accessDisabled, accessPending, enableAction, displayedStatus } = managedUserStatus(user, lifecycle);
   return (
-    <article className={`user-card${accessDisabled || officialInactive ? " disabled" : ""}`}>
-      <header>
-        <div className="user-identity"><span className="user-avatar">{(user.nickname || user.username).slice(0, 1).toUpperCase()}</span><div><h2>{user.username}</h2><p>{user.nickname || user.username}{user.email ? ` · ${user.email}` : ""}</p></div></div>
-        <div className="user-badges"><span>{admin ? "管理员" : "用户"}</span>{!admin && <span className={deleting || accessDisabled || accessPending || officialInactive ? "off" : "ok"}>{displayedStatus}</span>}</div>
-      </header>
-      {view === "full" && <div className="user-facts">
+    <CompactSheet title={user.username} onClose={onClose} className="user-action-sheet" header={<div className="user-sheet-heading"><div className="user-identity"><span className="user-avatar">{(user.nickname || user.username).slice(0, 1).toUpperCase()}</span><div><h2>{user.username}</h2><p>{user.nickname || user.username}{user.email ? ` · ${user.email}` : ""}</p></div></div>
+        <div className="user-badges"><span>{admin ? "管理员" : "用户"}</span>{!admin && <span className={deleting || accessDisabled || accessPending || officialInactive ? "off" : "ok"}>{displayedStatus}</span>}</div></div>}>
+      <div className="cx-quick-actions">
+        <button type="button" onClick={() => onDialog({ kind: "subscription", user })} disabled={!hasPackage}><Link2 />订阅</button>
+        <button type="button" onClick={() => onDialog({ kind: "uris", user })}><Link2 />节点 URI</button>
+        <button type="button" disabled={admin || !(hasPackage || lastPackage?.rebindable) || deleting || Boolean(busy)} onClick={() => onDialog({ kind: lastPackage ? "rebind" : "renew", user })}><RotateCcw />续期</button>
+        <button type="button" onClick={() => onDialog({ kind: "profile", user })}><Edit3 />资料</button>
+      </div>
+      <h3 className="cx-sheet-section">详情</h3>
+      <div className="user-facts">
         <UserFact label="Telegram" value={user.telegram_id ? `@${user.telegram_username || user.telegram_id}` : "未绑定"} />
         <UserFact label="备注" value={user.remark || "—"} />
         <UserFact label="短码" value={user.custom_user_short_code || user.user_short_code || "—"} />
         <UserFact label="限制" value={`${formatLimit(user.speed_limit_override, user.speed_limit_mbps, "Mbps")} · ${formatLimit(user.device_limit_override, user.device_limit, "连接")}`} />
-      </div>}
-      {view === "full" && realtime}
+      </div>
+      {realtime}
       <div className={`user-package${lastPackage ? " expired" : ""}`}>
         <div><strong>{lastPackage ? "已过期" : user.package_name || (hasPackage ? `已绑定 ${user.assignment_package_ids?.length || 1} 个套餐` : "未绑定套餐")}</strong><span>{lastPackage ? `上次套餐 ${lastPackage.last_package_name || (lastPackage.last_package_id ? `#${lastPackage.last_package_id}` : "未知")}，到期 ${lastPackage.last_package_end_date?.slice(0, 10)}（官方已解绑）` : user.package_end_date ? `到期 ${user.package_end_date}${days === null ? "" : days <= 0 ? " · 已过期" : ` · 剩余 ${days} 天`}` : admin ? "系统管理员" : hasPackage ? "长期有效" : "可绑定套餐后生成订阅"}</span></div>
         {limit > 0 ? <div className="user-traffic"><span><b>{formatBytes(used)}</b> / {formatBytes(limit)} · {percent.toFixed(percent < 10 ? 1 : 0)}%</span><i><em style={{ width: `${percent}%` }} /></i></div> : <span className="user-unlimited">{pkg ? "流量不限" : "—"}</span>}
       </div>
-      {!deleting && (lifecycle?.desired_state === "disabled" || accessDisabled || accessState === "disabling") && <UserAccessStatus items={lifecycle?.access} />}
+      <h3 className="cx-sheet-section">套餐与续期</h3>
+      <div className="cx-sheet-items"><button type="button" onClick={() => onDialog({ kind: "package", user })} disabled={admin}><PackageCheck />套餐</button></div>
       {lastPackage && <><div className="user-renew-actions rebind"><button type="button" disabled={!lastPackage.rebindable || deleting || Boolean(busy)} onClick={() => onDialog({ kind: "rebind", user })}>重新绑定上次套餐并续期</button></div>{!lastPackage.rebindable && <p className="user-delete-pending">{lastPackage.reason}；请打开下方「套餐」管理。</p>}</>}
-      {view === "renewal" && !admin && <div className="user-renew-actions">{[30, 90, 365].map((days) => <button key={days} type="button" disabled={!(hasPackage || lastPackage?.rebindable) || deleting || Boolean(busy)} onClick={() => lastPackage ? onDialog({ kind: "rebind", user, days }) : onExtend(days)}>+{days} 天</button>)}<button type="button" disabled={!(hasPackage || lastPackage?.rebindable) || deleting || Boolean(busy)} onClick={() => onDialog({ kind: lastPackage ? "rebind" : "renew", user })}>自定义续期</button></div>}
-      <footer>
-        <button type="button" onClick={() => onDialog({ kind: "subscription", user })} disabled={!hasPackage}><Link2 />订阅</button>
-        <button type="button" onClick={() => onDialog({ kind: "uris", user })}><Link2 />节点 URI</button>
-        <button type="button" onClick={() => onDialog({ kind: "package", user })} disabled={admin}><PackageCheck />套餐</button>
+      {!admin && <div className="user-renew-actions">{[30, 90, 365].map((days) => <button key={days} type="button" disabled={!(hasPackage || lastPackage?.rebindable) || deleting || Boolean(busy)} onClick={() => lastPackage ? onDialog({ kind: "rebind", user, days }) : onExtend(days)}>+{days} 天</button>)}<button type="button" disabled={!(hasPackage || lastPackage?.rebindable) || deleting || Boolean(busy)} onClick={() => onDialog({ kind: lastPackage ? "rebind" : "renew", user })}>自定义续期</button></div>}
+      <div className="cx-sheet-items">
+        {!admin && <button type="button" onClick={onResetTraffic} disabled={Boolean(busy)}><RotateCcw />重置流量</button>}
+      </div>
+      <h3 className="cx-sheet-section">账户</h3>
+      <div className="cx-sheet-items">
         <button type="button" onClick={() => onDialog({ kind: "profile", user })}><Edit3 />资料</button>
         <button type="button" onClick={() => onDialog({ kind: "limits", user })} disabled={admin}><SlidersHorizontal />限制</button>
         <button type="button" onClick={() => onDialog({ kind: "accounts", user, initial: "all" })}><UserRoundCog />子账户</button>
@@ -398,13 +429,16 @@ function UserCard({ user, lifecycle, expiredPackage, pkg, busy, view, currentUse
         {admin && user.username === currentUsername && <><button type="button" onClick={() => onDialog({ kind: "replace-admin", user })} disabled={Boolean(busy) || deleting}><KeyRound />更换订阅凭据</button><button type="button" onClick={() => onDialog({ kind: "repair-admin", user })} disabled={Boolean(busy) || deleting}><RefreshCw />修复自己节点凭据</button></>}
         <button type="button" onClick={() => onDialog({ kind: "telegram", user })}><Send />Telegram</button>
         {!admin && <button type="button" onClick={() => onDialog({ kind: "password", user })}><KeyRound />重置密码</button>}
-        {!admin && <button type="button" onClick={onResetTraffic} disabled={Boolean(busy)}><RotateCcw />重置流量</button>}
+      </div>
+      <h3 className="cx-sheet-section">访问</h3>
+      <div className="cx-sheet-items">
         {!admin && !deleting && <button type="button" onClick={() => onStatus(enableAction)} disabled={Boolean(busy)}>{enableAction ? <Power /> : <PowerOff />}{enableAction ? "启用" : "禁用"}{accessPending ? ` (${lifecycle?.pending_count ?? 0})` : ""}</button>}
         {!admin && !deleting && enableAction && lifecycle?.desired_state === "disabled" && accessPending && <button type="button" onClick={() => onStatus(false)} disabled={Boolean(busy)}><RefreshCw />重试禁用</button>}
+      </div>
+      {!deleting && (lifecycle?.desired_state === "disabled" || accessDisabled || accessState === "disabling") && <UserAccessStatus items={lifecycle?.access} />}
         {!admin && <button className={`danger user-delete-button${pending > 0 ? " pending" : ""}`} type="button" onClick={onDelete} disabled={Boolean(busy)}>{pending > 0 && <span aria-hidden="true">{pending}</span>}<Trash2 /><b>删除</b></button>}
-      </footer>
       {pending > 0 && <p className="user-delete-pending">删除未完成，还有 {pending} 个项目待清理，可再次点击删除重试。</p>}
-    </article>
+    </CompactSheet>
   );
 }
 
@@ -562,10 +596,7 @@ function AdminCredentialsDialog({ token, user, lifecycle, repair, onClose, onSav
 }
 
 function DialogShell({ title, subtitle, onClose, children, footer, wide = false }: { title: string; subtitle?: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode; wide?: boolean }) {
-  return <div className="user-dialog-layer" role="presentation" onMouseDown={onClose}><section className={`user-dialog${wide ? " wide" : ""}`} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}>
-    <header><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button type="button" onClick={onClose} aria-label="关闭"><X /></button></header>
-    <div className="user-dialog-body">{children}</div>{footer && <footer>{footer}</footer>}
-  </section></div>;
+  return <CompactSheet title={title} subtitle={subtitle} onClose={onClose} closeLabel="关闭" className={`user-dialog${wide ? " wide" : ""}`} bodyClassName="user-dialog-body" footer={footer}>{children}</CompactSheet>;
 }
 
 function CreateUserDialog({ token, onClose, onCreated }: { token: string; onClose: () => void; onCreated: (password: string) => Promise<void> }) {

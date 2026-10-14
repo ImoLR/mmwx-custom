@@ -1,4 +1,4 @@
-import type { HelperUserConnectionsResponse, ManagedUser, ManagedUserExpiredPackage, ManagedUserPackageInput, RemoteServer, UserConnectionsResponse } from "./types";
+import type { HelperUserConnectionsResponse, ManagedUser, ManagedUserExpiredPackage, ManagedUserLifecycle, ManagedUserPackageInput, RemoteServer, UserConnectionsResponse } from "./types";
 
 export function userConnectionCoverage(formal: UserConnectionsResponse | null, helper: HelperUserConnectionsResponse | null, servers: RemoteServer[] | null) {
   if (!formal && !helper) return { incomplete: true, message: "" };
@@ -104,4 +104,61 @@ export function searchUserURIs<T extends { username: string; node_name: string; 
 export function credentialWriteState(state?: string): "allow" | "confirm" | "refuse" {
   if (state === "deleting" || state === "delete_partial") return "refuse";
   return state === "disabled" || state?.startsWith("partially_") || state === "enabling" || state === "disabling" ? "confirm" : "allow";
+}
+
+export type UserQuickFilter = "all" | "d7" | "expired" | "disabled";
+export type UserSort = "expiry" | "username";
+
+export function managedUserStatus(user: ManagedUser, lifecycle?: ManagedUserLifecycle) {
+  const admin = user.role === "admin";
+  const officialInactive = user.is_active === false;
+  const deleting = lifecycle?.effective_state === "deleting" || lifecycle?.effective_state === "delete_partial";
+  const pending = deleting ? lifecycle?.pending_count ?? 0 : 0;
+  const accessState = lifecycle?.effective_state ?? "enabled";
+  const accessDisabled = accessState === "disabled" || accessState === "partially_disabled" || accessState === "partially_enabled" || accessState === "enabling";
+  const accessPending = !deleting && (lifecycle?.pending_count ?? 0) > 0;
+  const enableAction = lifecycle?.desired_state === "disabled" || accessState === "disabled" || accessState === "partially_enabled" || accessState === "enabling";
+  const accessOperationLabel = lifecycle?.operation === "enable" ? "启用" : "禁用";
+  const statusLabel = deleting ? pending > 0 ? "删除未完成" : "正在删除"
+    : accessPending ? `${accessOperationLabel}未完成`
+      : accessState === "disabling" ? "正在禁用" : accessState === "enabling" ? "正在启用" : accessDisabled ? "已禁用" : "已启用";
+  const displayedStatus = officialInactive ? statusLabel === "已启用" ? "官方已停用" : `${statusLabel}（官方已停用）` : statusLabel;
+  return { admin, officialInactive, deleting, pending, accessState, accessDisabled, accessPending, enableAction, displayedStatus };
+}
+
+export function matchesUserQuickFilter(user: ManagedUser, filter: UserQuickFilter, lifecycle?: ManagedUserLifecycle, lastPackage?: ManagedUserExpiredPackage, ManagedUserLifecycle, now = Date.now()) {
+  if (filter === "all") return true;
+  if (filter === "disabled") {
+    const status = managedUserStatus(user, lifecycle);
+    return status.accessDisabled || status.officialInactive;
+  }
+  return matchesExpiry(user.package_end_date, filter, now, expiredUnboundPackage(user, lastPackage)?.last_package_end_date);
+}
+
+export function userQuickCounts(users: ManagedUser[], lifecycles: Record<string, ManagedUserLifecycle>, expiredPackages: Record<string, ManagedUserExpiredPackage>, now = Date.now()) {
+  const count = (filter: UserQuickFilter) => users.filter((user) => matchesUserQuickFilter(user, filter, lifecycles[user.username], expiredPackages[user.username], now)).length;
+  return { all: users.length, d7: count("d7"), expired: count("expired"), disabled: count("disabled") };
+}
+
+export function sortManagedUsers(users: ManagedUser[], sort: UserSort, expiredPackages: Record<string, ManagedUserExpiredPackage>) {
+  const end = (user: ManagedUser) => {
+    const value = user.package_end_date || expiredUnboundPackage(user, expiredPackages[user.username])?.last_package_end_date;
+    const date = value ? Date.parse(value.slice(0, 10)) : NaN;
+    return Number.isNaN(date) ? Infinity : date;
+  };
+  return [...users].sort((a, b) => Number(a.role === "admin") - Number(b.role === "admin")
+    || (sort === "expiry" ? (end(a) - end(b) || 0) : 0) || a.username.localeCompare(b.username));
+}
+
+export function userRowTags(user: ManagedUser, lifecycle?: ManagedUserLifecycle, expiredPackage?: ManagedUserExpiredPackage, ManagedUserLifecycle, now = Date.now()) {
+  const status = managedUserStatus(user, lifecycle);
+  const lastPackage = expiredUnboundPackage(user, expiredPackage);
+  const days = remainingDays(user.package_end_date, now);
+  const expired = Boolean(lastPackage) || (days !== null && days <= 0);
+  const critical = [
+    status.pending > 0 ? `删除未完成 ${status.pending}` : status.accessPending ? `${lifecycle?.operation === "enable" ? "启用" : "禁用"}未完成` : "",
+    lifecycle?.access?.some((item) => item.status === "conflict") ? "冲突" : "",
+    lastPackage && !lastPackage.rebindable ? "无法重绑" : "",
+  ].filter(Boolean);
+  return { critical, expiry: expired ? "已过期" : days === null ? "" : `剩余 ${days} 天`, tone: expired ? "bad" : days !== null && days <= 7 ? "warning" : "", status: status.admin ? "管理员" : status.displayedStatus === "已启用" ? "" : status.displayedStatus };
 }

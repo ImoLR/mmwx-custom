@@ -7329,15 +7329,15 @@ button {
 .package-auto-rules { display: grid; gap: 12px; margin-bottom: 12px; }
 
 /* The node page uses one compact list on mobile and desktop. */
-.node-manager.node-redesign { max-width: 1200px; gap: 10px; padding: 10px 14px 88px; font-size: 14px; }
-.node-redesign .node-hero { padding: 0; align-items: center; border: 0; background: transparent; box-shadow: none; gap: 8px; }
-.node-redesign .node-hero h1 { flex: 1; font-size: 21px; }
-.node-redesign .node-hero h1 small { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 5px; }
-.node-redesign .node-hero > button, .node-redesign .node-global-menu-wrap > button { min-height: 38px; border-radius: 11px; }
-.node-redesign .primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-.node-redesign .node-toolbar { display: flex; gap: 8px; }
-.node-redesign .node-search { flex: 1; min-width: 0; border-radius: 11px; }
-.node-redesign .node-search input { width: 100%; min-width: 0; min-height: 38px; padding-left: 0; font-size: 13px; }
+.node-manager.node-redesign, .user-manager.cx-manager, .package-manager.cx-manager { max-width: 1200px; gap: 10px; padding: 10px 14px 88px; font-size: 14px; }
+:is(.node-redesign, .cx-manager) :is(.node-hero, .cx-hero) { padding: 0; align-items: center; border: 0; background: transparent; box-shadow: none; gap: 8px; }
+:is(.node-redesign, .cx-manager) :is(.node-hero, .cx-hero) h1 { flex: 1; font-size: 21px; }
+:is(.node-redesign, .cx-manager) :is(.node-hero, .cx-hero) h1 small { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 5px; }
+:is(.node-redesign, .cx-manager) :is(.node-hero, .cx-hero) > button, .node-redesign .node-global-menu-wrap > button { min-height: 38px; border-radius: 11px; }
+:is(.node-redesign, .cx-manager) .primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+:is(.node-redesign, .cx-manager) :is(.node-toolbar, .cx-toolbar) { display: flex; gap: 8px; }
+:is(.node-redesign, .cx-manager) :is(.node-search, .cx-search) { flex: 1; min-width: 0; border-radius: 11px; }
+:is(.node-redesign, .cx-manager) :is(.node-search, .cx-search) input { width: 100%; min-width: 0; min-height: 38px; padding-left: 0; font-size: 13px; }
 .cx-filter-button { display: flex; align-items: center; justify-content: center; gap: 5px; flex: 0 0 auto; border: 1px solid var(--line); background: var(--card); color: var(--text); padding: 0 11px; border-radius: 11px; font: inherit; }
 .cx-filter-button b { padding: 1px 5px; font-size: 11px; background: var(--primary); color: #fff; border-radius: 8px; }
 .cx-active-filters { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
@@ -7448,8 +7448,8 @@ button {
 .node-import-sheet textarea { min-height: 130px; width: 100%; border: 1px solid var(--line); background: var(--fill); color: var(--text); border-radius: 8px; padding: 10px; resize: vertical; }
 .node-import-sheet .node-form-hint { font-size: 12px; }
 @media (min-width: 900px) {
-  .node-manager.node-redesign { padding-top: 18px; }
-  .node-redesign .node-toolbar { max-width: 720px; }
+  .node-manager.node-redesign, .user-manager.cx-manager, .package-manager.cx-manager { padding-top: 18px; }
+  :is(.node-redesign, .cx-manager) :is(.node-toolbar, .cx-toolbar) { max-width: 720px; }
   .cx-segments { max-width: 520px; }
   .node-row-desktop { display: inline; min-width: 0; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; }
   .node-row-server { flex-shrink: 0; }
@@ -7460,12 +7460,12 @@ button {
   .cx-sheet-grab { display: none; }
   .node-import-sheet { width: min(700px, 100vw); }
 }
-.app-shell:has(.node-redesign) { position: relative; padding: 0; }
-.app-shell:has(.node-redesign) > .topbar { position: absolute; top: 10px; left: 14px; z-index: 30; padding: 0; }
-.app-shell:has(.node-redesign) > .topbar .round-button { width: 38px; height: 38px; border-radius: 11px; }
-.node-redesign .node-hero { padding-left: 46px; min-height: 38px; }
+.app-shell:has(.node-redesign, .cx-manager) { position: relative; padding: 0; }
+.app-shell:has(.node-redesign, .cx-manager) > .topbar { position: absolute; top: 10px; left: 14px; z-index: 30; padding: 0; }
+.app-shell:has(.node-redesign, .cx-manager) > .topbar .round-button { width: 38px; height: 38px; border-radius: 11px; }
+:is(.node-redesign, .cx-manager) :is(.node-hero, .cx-hero) { padding-left: 46px; min-height: 38px; }
 @media (min-width: 900px) {
-  .app-shell:has(.node-redesign) > .topbar { top: 18px; }
+  .app-shell:has(.node-redesign, .cx-manager) > .topbar { top: 18px; }
 }
 .node-sheet-submenu > summary { cursor: pointer; padding: 10px 2px; border-bottom: 1px solid var(--line); font-size: 14px; color: var(--text); }
 .node-sheet-submenu[open] > summary { color: var(--primary); margin-bottom: 8px; }
@@ -7473,3 +7473,50 @@ button {
 .node-sheet-package > span { flex: 0 0 auto; }
 .node-sheet-package .node-package-chip { min-width: 0; border: 0; padding: 0; justify-content: flex-end; background: transparent; }
 .node-sheet-package .node-package-chip span { font-size: 12px; overflow-wrap: anywhere; }
+
+/* User and package details use the same compact patterns as nodes. */
+.cx-hero { display: flex; gap: 8px; }
+.cx-hero h1 { margin: 0; line-height: 1.25; }
+.cx-hero button, .cx-toolbar button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 38px; padding: 0 11px; border: 1px solid var(--line); border-radius: 11px; background: var(--card); color: var(--text); font: inherit; white-space: nowrap; }
+.cx-manager svg, .cx-sheet svg { width: 17px; height: 17px; flex: 0 0 auto; }
+.cx-search { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--card); padding: 0 11px; color: var(--muted); }
+.cx-search input { border: 0; outline: none; background: transparent; color: var(--text); font: inherit; }
+.cx-manager .cx-row { cursor: pointer; }
+.cx-manager .cx-row:first-child { border-top: 0; }
+.cx-manager .cx-row:hover { background: color-mix(in srgb, var(--primary) 3%, var(--card)); }
+.cx-manager .cx-row:focus-within { outline: 2px solid var(--primary); outline-offset: -2px; }
+.cx-sheet button:disabled { opacity: .42; cursor: not-allowed; }
+.cx-manager .cx-dialog .primary { border-color: var(--primary); background: var(--primary); color: #fff; }
+.cx-sheet > .cx-sheet-footer { flex: 0 0 auto; border-top: 1px solid var(--line); padding: 11px 14px max(11px, env(safe-area-inset-bottom)); }
+.cx-filter-sheet label { display: grid; gap: 8px; font-size: 13px; }
+.cx-filter-sheet select { width: 100%; min-width: 0; min-height: 40px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--text); padding: 0 8px; font: inherit; }
+.user-list-options { display: flex; align-items: flex-start; gap: 6px; min-width: 0; font-size: 11px; color: var(--muted); }
+.user-list-options select { margin-left: auto; max-width: 90px; font: inherit; color: var(--muted); border: 0; background: transparent; min-height: 20px; padding: 0; }
+.user-coverage { flex: 1; min-width: 0; }
+.user-coverage summary { cursor: pointer; list-style: none; line-height: 20px; }
+.user-coverage p { line-height: 1.5; overflow-wrap: anywhere; margin: 6px 0; }
+.user-row-avatar { width: 21px; height: 21px; flex-basis: 21px; font-size: 11px; }
+.user-row-nickname { color: var(--muted); font-size: 11px; font-weight: 400; }
+.user-row-package { display: flex; gap: 6px; min-width: 0; font-size: 11px; line-height: 18px; color: var(--muted); white-space: nowrap; }
+.user-row-package > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.user-row-package time, .user-row-expiry { flex-shrink: 0; }
+.user-row-package.bad .user-row-expiry { color: var(--danger); }
+.user-row-package.warning .user-row-expiry { color: #a16b13; }
+:root[data-theme="dark"] .user-row-package.warning .user-row-expiry { color: #e6b655; }
+.user-row-metrics { display: flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; font-size: 10px; line-height: 17px; color: var(--muted); }
+.user-row-metrics > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.user-row-traffic-bar { flex: 0 1 32px; min-width: 14px; height: 3px; background: var(--fill); border-radius: 3px; overflow: hidden; }
+.user-row-traffic-bar i { display: block; height: 100%; background: var(--primary); }
+.user-action-sheet .user-facts { font-size: 12px; }
+.user-sheet-heading { display: grid; gap: 8px; }
+.user-action-sheet .user-package { font-size: 12px; }
+.user-action-sheet .user-delete-button { color: var(--danger); border: 0; border-top: 1px solid var(--line); border-radius: 0; justify-content: flex-start; min-height: 44px; background: transparent; }
+.user-action-sheet .user-renew-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.user-action-sheet .user-renew-actions button { font-size: 12px; padding: 0 8px; }
+.user-action-sheet .user-delete-pending { font-size: 12px; }
+.cx-sheet.user-dialog { max-width: 100%; }
+@media (min-width: 900px) {
+  .cx-manager .cx-toolbar { max-width: 720px; }
+  .cx-sheet.user-dialog { width: min(540px, 100vw); }
+  .cx-sheet.user-dialog.wide { width: min(760px, 100vw); }
+}
