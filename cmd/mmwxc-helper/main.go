@@ -149,6 +149,10 @@ func main() {
 		_ = json.NewEncoder(os.Stdout).Encode(snapshot)
 		return
 	}
+	housekeepingCtx, cancelHousekeeping := context.WithTimeout(context.Background(), 15*time.Second)
+	installLogHousekeeping(housekeepingCtx, "/", systemctl, func(message string) { log.Printf("[mmwxc-helper] %s", message) })
+	cancelHousekeeping()
+	executor.logHousekeeping = &logHousekeeping{}
 	unitsChanged := false
 	for _, unit := range []struct{ path, contents string }{
 		{coreServicePath, coreServiceUnit},

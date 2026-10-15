@@ -91,6 +91,15 @@ type agentStatus struct {
 	Takeover      takeoverState            `json:"takeover"`
 	MachineID     string                   `json:"machine_id,omitempty"`
 	Update        *componentUpdateProgress `json:"update,omitempty"`
+	Logs          *logHousekeepingStatus   `json:"logs,omitempty"`
+}
+
+type logHousekeepingStatus struct {
+	JournaldCapped    bool      `json:"journald_capped"`
+	AgentLogrotate    bool      `json:"agent_logrotate"`
+	JournaldDiskUsage string    `json:"journald_disk_usage,omitempty"`
+	AgentLogBytes     int64     `json:"agent_log_bytes"`
+	CheckedAt         time.Time `json:"checked_at"`
 }
 
 type takeoverState struct {

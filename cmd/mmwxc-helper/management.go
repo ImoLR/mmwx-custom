@@ -77,6 +77,7 @@ type agentStatus struct {
 	Takeover      takeoverState            `json:"takeover"`
 	MachineID     string                   `json:"machine_id,omitempty"`
 	Update        *componentUpdateProgress `json:"update,omitempty"`
+	Logs          *logHousekeepingStatus   `json:"logs,omitempty"`
 }
 
 type managementReport struct {
@@ -147,11 +148,12 @@ func signManagementResult(result *managementResult, token string) error {
 }
 
 type commandExecutor struct {
-	lifecycle *lifecycleManager
-	core      *coreClient
-	state     *localState
-	client    *http.Client
-	config    config
+	lifecycle       *lifecycleManager
+	core            *coreClient
+	state           *localState
+	client          *http.Client
+	config          config
+	logHousekeeping *logHousekeeping
 }
 
 func (executor *commandExecutor) reportUpdateProgress(component, phase, version, message string) {
@@ -177,6 +179,7 @@ func (executor *commandExecutor) status(ctx context.Context) agentStatus {
 		Capabilities: append([]string(nil), helperCapabilities...), LastOperation: executor.state.LastOperation, ReportedAt: time.Now().UTC(),
 		Ownership: executor.lifecycle.externalOwnershipStatus(ctx, &executor.state.ExternalOwnership),
 		Takeover:  executor.state.Takeover, MachineID: executor.state.MachineID,
+		Logs: executor.logHousekeeping.snapshot(ctx),
 	}
 	if actualMode, err := readAgentXrayMode(officialAgentConfigPath); err == nil {
 		status.CoreMode = actualMode
