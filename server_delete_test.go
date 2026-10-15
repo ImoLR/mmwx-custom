@@ -169,8 +169,12 @@ func TestServerDeletionRetiresOnlyTargetHelperState(t *testing.T) {
 	state.data.ConnectionSettings["12"] = serverConnectionSettings{}
 	blocked := []serverConnectionIdentity{{InboundTag: "retired", User: "old"}, {InboundTag: "kept", User: "current"}}
 	state.data.ConnectionSettings["2"] = serverConnectionSettings{BlockedIdentities: &blocked, Ports: []serverPortConnectionSettings{{InboundTag: "retired"}, {InboundTag: "kept"}}}
-	a := &app{helperState: state}
+	a := &app{helperState: state,
+		disabledUserBlocks: map[string]map[string][]serverConnectionIdentity{"alice": {"12": {{InboundTag: "target"}}, "2": {{InboundTag: "retired", User: "old"}, {InboundTag: "kept", User: "current"}, {InboundTag: "shared", User: "retired-user"}, {InboundTag: "shared", User: "kept-user"}}}},
+		disabledUserAccess: map[string][]userAccessNodeStatus{"alice": {{ServerID: 12}, {ServerID: 2, InboundTag: "retired"}, {ServerID: 2, InboundTag: "kept", NodeID: 20}}},
+	}
 	p := serverDeletionPlan{ServerID: 12, Inbounds: []serverDeletionInbound{{ServerID: 2, Tag: "retired"}}}
+	p.Identities = []serverDeletionIdentity{{ServerID: 2, Tag: "shared", Identity: "retired-user"}}
 	if err := a.retireDeletedServerState(&p); err != nil {
 		t.Fatal(err)
 	}
@@ -186,6 +190,10 @@ func TestServerDeletionRetiresOnlyTargetHelperState(t *testing.T) {
 	kept := state.data.ConnectionSettings["2"]
 	if len(state.data.Servers) != 1 || len(state.data.InstallTokens) != 1 || len(kept.Ports) != 1 || kept.Ports[0].InboundTag != "kept" || len(*kept.BlockedIdentities) != 1 {
 		t.Fatal("unrelated Helper settings changed or retired settings remain")
+	}
+	remaining := a.disabledUserBlocks["alice"]["2"]
+	if len(a.disabledUserBlocks["alice"]["12"]) != 0 || len(remaining) != 2 || remaining[0].User != "current" || remaining[1].User != "kept-user" || len(a.disabledUserAccess["alice"]) != 1 || a.disabledUserAccess["alice"][0].NodeID != 20 {
+		t.Fatal("retired dependency cache retained or unrelated disabled identity lost")
 	}
 }
 

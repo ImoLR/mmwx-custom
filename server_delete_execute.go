@@ -497,6 +497,19 @@ func (a *app) uninstallDeletedServerHelper(ctx context.Context, p *serverDeletio
 
 func (a *app) retireDeletedServerState(p *serverDeletionPlan) error {
 	id := strconv.FormatInt(p.ServerID, 10)
+	retiredIdentity := func(serverID string, identity serverConnectionIdentity) bool {
+		for _, ref := range p.Identities {
+			if strconv.FormatInt(ref.ServerID, 10) == serverID && ref.Tag == identity.InboundTag && ref.Identity != "" && ref.Identity == identity.User {
+				return true
+			}
+		}
+		for _, inbound := range p.Inbounds {
+			if strconv.FormatInt(inbound.ServerID, 10) == serverID && inbound.Tag == identity.InboundTag {
+				return true
+			}
+		}
+		return false
+	}
 	if a.helperState != nil {
 		a.helperState.mu.Lock()
 		delete(a.helperState.data.Servers, id)
@@ -519,17 +532,7 @@ func (a *app) retireDeletedServerState(p *serverDeletionPlan) error {
 		}
 		for sid, settings := range a.helperState.data.ConnectionSettings {
 			retired := func(identity serverConnectionIdentity) bool {
-				for _, ref := range p.Identities {
-					if strconv.FormatInt(ref.ServerID, 10) == sid && ref.Tag == identity.InboundTag && ref.Identity != "" && ref.Identity == identity.User {
-						return true
-					}
-				}
-				for _, inbound := range p.Inbounds {
-					if strconv.FormatInt(inbound.ServerID, 10) == sid && inbound.Tag == identity.InboundTag {
-						return true
-					}
-				}
-				return false
+				return retiredIdentity(sid, identity)
 			}
 			users := settings.Users[:0]
 			for _, u := range settings.Users {
@@ -599,12 +602,21 @@ func (a *app) retireDeletedServerState(p *serverDeletionPlan) error {
 	delete(a.trafficGroupBlocks, id)
 	for user, servers := range a.disabledUserBlocks {
 		delete(servers, id)
+		for serverID, identities := range servers {
+			kept := identities[:0]
+			for _, identity := range identities {
+				if !retiredIdentity(serverID, identity) {
+					kept = append(kept, identity)
+				}
+			}
+			servers[serverID] = kept
+		}
 		a.disabledUserBlocks[user] = servers
 	}
 	for user, items := range a.disabledUserAccess {
 		kept := items[:0]
 		for _, item := range items {
-			if item.ServerID != p.ServerID && !containsLifecycleNode(deletionPlanIDs(p), item.NodeID) {
+			if item.ServerID != p.ServerID && !containsLifecycleNode(deletionPlanIDs(p), item.NodeID) && !retiredIdentity(strconv.FormatInt(item.ServerID, 10), serverConnectionIdentity{InboundTag: item.InboundTag}) {
 				kept = append(kept, item)
 			}
 		}
