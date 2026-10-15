@@ -229,11 +229,22 @@ func planServerDeletion(data serverDeletionInventory, serverID int64) (serverDel
 			return p, errors.New("服务器名称重复，无法安全判定节点归属")
 		}
 	}
-	hosts := map[string]bool{}
-	for _, k := range []string{"ip_address", "ip_address_v6", "domain", "domain_v6", "observed_ip", "observed_ip_v6", "pull_address", "pull_address_v6"} {
-		if h := deletionHost(server[k]); h != "" {
-			hosts[h] = true
+	hosts := deletionServerHosts(server)
+	sharedHosts := map[string][]string{}
+	for id, other := range servers {
+		if id == serverID {
+			continue
 		}
+		for host := range deletionServerHosts(other) {
+			if hosts[host] {
+				sharedHosts[host] = appendUniqueString(sharedHosts[host], deletionText(other["name"]))
+			}
+		}
+	}
+	for host, names := range sharedHosts {
+		delete(hosts, host)
+		sort.Strings(names)
+		p.Attention = append(p.Attention, "地址 "+host+" 同时属于服务器「"+strings.Join(names, "」、「")+"」，无法按地址判定依赖；指向该地址的中转/出站/隧道未自动删除，请人工核对")
 	}
 	nodes := map[int64]map[string]any{}
 	reasons := map[int64]string{}

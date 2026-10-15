@@ -66,6 +66,138 @@ func TestServerDeletionCascadeAndAlternatives(t *testing.T) {
 	}
 }
 
+func TestServerDeletionSharedHosts(t *testing.T) {
+	for _, field := range []string{"ip_address", "domain"} {
+		t.Run(field, func(t *testing.T) {
+			data := deletionFixture(t)
+			shared, unique := "192.0.2.1", "a.example"
+			if field == "domain" {
+				shared, unique = "shared.example", "192.0.2.1"
+			} else {
+				data["remote_servers"][0]["domain"] = unique
+			}
+			data["remote_servers"][0][field] = shared
+			data["remote_servers"][1][field] = " " + strings.ToUpper(shared) + ":443 "
+			config := func(host string, port int64) map[string]any {
+				return map[string]any{"server": host, "port": port}
+			}
+			data["nodes"][0]["clash_config"] = config(shared, 1443)
+			data["nodes"][1]["clash_config"] = config(shared, 3443)
+			data["nodes"][2]["clash_config"] = config(unique, 2443)
+			data["forward_chain_nodes"][0]["node_id"] = int64(30)
+			data["nodes"] = append(data["nodes"], []map[string]any{
+				{"id": int64(11), "node_name": "A parsed", "original_server": "A", "parsed_config": config(unique, 2443)},
+				{"id": int64(26), "node_name": "B parsed", "original_server": "B", "parsed_config": config(shared, 4443)},
+				{"id": int64(27), "node_name": "shared outbound", "original_server": "B", "inbound_tag": "out-shared"},
+				{"id": int64(28), "node_name": "unique outbound", "original_server": "B", "inbound_tag": "out-unique"},
+				{"id": int64(29), "node_name": "shared import", "clash_config": config(shared, 5443)},
+				{"id": int64(30), "node_name": "required chain", "original_server": "B", "clash_config": config(shared, 6443)},
+				{"id": int64(31), "node_name": "parent copy", "original_server": "B", "parent_node_id": int64(10)},
+				{"id": int64(32), "node_name": "shared route", "original_server": "B", "inbound_tag": "route-shared", "routed_outbound_tag": "routed-shared"},
+				{"id": int64(33), "node_name": "unique route", "original_server": "B", "inbound_tag": "route-unique", "routed_outbound_tag": "routed-unique"},
+				{"id": int64(35), "node_name": "shared tunnel", "original_server": "B", "clash_config": config(shared, 5345)},
+				{"id": int64(36), "node_name": "unique tunnel", "original_server": "B", "clash_config": config(shared, 6345)},
+				{"id": int64(37), "node_name": "required tunnel hop", "original_server": "B", "clash_config": config(shared, 7345)},
+			}...)
+			data["user_outbounds"] = []map[string]any{
+				{"server_id": int64(2), "inbound_tag": "out-shared", "outbound_json": map[string]any{"settings": map[string]any{"servers": []any{config(shared, 443)}}}},
+				{"server_id": int64(2), "inbound_tag": "out-unique", "outbound_json": map[string]any{"settings": map[string]any{"servers": []any{config(unique, 443)}}}},
+			}
+			data["tunnels"] = []map[string]any{
+				{"kind": "routed", "server_id": int64(2), "tag": "routed-shared", "inbound_tag": "route-shared", "target_address": shared, "target_port": int64(443)},
+				{"kind": "routed", "server_id": int64(2), "tag": "routed-unique", "inbound_tag": "route-unique", "target_address": unique, "target_port": int64(443)},
+				{"server_id": int64(2), "tag": "inbound-shared", "listen_port": int64(5345), "target_address": shared, "target_port": int64(443)},
+				{"server_id": int64(2), "tag": "inbound-unique", "listen_port": int64(6345), "target_address": unique, "target_port": int64(443)},
+			}
+			data["tunnel_chains"] = []map[string]any{
+				{"label": "shared", "hops": []any{map[string]any{"server_id": int64(2), "tag": "tunnel-shared-h0", "target_address": shared, "target_port": int64(443)}}},
+				{"label": "B-A", "hops": []any{map[string]any{"server_id": int64(2), "tag": "tunnel-b-a-h0", "listen_port": int64(7345), "target_address": shared, "target_port": int64(8345)}, map[string]any{"server_id": int64(1), "tag": "tunnel-b-a-h1", "listen_port": int64(8345)}}},
+			}
+			p, err := planServerDeletion(data, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ids := deletionPlanIDs(&p); hashJSON(ids) != hashJSON([]int64{10, 11, 21, 22, 23, 25, 28, 30, 31, 33, 36, 37}) {
+				t.Fatalf("deleted scope=%v", ids)
+			}
+			if len(p.Packages) != 2 || !p.Packages[0].Delete || p.Packages[1].Delete || hashJSON(p.Packages[1].DeletedNodeIDs) != hashJSON([]int64{10}) {
+				t.Fatalf("packages=%+v", p.Packages)
+			}
+			for _, inbound := range p.Inbounds {
+				if inbound.Tag == "out-shared" || inbound.Tag == "route-shared" {
+					t.Fatalf("shared inbound/outbound retired: %+v", inbound)
+				}
+			}
+			tunnels := []string{}
+			for _, step := range p.Steps {
+				if step.Kind == "tunnel" {
+					tunnels = append(tunnels, step.Tag)
+				}
+			}
+			if hashJSON(tunnels) != hashJSON([]string{"inbound-unique", "routed-unique", "tunnel-b-a-h0"}) {
+				t.Fatalf("tunnel cleanup=%v", tunnels)
+			}
+			warnings := 0
+			for _, note := range p.Attention {
+				if strings.HasPrefix(note, "地址 "+shared+" ") && strings.Contains(note, "「B」") {
+					warnings++
+				}
+			}
+			if warnings != 1 {
+				t.Fatalf("shared host attention=%v", p.Attention)
+			}
+			for _, fingerprint := range p.SubscriptionNodes {
+				if fingerprint.Host == shared && fingerprint.Port != 1443 {
+					t.Fatalf("ambiguous fingerprint=%+v", fingerprint)
+				}
+			}
+			for _, node := range []map[string]any{config(shared, 1443), config(unique, 2443)} {
+				raw, _ := json.Marshal(node)
+				if !subscriptionContainsDeletedNode(raw, p.SubscriptionNodes, 0) {
+					t.Fatalf("direct node cache survives: %s", raw)
+				}
+			}
+			kept, _ := json.Marshal(map[string]any{"proxies": []any{config(shared, 3443), config(shared, 4443)}})
+			for _, content := range []string{string(kept), base64.StdEncoding.EncodeToString(kept)} {
+				if subscriptionContainsDeletedNode([]byte(content), p.SubscriptionNodes, 0) {
+					t.Fatal("other server's cache rejected")
+				}
+			}
+		})
+	}
+}
+
+func TestServerDeletionSharedHostFields(t *testing.T) {
+	fields := []string{"ip_address", "ip_address_v6", "domain", "domain_v6", "observed_ip", "observed_ip_v6", "pull_address", "pull_address_v6"}
+	for _, targetField := range fields {
+		for _, otherField := range fields {
+			t.Run(targetField+"/"+otherField, func(t *testing.T) {
+				data := serverDeletionInventory{
+					"remote_servers": {
+						{"id": int64(1), "name": "A", targetField: " [2001:DB8::1]:443 "},
+						{"id": int64(2), "name": "B", otherField: "2001:db8::1"},
+						{"id": int64(3), "name": "C", "ip_address_v6": "2001:db8::1", "observed_ip_v6": "[2001:db8::1]"},
+					},
+					"nodes": {
+						{"id": int64(10), "original_server": "A", "clash_config": `{"server":"2001:db8::1","port":443}`},
+						{"id": int64(20), "original_server": "B", "clash_config": `{"server":"2001:db8::1","port":8443}`},
+					},
+				}
+				p, err := planServerDeletion(data, 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(p.Nodes) != 1 || p.Nodes[0].ID != 10 || !p.Nodes[0].Direct {
+					t.Fatalf("deleted scope=%v", p.Nodes)
+				}
+				if len(p.Attention) != 1 || !strings.Contains(p.Attention[0], "地址 2001:db8::1 同时属于服务器「B」、「C」") {
+					t.Fatalf("shared host attention=%v", p.Attention)
+				}
+			})
+		}
+	}
+}
+
 func TestServerDeletionPublicPlanAndStableFingerprint(t *testing.T) {
 	data := deletionFixture(t)
 	p, err := planServerDeletion(data, 1)

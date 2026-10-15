@@ -146,6 +146,36 @@ incomplete samples are marked explicitly. Custom Core defaults empty access logs
 `MMWXC_CORE_ACCESS_LOG=console` or a path enables debugging without changing the
 official config. Explicit access paths and error logging retain their behavior.
 
+## Server deletion
+
+Administrators preview the cascade and confirm the full server name. Plans and
+step results persist in `mmwxc_server_deletions`; operations serialize per server,
+reject identity/scope drift and resume failures without expanding the saved plan.
+Completion rereads official servers, nodes and packages and checks active orphans.
+Direct nodes are always deleted through the official API with `delete_nodes=true`.
+Dependencies follow parent/chain/routed IDs, required forwarding hops, pinned
+exits, tunnels, whole-inbound outbounds and the server's normalized addresses.
+An address shared with another registered server is excluded from address-based
+matching for nodes, outbounds and tunnels, with one attention line naming its
+other owners. Direct nodes and explicit ID dependencies still cascade; direct
+node subscription fingerprints retain host plus port, never shared-host-only matches.
+Valid alternative paths survive with failed members removed; repeated-server
+loops are not alternatives. Usable tunnel suffixes and partially usable routed
+inbounds survive, with failed rules removed and attention notes retained.
+Only packages explicitly referencing deleted nodes are trimmed; emptied packages
+use the user lifecycle executor to delete/unbind while retaining user accounts.
+Traffic groups are trimmed or deleted when empty, preserving remaining quotas.
+Helper identities/tokens, reports, commands, connection state, ownership, retired
+credentials, import cleanup tasks and live caches are cleared or retired safely.
+Signed `helper.uninstall` stops/disables owned Core, removes its ownership drop-in,
+confirms Core stopped, then acknowledges and self-uninstalls only MMWXC resources.
+Offline/old Helpers retain warnings and manual cleanup tasks; official Agent
+uninstall defaults on, and request acceptance alone does not prove shutdown.
+Subscription selections are trimmed or deleted if emptied; stale `/x/` and `/t/`
+caches containing retired nodes return 410 without revoking all user tokens.
+Certificate material and billing/audit history remain; dependent certificate
+automation stops. Unrelated historical records and user operation intent remain.
+
 ## Package node traffic groups
 
 Groups live in `mmwxc_package_traffic_groups` (package FK, name, byte quota,
