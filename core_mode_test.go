@@ -492,6 +492,13 @@ func TestLocalEmbeddedDriftIsRepairedToRecordedExternal(t *testing.T) {
 	// An Agent upgrade restored the embedded Core locally; the record is unchanged.
 	drifted := agentStatus{CoreMode: "embedded", ReportedAt: time.Now().UTC(), Capabilities: []string{"core.mode.apply"}}
 	command, err := state.reconcileCoreMode("12", drifted, external, nil)
+	if err != nil || command != nil {
+		t.Fatalf("brief local drift was repaired: %v %v", command, err)
+	}
+	observed, _ := state.coreModeIntent("12")
+	observed.DriftDetectedAt = time.Now().Add(-coreDriftGrace - time.Second)
+	state.data.CoreModeIntents["12"] = observed
+	command, err = state.reconcileCoreMode("12", drifted, external, nil)
 	if err != nil || command == nil {
 		t.Fatalf("local drift command=%#v err=%v", command, err)
 	}
