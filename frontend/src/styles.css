@@ -2387,6 +2387,36 @@ button {
   opacity: .45;
 }
 
+.component-upgrade-grid article { min-width: 0; align-content: start; }
+.upgrade-progress { display: grid; gap: 9px; min-width: 0; font-size: 12px; color: var(--text); }
+.upgrade-progress p { margin: 0; }
+.upgrade-steps { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); padding: 0; margin: 3px 0; list-style: none; }
+.upgrade-steps li { position: relative; display: grid; justify-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
+.upgrade-steps li:not(:last-child)::after { content: ""; position: absolute; top: 10px; left: calc(50% + 12px); width: calc(100% - 24px); height: 1px; background: var(--line); }
+.upgrade-steps i { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--fill-strong); border: 1px solid var(--line); font-style: normal; }
+.upgrade-steps .is-done { color: #168061; }
+.upgrade-steps .is-current { color: var(--primary); font-weight: 700; }
+.upgrade-steps .is-current i { color: #fff; background: var(--primary); border-color: var(--primary); }
+.upgrade-progress.is-failed .is-current { color: #dc4545; }
+.upgrade-progress.is-failed .is-current i { background: #dc4545; border-color: #dc4545; color: #fff; }
+.upgrade-meter { overflow: hidden; height: 5px; border-radius: 8px; background: var(--fill-strong); }
+.upgrade-meter > span { display: block; width: 0; height: 100%; background: var(--primary); border-radius: inherit; transition: width .25s; }
+.upgrade-meter.is-indeterminate > span { width: 100%; background: repeating-linear-gradient(110deg, var(--primary) 0 9px, color-mix(in srgb, var(--primary) 20%, var(--card)) 9px 18px); background-size: 40px 100%; animation: upgrade-stripe 1s linear infinite; }
+.upgrade-progress.is-failed .upgrade-meter { background: color-mix(in srgb, #dc4545 16%, var(--card)); }
+.upgrade-download { font-variant-numeric: tabular-nums; }
+.upgrade-timing { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.upgrade-stall { padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, #dc8b22 12%, var(--card)); color: var(--text); line-height: 1.6; overflow-wrap: anywhere; }
+.upgrade-failure, .upgrade-log-lines .is-error { color: #dc4545; }
+.upgrade-log { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.upgrade-log summary { cursor: pointer; padding: 7px 9px; background: var(--fill-strong); font-size: 11px; }
+.upgrade-log summary > span { float: right; color: var(--muted); }
+.upgrade-log-lines { max-height: 154px; overflow: auto; padding: 6px 9px; font: 11px/21px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.upgrade-log-lines > div { display: flex; align-items: baseline; gap: 8px; }
+.upgrade-log-lines time { flex: 0 0 auto; color: var(--muted); font-size: 10px; }
+.upgrade-log-lines span { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+@keyframes upgrade-stripe { to { background-position: 40px 0; } }
+@media (prefers-reduced-motion: reduce) { .upgrade-meter.is-indeterminate > span { animation: none; } }
+
 .update-dot {
   width: 9px;
   height: 9px;

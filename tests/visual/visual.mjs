@@ -360,7 +360,7 @@ async function main() {
   if (!updateBaseline && failed) process.exitCode = 1;
 }
 
-main().catch((error) => {
+(args.has("--upgrade-progress") ? import("./upgrade-progress.mjs") : main()).catch((error) => {
   console.error(error.message);
   process.exit(1);
 });

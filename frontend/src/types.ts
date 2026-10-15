@@ -565,7 +565,7 @@ export type CustomAgentStatusResponse = {
     machine_id?: string;
     architecture?: string;
     reported_at?: string;
-    update?: { component: "helper" | "core"; phase: "dispatching" | "downloading" | "verifying" | "installing" | "restarting" | "reconnecting" | "success" | "failed" | "rolled_back"; target_version?: string; message?: string; updated_at: string };
+    update?: { component: "helper" | "core"; phase: "dispatching" | "downloading" | "verifying" | "installing" | "restarting" | "reconnecting" | "success" | "failed" | "rolled_back"; target_version?: string; message?: string; updated_at: string; started_at?: string; percent?: number; bytes_done?: number; bytes_total?: number; log?: Array<{ at: string; phase: string; text: string }> };
   };
   pending?: Array<{ id: string; action: string; created_at: string }>;
   results?: Array<{ action: string; success: boolean; message?: string; completed_at: string }>;
