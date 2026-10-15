@@ -48,7 +48,7 @@ import type {
 } from "./types";
 import { TRAFFIC_GB, retainTrafficGroupNodes, trafficGroupDraft, trafficGroupNodeWarning, trafficGroupPayload, trafficGroupUsageStatus, validateTrafficGroups } from "./package-traffic-groups";
 import type { PackageTrafficGroupDraft } from "./package-traffic-groups";
-import { emptyPackage, packageToForm, packageTemplateType, orderPackageNodes, packageResetDay, packageMemberNodeIds, newAutoSpeedRule, validatePackage, updatePackageNodeOverride, packageSavePayload } from "./package-manager-logic";
+import { emptyPackage, packageToForm, packageTemplateType, orderPackageNodes, packageResetDay, packageMemberNodeIds, newAutoSpeedRule, validatePackage, updatePackageNodeOverride, packageSavePayload, packageDanglingNodeIds } from "./package-manager-logic";
 
 import { CompactSheet, CompactSegments, CompactGroupHeader } from "./compact-ui";
 import { groupPackages, packageBoundUsers, packageServers, searchPackages, packageOverrideCount, type PackageGrouping } from "./package-manager-logic";
@@ -153,7 +153,7 @@ export function PackageManagementPage({ token }: { token: string }) {
   }
 
   function renderPackageSheet(pkg: ManagedPackage) {
-    const linked = (pkg.nodes ?? []).map((id) => nodeById.get(id) ?? { id, node_name: `已删除节点 #${id}` } as XrayNode);
+    const linked = [...new Set([...(pkg.nodes ?? []), ...packageDanglingNodeIds(pkg, allNodes)])].map((id) => nodeById.get(id) ?? { id, node_name: `已删除节点 #${id}` } as XrayNode);
     const overrides = packageOverrideCount(pkg);
     return <CompactSheet title={pkg.name} subtitle={[pkg.short_code, pkg.description || "暂无说明"].filter(Boolean).join(" · ")} onClose={() => setSelectedId(null)} className="package-action-sheet">
       <div className="cx-quick-actions package-quick-actions"><button type="button" onClick={() => { setSelectedId(null); setEditor({ pkg }); }}><Edit3 />编辑</button><button type="button" onClick={() => { setSelectedId(null); setUsagePackage(pkg); }}><Share2 />共享组用量</button></div>
@@ -206,7 +206,7 @@ export function PackageManagementPage({ token }: { token: string }) {
                   <div className="cx-row-title"><button className="cx-row-name" type="button" title={pkg.name} onClick={(event) => { event.stopPropagation(); open(); }}>{pkg.name}</button>{pkg.short_code && <span className="cx-tag package-row-code">{pkg.short_code}</span>}{grouping === "user" && bound.length > 1 && <span className="cx-tag shared">共用</span>}{grouping === "server" && linkedServers.length > 1 && <span className="cx-tag shared">多服务器</span>}<button type="button" className="cx-row-more" aria-label={`操作 ${pkg.name}`} onClick={(event) => { event.stopPropagation(); open(); }}><MoreHorizontal /></button></div>
                   <div className="package-row-cycle">{pkg.traffic_limit_gb > 0 ? `${formatNumber(pkg.traffic_limit_gb)} GB` : "不限"} · {pkg.cycle_days} 天 · {pkg.is_reset ? `每月 ${pkg.reset_day} 日重置` : "不重置"} · {pkg.traffic_mode === "twoway" ? "双向×2" : "单向"}</div>
                   <div className="package-row-meta">
-                    <span className="package-row-nodes" title={linkedServers.join("、")}>{pkg.nodes?.length || allNodes.length} 个节点{linkedServers.length ? ` · ${linkedServers.join(" / ")}` : " · 全部节点"}</span>
+                    <span className="package-row-nodes" title={linkedServers.join("、")}>{pkg.nodes?.length || (pkg.nodes_configured ? packageDanglingNodeIds(pkg, allNodes).length : allNodes.length)} 个节点{linkedServers.length ? ` · ${linkedServers.join(" / ")}` : " · 全部节点"}</span>
                     <span className="package-row-users" title={bound.map((user) => user.username).join("、")}>{usersError ? "绑定待核对" : bound.map((user) => user.username).join("、") || "未绑定"}</span>
                     {(groupCounts[pkg.id] ?? 0) > 0 && <span className="cx-tag">共享组 {groupCounts[pkg.id]}</span>}
                     {groupCounts[pkg.id] === undefined && <span className="cx-tag bad">共享组待核对</span>}
@@ -378,7 +378,7 @@ function PackageEditor({ token, pkg, nodes, allNodes, servers, templates, chains
   }
 
   function validate() {
-    return validatePackage(form) || validateTrafficGroups(groups, form.traffic_limit_gb, memberNodes.map((node) => node.id), form.node_traffic_limits);
+    return validatePackage(packageSavePayload(form, allNodes.map((node) => node.id))) || validateTrafficGroups(groups, form.traffic_limit_gb, memberNodes.map((node) => node.id), form.node_traffic_limits);
   }
 
   async function save(emptyNodesConfirmed = false) {
@@ -493,7 +493,7 @@ function PackageEditor({ token, pkg, nodes, allNodes, servers, templates, chains
           <fieldset className="package-form-section package-node-picker" disabled={groupsLoading || Boolean(groupsError) || saving}>
             <legend>关联节点与单节点覆盖</legend>
             <p className="package-section-note">不选择节点表示使用全部节点。已选顺序就是订阅中的节点顺序。</p>
-            {form.nodes.some((id) => !allNodes.some((node) => node.id === id)) && <p className="package-field-help">{form.nodes.filter((id) => !allNodes.some((node) => node.id === id)).map((id) => `已删除节点 #${id}`).join("、")}；保存时移除这些引用。</p>}
+            {packageDanglingNodeIds(form, allNodes).length > 0 && <p className="package-field-help">{packageDanglingNodeIds(form, allNodes).map((id) => `已删除节点 #${id}`).join("、")}；保存时移除这些引用。</p>}
             <div className="package-node-controls"><label><span>按标签筛选</span><select value={tag} onChange={(event) => setTag(event.target.value)}><option value="all">全部标签（{nodes.length}）</option>{tags.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><button type="button" onClick={toggleVisible}>{visibleNodes.length > 0 && visibleNodes.every((node) => form.nodes.includes(node.id)) ? "全不选" : tag === "all" ? "全选" : "选中本标签"}</button></div>
             <div className="package-node-options">
               {visibleNodes.length === 0 && <p className="package-field-help">暂无可用节点</p>}

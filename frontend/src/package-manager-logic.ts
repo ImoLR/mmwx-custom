@@ -142,11 +142,19 @@ export function packageBoundUsers(pkg: ManagedPackage, users: ManagedUser[]) {
   return users.filter((user) => user.role !== "admin" && (user.package_id === pkg.id || user.assignment_package_ids?.includes(pkg.id)));
 }
 
+export function packageDanglingNodeIds(pkg: Pick<ManagedPackage, "nodes" | "node_name_overrides" | "node_multipliers" | "node_speed_limits" | "node_device_limits" | "node_traffic_limits">, nodes: XrayNode[]) {
+  // Official filters deleted IDs out of nodes, but keeps their per-node maps.
+  const ids = [...(pkg.nodes ?? []), ...[pkg.node_name_overrides, pkg.node_multipliers, pkg.node_speed_limits, pkg.node_device_limits, pkg.node_traffic_limits].flatMap((values) => Object.keys(values ?? {}).map(Number))];
+  return [...new Set(ids)].filter((id) => !nodes.some((node) => node.id === id));
+}
+
 export function packageServers(pkg: ManagedPackage, nodes: XrayNode[]) {
-  return [...new Set((pkg.nodes ?? []).map((id) => {
+  const linked = [...new Set((pkg.nodes ?? []).map((id) => {
     const node = nodes.find((node) => node.id === id);
     return node ? node.original_server || "外部节点" : `已删除节点 #${id}`;
-  }))];
+  }).concat(packageDanglingNodeIds(pkg, nodes).map((id) => `已删除节点 #${id}`)))];
+  if (!pkg.nodes?.length && !pkg.nodes_configured && linked.length) linked.unshift("全部节点");
+  return linked.length || !pkg.nodes_configured ? linked : ["已删除节点"];
 }
 
 export function groupPackages(packages: ManagedPackage[], users: ManagedUser[], nodes: XrayNode[], grouping: PackageGrouping): CompactPackageGroup[] {

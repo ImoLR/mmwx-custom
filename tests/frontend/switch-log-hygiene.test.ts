@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { emptyPackage, packageSavePayload, packageServers, groupPackages } from "../../frontend/src/package-manager-logic.ts";
+import { emptyPackage, packageSavePayload, packageServers, groupPackages, packageDanglingNodeIds } from "../../frontend/src/package-manager-logic.ts";
 import type { ManagedPackage, XrayNode } from "../../frontend/src/types.ts";
 
 test("deleted package nodes remain explicit until an administrator saves", () => {
@@ -15,4 +15,16 @@ test("deleted package nodes remain explicit until an administrator saves", () =>
   assert.deepEqual(pkg.nodes, [37, 4]);
   assert.deepEqual(packageSavePayload({ ...pkg, nodes: [37] }, [4]).nodes, []);
   assert.deepEqual(packageSavePayload({ ...pkg, nodes: [] }, [4]).nodes, []);
+});
+
+test("official package 9 response retains deleted node 37 only in overrides", () => {
+  const pkg = { ...emptyPackage(), id: 9, nodes: [], nodes_configured: true, node_name_overrides: { 37: "旧节点" }, node_traffic_limits: { 37: 600 } } as ManagedPackage;
+  const nodes = [{ id: 4, original_server: "s2" }] as XrayNode[];
+  assert.deepEqual(packageDanglingNodeIds(pkg, nodes), [37]);
+  assert.deepEqual(packageServers(pkg, nodes), ["已删除节点 #37"]);
+  assert.deepEqual(groupPackages([pkg], [], nodes, "server").map((g) => g.name), ["已删除节点 #37"]);
+  const saved = packageSavePayload(pkg, [4]);
+  assert.deepEqual(saved.nodes, []);
+  assert.deepEqual(saved.node_name_overrides, {});
+  assert.deepEqual(saved.node_traffic_limits, {});
 });
