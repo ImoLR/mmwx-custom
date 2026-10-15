@@ -153,7 +153,7 @@ export function PackageManagementPage({ token }: { token: string }) {
   }
 
   function renderPackageSheet(pkg: ManagedPackage) {
-    const linked = (pkg.nodes ?? []).map((id) => nodeById.get(id) ?? { id, node_name: `(已删除 #${id})` } as XrayNode);
+    const linked = (pkg.nodes ?? []).map((id) => nodeById.get(id) ?? { id, node_name: `已删除节点 #${id}` } as XrayNode);
     const overrides = packageOverrideCount(pkg);
     return <CompactSheet title={pkg.name} subtitle={[pkg.short_code, pkg.description || "暂无说明"].filter(Boolean).join(" · ")} onClose={() => setSelectedId(null)} className="package-action-sheet">
       <div className="cx-quick-actions package-quick-actions"><button type="button" onClick={() => { setSelectedId(null); setEditor({ pkg }); }}><Edit3 />编辑</button><button type="button" onClick={() => { setSelectedId(null); setUsagePackage(pkg); }}><Share2 />共享组用量</button></div>
@@ -388,13 +388,13 @@ function PackageEditor({ token, pkg, nodes, allNodes, servers, templates, chains
     }
     const validation = validate();
     if (validation) { setError(validation); return; }
-    if (form.nodes.length === 0 && !emptyNodesConfirmed) { setConfirmEmptyNodes(true); return; }
+    const payload = packageSavePayload(form, allNodes.map((node) => node.id));
+    if (payload.nodes.length === 0 && !emptyNodesConfirmed) { setConfirmEmptyNodes(true); return; }
     setConfirmEmptyNodes(false);
     setSaving(true);
     setError("");
     let packageSaved = false;
     try {
-      const payload = packageSavePayload(form);
       let packageId = savedPackageId;
       if (packageId) await updatePackage(token, { ...payload, id: packageId });
       else {
@@ -493,6 +493,7 @@ function PackageEditor({ token, pkg, nodes, allNodes, servers, templates, chains
           <fieldset className="package-form-section package-node-picker" disabled={groupsLoading || Boolean(groupsError) || saving}>
             <legend>关联节点与单节点覆盖</legend>
             <p className="package-section-note">不选择节点表示使用全部节点。已选顺序就是订阅中的节点顺序。</p>
+            {form.nodes.some((id) => !allNodes.some((node) => node.id === id)) && <p className="package-field-help">{form.nodes.filter((id) => !allNodes.some((node) => node.id === id)).map((id) => `已删除节点 #${id}`).join("、")}；保存时移除这些引用。</p>}
             <div className="package-node-controls"><label><span>按标签筛选</span><select value={tag} onChange={(event) => setTag(event.target.value)}><option value="all">全部标签（{nodes.length}）</option>{tags.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><button type="button" onClick={toggleVisible}>{visibleNodes.length > 0 && visibleNodes.every((node) => form.nodes.includes(node.id)) ? "全不选" : tag === "all" ? "全选" : "选中本标签"}</button></div>
             <div className="package-node-options">
               {visibleNodes.length === 0 && <p className="package-field-help">暂无可用节点</p>}

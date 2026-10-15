@@ -297,10 +297,13 @@ test("UA-D07 package counts and filters use every assignment with legacy fallbac
   assert.deepEqual({ count: compute("counts").get("2"), visible: compute("visible").map((user: { username: string }) => user.username) }, {
     count: 3, visible: ["alice", "bob", "fallback"],
   }, "additional assignments are counted once per user, including without a legacy binding");
-  assert.equal(compute("counts").get("1"), 2, "legacy users remain counted and administrators excluded");
-  assert.equal(compute("counts").get("all"), 5);
+  assert.equal(compute("counts").get("1"), 3, "counts include the same administrators as the visible list");
+  assert.equal(compute("counts").get("all"), 6);
   assert.equal(compute("counts").get("none"), 1);
   assert.deepEqual(compute("visible", "none").map((user: { username: string }) => user.username), ["none"]);
+  for (const filter of ["all", "none", "1", "2"]) {
+    assert.equal(compute("counts").get(filter), compute("visible", filter).length);
+  }
 });
 
 test("UA-D01 and UA-D05 deletion preview explains package actions and node ownership", () => {

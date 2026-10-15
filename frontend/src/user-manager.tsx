@@ -211,9 +211,9 @@ export function UserManagementPage({ token, currentUsername }: { token: string; 
   const packageById = useMemo(() => new Map(packages.map((pkg) => [pkg.id, pkg])), [packages]);
   const counts = useMemo(() => {
     const result = new Map<string, number>();
-    result.set("all", users.filter((user) => user.role !== "admin").length);
-    result.set("none", users.filter((user) => managedUserPackageIds(user).length === 0 && user.role !== "admin").length);
-    packages.forEach((pkg) => result.set(String(pkg.id), users.filter((user) => managedUserPackageIds(user).includes(pkg.id) && user.role !== "admin").length));
+    result.set("all", users.length);
+    result.set("none", users.filter((user) => managedUserPackageIds(user).length === 0).length);
+    packages.forEach((pkg) => result.set(String(pkg.id), users.filter((user) => managedUserPackageIds(user).includes(pkg.id)).length));
     return result;
   }, [packages, users]);
   const visible = useMemo(() => {

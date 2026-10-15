@@ -126,8 +126,13 @@ export function updatePackageNodeOverride(form: PackagePayload, key: "node_multi
   return { ...form, [key]: values };
 }
 
-export function packageSavePayload(form: PackagePayload): PackagePayload {
-  return { ...form, node_name_overrides: Object.fromEntries(Object.entries(form.node_name_overrides).filter(([, name]) => name.trim() !== "")) };
+export function packageSavePayload(form: PackagePayload, availableIds?: number[]): PackagePayload {
+  const exists = (id: number) => !availableIds || availableIds.includes(id);
+  const payload = { ...form, nodes: form.nodes.filter(exists), node_name_overrides: Object.fromEntries(Object.entries(form.node_name_overrides).filter(([id, name]) => exists(Number(id)) && name.trim() !== "")) };
+  for (const key of ["node_multipliers", "node_speed_limits", "node_device_limits", "node_traffic_limits"] as const) {
+    payload[key] = Object.fromEntries(Object.entries(form[key]).filter(([id]) => exists(Number(id))));
+  }
+  return payload;
 }
 
 export type PackageGrouping ="user" | "server" | "none";
@@ -138,7 +143,10 @@ export function packageBoundUsers(pkg: ManagedPackage, users: ManagedUser[]) {
 }
 
 export function packageServers(pkg: ManagedPackage, nodes: XrayNode[]) {
-  return [...new Set((pkg.nodes ?? []).map((id) => nodes.find((node) => node.id === id)?.original_server || "外部节点"))];
+  return [...new Set((pkg.nodes ?? []).map((id) => {
+    const node = nodes.find((node) => node.id === id);
+    return node ? node.original_server || "外部节点" : `已删除节点 #${id}`;
+  }))];
 }
 
 export function groupPackages(packages: ManagedPackage[], users: ManagedUser[], nodes: XrayNode[], grouping: PackageGrouping): CompactPackageGroup[] {

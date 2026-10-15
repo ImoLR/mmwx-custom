@@ -25,7 +25,7 @@ test("server groups deduplicate same server, repeat multi-server and retain all-
   assert.deepEqual(groups.find((g) => g.name === "全部节点")?.packages.map((p) => p.id), [3]);
   assert.deepEqual(packageServers(packages[0], nodes), ["HK", "JP"]);
   assert.deepEqual(groupPackages(packages, users, nodes, "none")[0].packages, packages);
-  assert.deepEqual(packageServers(pkg(4, [999]), nodes), ["外部节点"]);
+  assert.deepEqual(packageServers(pkg(4, [999]), nodes), ["已删除节点 #999"]);
 });
 test("search matches name, short code, description and selected/all-node names without case sensitivity", () => {
   const packages = [pkg(1, [1]), { ...pkg(2, [2]), short_code: "TEST2", description: "轻量套餐" }, pkg(3)];
