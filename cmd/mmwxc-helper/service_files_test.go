@@ -84,19 +84,19 @@ func TestInactiveServiceCache(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("inactive service polled %d times", calls)
 	}
-	cache.active(now.Add(30*time.Second), false, probe)
+	cache.active(now.Add(time.Minute), false, probe)
 	if calls != 2 {
 		t.Fatal("cache did not expire")
 	}
 	active = true
-	if !cache.active(now.Add(31*time.Second), true, probe) {
+	if !cache.active(now.Add(61*time.Second), true, probe) {
 		t.Fatal("new cgroup did not invalidate negative cache immediately")
 	}
 	active = false
-	cache.active(now.Add(32*time.Second), false, probe)
+	cache.active(now.Add(62*time.Second), false, probe)
 	active = true
 	cache.invalidate()
-	if !cache.active(now.Add(33*time.Second), false, probe) {
+	if !cache.active(now.Add(63*time.Second), false, probe) {
 		t.Fatal("lifecycle operation did not invalidate negative cache")
 	}
 }

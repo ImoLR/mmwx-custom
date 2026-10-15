@@ -883,15 +883,13 @@ func (manager *lifecycleManager) coreStatus(ctx context.Context) componentStatus
 }
 
 func serviceActive(ctx context.Context, service string) bool {
-	if service == coreServiceName {
-		return coreServiceActive(ctx)
-	}
-	return systemctl(ctx, "is-active", "--quiet", service) == nil
+	return cachedServiceActive(ctx, service)
 }
 
 func systemctl(ctx context.Context, args ...string) error {
-	if len(args) > 0 && args[0] != "is-active" && args[0] != "is-enabled" {
-		inactiveCoreService.invalidate()
+	if len(args) > 0 && args[0] != "is-active" && args[0] != "is-enabled" && args[0] != "show" && args[0] != "list-units" {
+		invalidateServiceCaches()
+		defer invalidateServiceCaches()
 	}
 	command := exec.CommandContext(ctx, "systemctl", args...)
 	if output, err := command.CombinedOutput(); err != nil {

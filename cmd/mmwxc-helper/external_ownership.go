@@ -837,6 +837,9 @@ func (manager *lifecycleManager) waitOwnedCoreReady(ctx context.Context, timeout
 }
 
 func serviceMainPID(ctx context.Context, service string) (int, error) {
+	if !serviceActive(ctx, service) {
+		return 0, nil
+	}
 	command := exec.CommandContext(ctx, "systemctl", "show", "--property", "MainPID", "--value", service)
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -846,6 +849,7 @@ func serviceMainPID(ctx context.Context, service string) (int, error) {
 }
 
 func serviceEnabled(ctx context.Context, service string) bool {
+	// Used only when taking a rollback snapshot, never in periodic status.
 	return systemctl(ctx, "is-enabled", "--quiet", service) == nil
 }
 
