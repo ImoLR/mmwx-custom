@@ -221,7 +221,7 @@ func (s *helperState) enqueueManagementCommand(serverID, action string, payload 
 			component = "helper"
 		}
 		status := s.data.AgentStatuses[serverID]
-		status.Update = &componentUpdateProgress{Component: component, Phase: "dispatching", TargetVersion: artifact.Version, UpdatedAt: now}
+		status.Update = dispatchedUpdate(component, artifact.Version, now)
 		s.data.AgentStatuses[serverID] = status
 	}
 	if err := s.saveLocked(); err != nil {
@@ -376,6 +376,10 @@ func completeObservedUpdate(progress *componentUpdateProgress, status agentStatu
 		completed.Phase = "success"
 		completed.Message = ""
 		completed.UpdatedAt = now
+		if completed.StartedAt.IsZero() {
+			completed.StartedAt = progress.UpdatedAt
+		}
+		completed.appendLine(now, "已确认新版本 "+progress.TargetVersion)
 		return &completed
 	}
 	return progress

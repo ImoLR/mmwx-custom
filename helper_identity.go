@@ -31,8 +31,9 @@ type helperState struct {
 	path string
 	ttl  time.Duration
 
-	mu   sync.Mutex
-	data helperStateData
+	mu                    sync.Mutex
+	data                  helperStateData
+	updateProgressSavedAt map[string]time.Time
 }
 
 type helperStateData struct {
