@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+
 	"context"
 	"errors"
 	"os"
@@ -70,5 +72,32 @@ func TestExternalConfigConfirmationFailureDoesNotRestartAgain(t *testing.T) {
 	}
 	if restarts != 1 || !state.ExternalConfigSyncPending {
 		t.Fatalf("restarts=%d state=%+v", restarts, state)
+	}
+}
+
+func TestExternalConfigBackoffDoesNotLogFalseRecovery(t *testing.T) {
+	now := time.Now()
+	state := localState{ExternalOwnership: externalOwnershipState{
+		Enabled: true, NextConfigRepairAt: now.Add(time.Minute),
+		configRepairError: errors.New("an active official administrator session is required for Core handoff"),
+	}}
+	logs := newPeriodicLogLimiter()
+	lines := 0
+	logs.print = func(string, ...any) { lines++ }
+	for tick := 0; tick <= 120; tick++ {
+		logs.now = func() time.Time { return now.Add(time.Duration(tick) * 5 * time.Second) }
+		err := ensureExternalControlConfig(context.Background(), nil, config{}, &state, false)
+		if err == nil {
+			t.Fatal("backoff reported a false recovery")
+		}
+		logs.report("external control config reconcile failed", err)
+	}
+	if lines != 2 {
+		t.Fatalf("expected initial error and one 10m summary; got %d lines", lines)
+	}
+	state.ExternalOwnership.Enabled = false
+	logs.report("external control config reconcile failed", ensureExternalControlConfig(context.Background(), nil, config{}, &state, false))
+	if lines != 3 {
+		t.Fatal("actual recovery was not reported once")
 	}
 }

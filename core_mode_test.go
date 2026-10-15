@@ -511,3 +511,36 @@ func TestLocalEmbeddedDriftIsRepairedToRecordedExternal(t *testing.T) {
 		t.Fatalf("local drift intent=%#v", intent)
 	}
 }
+
+func TestNoAdminSessionDriftRepairIsDegradedAndBacksOff(t *testing.T) {
+	state := newCoreModeTestState(t)
+	intent := newCoreModeIntent("external", time.Now())
+	intent.DriftDetectedAt = time.Now().Add(-time.Minute)
+	state.data.CoreModeIntents["12"] = intent
+	status := healthyExternalStatus()
+	status.CoreMode = "embedded"
+	status.Ownership = externalOwnershipStatus{}
+	runtime := remoteServerRuntime{XrayMode: "external", Status: "connected"}
+	command, err := state.reconcileCoreMode("12", status, runtime, nil)
+	if err != nil || command == nil {
+		t.Fatalf("automatic drift was not detected: %v %v", command, err)
+	}
+	state.data.ManagementCommands["12"] = nil
+	result := &managementResult{Action: "core.mode.apply", Message: "authorize Core handoff: " + coreModeAdminSessionRequired, CompletedAt: time.Now()}
+	command, err = state.reconcileCoreMode("12", status, runtime, result)
+	if err != nil || command != nil {
+		t.Fatalf("failed repair repeated: %v %v", command, err)
+	}
+	for tick := 0; tick < 120; tick++ {
+		command, err = state.reconcileCoreMode("12", status, runtime, nil)
+		intent, _ = state.coreModeIntent("12")
+		if err != nil || command != nil || intent.RepairStatus != "degraded" || !strings.Contains(intent.LastRepairError, coreModeAdminSessionRequired) || intent.RepairAttempts != 1 {
+			t.Fatalf("missing degraded message or backoff: %+v, %v", intent, err)
+		}
+	}
+	intent.NextRepairAt = time.Now().Add(-time.Second)
+	state.data.CoreModeIntents["12"] = intent
+	if command, err = state.reconcileCoreMode("12", status, runtime, nil); err != nil || command == nil {
+		t.Fatalf("bounded retry missing: %v %v", command, err)
+	}
+}

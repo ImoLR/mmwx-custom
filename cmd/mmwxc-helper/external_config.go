@@ -14,13 +14,13 @@ func ensureExternalControlConfig(ctx context.Context, client *http.Client, cfg c
 	if !state.ExternalOwnership.Enabled {
 		return nil
 	}
+	ownership := &state.ExternalOwnership
+	if !force && time.Now().Before(ownership.NextConfigRepairAt) {
+		return ownership.configRepairError
+	}
 	mode, err := readAgentXrayMode(officialAgentConfigPath)
 	if err != nil || mode != "external" {
 		return err
-	}
-	ownership := &state.ExternalOwnership
-	if !force && time.Now().Before(ownership.NextConfigRepairAt) {
-		return nil
 	}
 	err = repairExternalControlConfig(ctx, officialConfigPath, ownership,
 		func() error { return saveLocalState(cfg.StatePath, *state) },
@@ -41,6 +41,7 @@ func ensureExternalControlConfig(ctx context.Context, client *http.Client, cfg c
 			}
 			return lastErr
 		})
+	ownership.configRepairError = err
 	if err != nil {
 		ownership.NextConfigRepairAt = time.Now().Add(time.Minute)
 	} else {

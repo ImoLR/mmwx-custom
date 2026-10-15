@@ -76,6 +76,7 @@ type externalOwnershipState struct {
 	AgentConfigReloadPending  bool      `json:"agent_config_reload_pending,omitempty"`
 	ExternalConfigSyncPending bool      `json:"external_config_sync_pending,omitempty"`
 	NextConfigRepairAt        time.Time `json:"next_config_repair_at,omitempty"`
+	configRepairError         error
 }
 
 type externalOwnershipStatus struct {

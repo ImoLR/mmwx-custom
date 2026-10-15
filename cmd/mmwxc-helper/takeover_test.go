@@ -1,6 +1,9 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
+
 	"context"
 	"encoding/json"
 	"os"
@@ -99,5 +102,46 @@ func TestOwnershipBackupIncludesAndRestoresAgentConfig(t *testing.T) {
 	restored, err := os.ReadFile(source)
 	if err != nil || string(restored) != string(original) {
 		t.Fatalf("Agent config was not restored byte-for-byte: %q err=%v", restored, err)
+	}
+}
+
+func TestTakeoverWithoutAdminSessionPreservesRuntime(t *testing.T) {
+	for _, mode := range []string{"embedded", "external"} {
+		t.Run(mode, func(t *testing.T) {
+			calls, _ := countingSystemctl(t)
+			requests := 0
+			controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				var request struct {
+					XrayMode string `json:"xray_mode"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&request)
+				if request.XrayMode == "" {
+					_ = json.NewEncoder(w).Encode(takeoverResponse{Success: true, Runtime: takeoverRuntime{XrayMode: mode, Status: "connected"}})
+					return
+				}
+				http.Error(w, "an active official administrator session is required for Core handoff", http.StatusServiceUnavailable)
+			}))
+			defer controller.Close()
+			cfg := config{CustomAPIURL: controller.URL, ServerID: "2", Token: "helper-test"}
+			state := localState{ExternalOwnership: externalOwnershipState{Enabled: true, BackupDir: t.TempDir()}}
+			before := state.ExternalOwnership
+			err := ensureExternalDesiredState(context.Background(), controller.Client(), cfg, nil, &state)
+			if err == nil || !strings.Contains(err.Error(), "administrator session") || requests != 2 {
+				t.Fatalf("preflight requests=%d err=%v", requests, err)
+			}
+			// The refused rollback must return before touching its backup or
+			// stopping the working Core/restarting Agent, without waiting 60s.
+			err = restoreEmbeddedTakeover(context.Background(), controller.Client(), cfg, nil, &state)
+			if err == nil || !strings.Contains(err.Error(), "current Core retained") || requests != 3 {
+				t.Fatalf("rollback requests=%d err=%v", requests, err)
+			}
+			if state.ExternalOwnership != before {
+				t.Fatal("ownership changed despite refused controller operation")
+			}
+			if data, _ := os.ReadFile(calls); len(data) != 0 {
+				t.Fatalf("services changed without an admin session: %s", data)
+			}
+		})
 	}
 }

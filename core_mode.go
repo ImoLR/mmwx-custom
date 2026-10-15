@@ -214,7 +214,7 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		return nil, s.saveLocked()
 	}
 	if !intent.NextRepairAt.IsZero() && now.Before(intent.NextRepairAt) {
-		if intent.RepairAttempts >= len(coreRepairBackoff) {
+		if intent.RepairAttempts >= len(coreRepairBackoff) || strings.Contains(intent.LastRepairError, coreModeAdminSessionRequired) {
 			intent.RepairStatus = "degraded"
 		} else {
 			intent.RepairStatus = "drift_detected"

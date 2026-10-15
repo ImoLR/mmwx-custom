@@ -15,6 +15,8 @@ type coreModeSessionStore interface {
 	CoreModeAdminSession(context.Context) (string, error)
 }
 
+const coreModeAdminSessionRequired = "an active official administrator session is required for Core handoff"
+
 func (s *postgresAdminSessionStore) CoreModeAdminSession(ctx context.Context) (string, error) {
 	var token string
 	err := s.db.QueryRowContext(ctx, `SELECT s.token FROM sessions s JOIN users u ON u.username=s.username WHERE s.expires_at>CURRENT_TIMESTAMP AND u.role='admin' AND u.is_active=1 ORDER BY s.expires_at DESC LIMIT 1`).Scan(&token)
@@ -33,7 +35,7 @@ func (a *app) coreModeAdminSession(ctx context.Context, serverID string) (string
 			return token, nil
 		}
 	}
-	return "", errors.New("an active official administrator session is required for Core handoff")
+	return "", errors.New(coreModeAdminSessionRequired)
 }
 
 func (a *app) setOfficialCoreMode(ctx context.Context, serverID, mode string) error {

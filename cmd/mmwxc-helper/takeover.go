@@ -76,6 +76,14 @@ func ensureExternalDesiredState(ctx context.Context, client *http.Client, cfg co
 	if err != nil {
 		return err
 	}
+	// Verify the administrator session before arming ownership can stop Core.
+	// Reasserting the recorded mode is a no-op in the official API.
+	if runtime.XrayMode != "external" && runtime.XrayMode != "embedded" {
+		return errors.New("controller Core mode is unavailable")
+	}
+	if _, err := requestTakeoverRuntime(ctx, client, cfg, runtime.XrayMode); err != nil {
+		return fmt.Errorf("authorize Core handoff before changing services: %w", err)
+	}
 	localMode, err := readAgentXrayMode(officialAgentConfigPath)
 	if err != nil {
 		return err
@@ -223,16 +231,23 @@ func rollbackTakeover(_ context.Context, client *http.Client, cfg config, lifecy
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	if err := restoreEmbeddedTakeover(rollbackCtx, client, cfg, lifecycle, state); err != nil {
+		// A session may expire after arming stopped the External service. If
+		// rollback is refused, retain ownership and resume that same runtime.
+		if mode, _ := readAgentXrayMode(officialAgentConfigPath); mode == "external" && state.ExternalOwnership.Enabled {
+			if resumeErr := bootstrapExternalOwnershipService(rollbackCtx, systemctl); resumeErr != nil {
+				return fmt.Errorf("%v; rollback incomplete: %v; resume External: %w", cause, err, resumeErr)
+			}
+		}
 		return fmt.Errorf("%v; rollback incomplete: %w", cause, err)
 	}
 	return fmt.Errorf("%v; embedded state restored", cause)
 }
 
 func restoreEmbeddedTakeover(ctx context.Context, client *http.Client, cfg config, lifecycle *lifecycleManager, state *localState) error {
-	var failures []string
 	if _, err := requestTakeoverRuntime(ctx, client, cfg, "embedded"); err != nil {
-		failures = append(failures, "controller mode rollback: "+err.Error())
+		return fmt.Errorf("controller mode rollback refused; current Core retained: %w", err)
 	}
+	var failures []string
 	if state.ExternalOwnership.BackupDir != "" {
 		if err := lifecycle.rollbackExternalOwnership(ctx, &state.ExternalOwnership); err != nil {
 			failures = append(failures, "ownership rollback: "+err.Error())
