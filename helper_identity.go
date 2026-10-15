@@ -82,6 +82,9 @@ type helperRebindRequest struct {
 	InstallToken string `json:"install_token"`
 	MachineID    string `json:"machine_id"`
 	HelperToken  string `json:"helper_token"`
+	// ServerID is the identity from the existing Helper config. Pre-machine-ID
+	// Helpers (v0.1.x) stored the official numeric ID there and never bound a machine ID.
+	ServerID string `json:"server_id,omitempty"`
 }
 
 type helperInstallTokenRequest struct {
@@ -420,7 +423,7 @@ func (s *helperState) pruneExpiredLocked(now time.Time) {
 	}
 }
 
-func (s *helperState) rebindMachine(rawInstallToken, machineID, helperToken string) (string, string, error) {
+func (s *helperState) rebindMachine(rawInstallToken, machineID, helperToken, configServerID string) (string, string, error) {
 	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -432,10 +435,17 @@ func (s *helperState) rebindMachine(rawInstallToken, machineID, helperToken stri
 	}
 	machineID = strings.TrimSpace(machineID)
 	helperHash := hashSecret(strings.TrimSpace(helperToken))
+	configServerID = strings.TrimSpace(configServerID)
 	sourceID := ""
 	var identity helperServerIdentity
 	for officialID, candidate := range s.data.Servers {
-		if (candidate.MachineID == machineID || candidate.CustomServerUUID == machineID) && candidate.HelperTokenHash == helperHash {
+		if candidate.HelperTokenHash != helperHash {
+			continue
+		}
+		// A legacy config names its official ID and has no bound machine ID yet, so the
+		// installer's freshly generated machine ID can't match; the token hash still must.
+		legacy := candidate.MachineID == "" && configServerID != "" && configServerID == officialID
+		if candidate.MachineID == machineID || candidate.CustomServerUUID == machineID || legacy {
 			sourceID, identity = officialID, candidate
 			break
 		}
@@ -575,7 +585,7 @@ func (a *app) helperRebindHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid request"})
 		return
 	}
-	officialID, machineID, err := a.helperState.rebindMachine(request.InstallToken, request.MachineID, request.HelperToken)
+	officialID, machineID, err := a.helperState.rebindMachine(request.InstallToken, request.MachineID, request.HelperToken, request.ServerID)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": err.Error()})
 		return

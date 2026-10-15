@@ -347,7 +347,7 @@ func TestMachineRebindMovesOwnershipIntentToNewServerID(t *testing.T) {
 	if _, ok, err := state.consumeInstallToken(installToken); err != nil || !ok {
 		t.Fatalf("consume install token: ok=%v err=%v", ok, err)
 	}
-	serverID, machineID, err := state.rebindMachine(installToken, "stable-machine-identity", "helper-token")
+	serverID, machineID, err := state.rebindMachine(installToken, "stable-machine-identity", "helper-token", "")
 	if err != nil {
 		t.Fatal(err)
 	}

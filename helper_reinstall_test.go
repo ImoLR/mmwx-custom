@@ -143,7 +143,7 @@ func TestReinstallCredentialPromotesOnlyAfterValidReport(t *testing.T) {
 	if _, _, ok := application.authorizedHelper(legacyRequest, "7", "v0.6.8"); ok {
 		t.Fatal("legacy token configuration revived the retired credential")
 	}
-	if _, _, err := state.rebindMachine(raw, identity.MachineID, record.HelperToken); err == nil {
+	if _, _, err := state.rebindMachine(raw, identity.MachineID, record.HelperToken, ""); err == nil {
 		t.Fatal("successful reinstall left its rebind authorization reusable")
 	}
 	if _, err := state.acceptManagementReport("7", "old-helper-token", nil); err == nil {
@@ -167,7 +167,7 @@ func TestReinstallPendingExpiryAndInPlaceRebind(t *testing.T) {
 				if _, err := state.acceptManagementReport("7", record.HelperToken, nil); err == nil {
 					t.Fatal("expired pending credential promoted")
 				}
-			} else if _, _, err := state.rebindMachine(raw, "old-machine-identity", "old-helper-token"); err != nil {
+			} else if _, _, err := state.rebindMachine(raw, "old-machine-identity", "old-helper-token", ""); err != nil {
 				t.Fatal(err)
 			}
 			if _, _, ok := state.authorizeReporter(record.CustomServerUUID, record.HelperToken, "v0.6.8"); ok {
@@ -197,5 +197,51 @@ func TestReinstallPromotionPersistenceFailureKeepsCurrentCredential(t *testing.T
 	identity := state.data.Servers["7"]
 	if identity.HelperTokenHash != hashSecret("old-helper-token") || identity.PendingHelperTokenHash != record.HelperTokenHash || identity.MachineID != "old-machine-identity" {
 		t.Fatal("failed persistence revoked the running machine")
+	}
+}
+
+func TestReinstallRebindsLegacyConfigWithoutMachineID(t *testing.T) {
+	state, err := openHelperState(filepath.Join(t.TempDir(), "helper-state.json"), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// v0.1.x configs store the official numeric ID and never bound a machine ID,
+	// so the installer generates a random one that matches nothing on record.
+	state.recordLegacyReporter("1", "legacy-helper-token", "v0.1.0")
+	if state.data.Servers["1"].MachineID != "" {
+		t.Fatal("legacy fixture unexpectedly has a machine ID")
+	}
+	_, raw, err := state.createInstallTokenForMode("1", "helper-only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := state.consumeInstallToken(raw); err != nil || !ok {
+		t.Fatalf("consume: %v, %v", ok, err)
+	}
+	if _, _, err := state.rebindMachine(raw, "generated-machine-identity", "legacy-helper-token", ""); err == nil {
+		t.Fatal("rebind without the config server ID matched a legacy identity")
+	}
+	if _, _, err := state.rebindMachine(raw, "generated-machine-identity", "wrong-helper-token", "1"); err == nil {
+		t.Fatal("legacy rebind accepted the wrong helper token")
+	}
+	if _, _, err := state.rebindMachine(raw, "generated-machine-identity", "legacy-helper-token", "2"); err == nil {
+		t.Fatal("legacy rebind accepted another server's ID")
+	}
+	serverID, serverUUID, err := state.rebindMachine(raw, "generated-machine-identity", "legacy-helper-token", "1")
+	if err != nil || serverID != "1" || serverUUID != state.data.Servers["1"].CustomServerUUID {
+		t.Fatalf("legacy rebind = %q, %q, %v", serverID, serverUUID, err)
+	}
+	if state.data.Servers["1"].MachineID != "generated-machine-identity" || state.data.Servers["1"].PendingHelperTokenHash != "" {
+		t.Fatal("legacy rebind did not bind the machine ID in place")
+	}
+	if _, _, ok := state.authorizeReporter(serverUUID, "legacy-helper-token", "v0.7.1"); !ok {
+		t.Fatal("legacy credential stopped authorizing after rebind")
+	}
+}
+
+func TestReinstallLegacyRebindDoesNotStealBoundIdentity(t *testing.T) {
+	state, _, raw := reinstallTestState(t)
+	if _, _, err := state.rebindMachine(raw, "generated-machine-identity", "old-helper-token", "7"); err == nil {
+		t.Fatal("config server ID overrode an already bound machine ID")
 	}
 }
