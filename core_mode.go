@@ -86,14 +86,18 @@ func (s *helperState) coreModeIntent(serverID string) (coreModeIntent, bool) {
 }
 
 func coreModeHealthy(intent coreModeIntent, status agentStatus, runtime remoteServerRuntime) bool {
-	if runtime.Status != "connected" || status.ReportedAt.IsZero() || time.Since(status.ReportedAt) > helperStaleTimeout {
+	return runtime.Status == "connected" && (runtime.LastHeartbeat == nil || time.Since(*runtime.LastHeartbeat) <= 90*time.Second) && runtime.XrayMode == intent.DesiredMode && coreModeLocalHealthy(intent, status)
+}
+
+func coreModeLocalHealthy(intent coreModeIntent, status agentStatus) bool {
+	if status.ReportedAt.IsZero() || time.Since(status.ReportedAt) > helperStaleTimeout {
 		return false
 	}
 	if intent.DesiredMode == "embedded" {
-		return runtime.XrayMode == "embedded" && status.CoreMode == "embedded" && !status.Ownership.Enabled
+		return status.CoreMode == "embedded" && !status.Ownership.Enabled
 	}
 	ownership := status.Ownership
-	return runtime.XrayMode == "external" && status.CoreMode == "external" && ownership.Enabled && ownership.ServiceOwned && ownership.RuntimeOwned && ownership.SingleCore && ownership.ServiceActive && ownership.CoreReady
+	return status.CoreMode == "external" && ownership.Enabled && ownership.ServiceOwned && ownership.RuntimeOwned && ownership.SingleCore && ownership.ServiceActive && ownership.CoreReady
 }
 
 func hasCapability(status agentStatus, capability string) bool {
@@ -160,16 +164,14 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 	}
 	if result != nil && result.Action == "core.mode.apply" {
 		intent.LastRepairAt = result.CompletedAt
+		intent.RepairAttempts++
+		intent.NextRepairAt = now.Add(nextCoreRepairDelay(intent.RepairAttempts))
 		if result.Success {
-			intent.RepairAttempts = 0
 			intent.LastRepairError = ""
-			intent.LastRepairReason = "desired core mode restored"
-			intent.NextRepairAt = time.Time{}
+			intent.LastRepairReason = "apply completed; waiting for observed recovery"
 		} else {
-			intent.RepairAttempts++
 			intent.LastRepairError = sanitizeCoreModeMessage(result.Message)
 			intent.LastRepairReason = "automatic desired-state repair failed"
-			intent.NextRepairAt = now.Add(nextCoreRepairDelay(intent.RepairAttempts))
 		}
 	}
 	if coreModeHealthy(intent, status, runtime) {
@@ -192,6 +194,22 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 			s.data.CoreModeIntents[serverID] = intent
 			return &command, s.saveLocked()
 		}
+	}
+	// A healthy local Core cannot repair an offline/stale official runtime.
+	// Preserve reconnect debounce, then wait without issuing lifecycle work.
+	if runtime.XrayMode == intent.DesiredMode && coreModeLocalHealthy(intent, status) {
+		if intent.DriftDetectedAt.IsZero() && intent.RepairStatus != "waiting_official" {
+			intent.DriftDetectedAt = now
+		}
+		if intent.PendingChange || formalChanged || intent.RepairStatus == "waiting_official" || now.Sub(intent.DriftDetectedAt) > coreDriftGrace {
+			intent.RepairStatus = "waiting_official"
+			intent.LastRepairReason = "local Core healthy; waiting for official runtime"
+			intent.LastRepairError = ""
+			intent.DriftDetectedAt = time.Time{}
+		}
+		intent.UpdatedAt = now
+		s.data.CoreModeIntents[serverID] = intent
+		return nil, s.saveLocked()
 	}
 	// A reconnect can temporarily make the official runtime look unhealthy.
 	// Keep the last settled UI state and wait for sustained drift. Explicit

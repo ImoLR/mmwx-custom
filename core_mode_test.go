@@ -126,7 +126,7 @@ func TestCoreModeDebouncesReconnectAndRepairsPersistentDrift(t *testing.T) {
 			if !intent.DriftDetectedAt.IsZero() || intent.RepairStatus != "healthy" {
 				t.Fatalf("recovery: %#v", intent)
 			}
-			// A later incident gets its own grace, then one repair after 20s.
+			// Official reconnects alone cannot be repaired by applying the mode.
 			runtime.Status = "disconnected"
 			_, _ = state.reconcileCoreMode("12", status, runtime, nil)
 			intent, _ = state.coreModeIntent("12")
@@ -134,11 +134,134 @@ func TestCoreModeDebouncesReconnectAndRepairsPersistentDrift(t *testing.T) {
 			state.data.CoreModeIntents["12"] = intent
 			for i := 0; i < 3; i++ {
 				command, err = state.reconcileCoreMode("12", status, runtime, nil)
-				if err != nil || command == nil || len(state.data.ManagementCommands["12"]) != 1 {
-					t.Fatalf("persistent drift: %v %v", command, err)
+				intent, _ = state.coreModeIntent("12")
+				if err != nil || command != nil || intent.RepairStatus != "waiting_official" {
+					t.Fatalf("official reconnect: %#v %v %v", intent, command, err)
 				}
 			}
 		})
+	}
+}
+
+// Advance the persisted deadlines instead of sleeping between five-second reports.
+func advanceCoreModeTestTime(state *helperState, elapsed time.Duration) {
+	intent := state.data.CoreModeIntents["12"]
+	if !intent.DriftDetectedAt.IsZero() {
+		intent.DriftDetectedAt = intent.DriftDetectedAt.Add(-elapsed)
+	}
+	if !intent.NextRepairAt.IsZero() {
+		intent.NextRepairAt = intent.NextRepairAt.Add(-elapsed)
+	}
+	state.data.CoreModeIntents["12"] = intent
+}
+
+func TestCoreModeWaitsForOfficialForTenMinutes(t *testing.T) {
+	for _, mode := range []string{"external", "embedded"} {
+		for _, official := range []string{"offline", "stale"} {
+			t.Run(mode+"/"+official, func(t *testing.T) {
+				state := newCoreModeTestState(t)
+				_, _ = state.setCoreModeIntent("12", mode)
+				status := healthyExternalStatus()
+				if mode == "embedded" {
+					status.CoreMode = mode
+					status.Ownership = externalOwnershipStatus{}
+				}
+				runtime := remoteServerRuntime{XrayMode: mode, Status: "connected"}
+				_, _ = state.reconcileCoreMode("12", status, runtime, nil)
+				if official == "offline" {
+					runtime.Status = "offline"
+				} else {
+					old := time.Now().Add(-2 * time.Minute)
+					runtime.LastHeartbeat = &old
+				}
+				for tick := 0; tick <= 120; tick++ {
+					advanceCoreModeTestTime(state, 5*time.Second)
+					status.ReportedAt = time.Now()
+					command, err := state.reconcileCoreMode("12", status, runtime, nil)
+					intent, _ := state.coreModeIntent("12")
+					if err != nil || command != nil || len(state.data.ManagementCommands["12"]) != 0 {
+						t.Fatalf("tick %d queued official-only repair: %v %v", tick, command, err)
+					}
+					if tick > 4 && (intent.RepairStatus != "waiting_official" || intent.LastRepairError != "") {
+						t.Fatalf("tick %d did not wait calmly: %#v", tick, intent)
+					}
+				}
+				runtime.Status = "connected"
+				now := time.Now()
+				runtime.LastHeartbeat = &now
+				command, err := state.reconcileCoreMode("12", status, runtime, nil)
+				intent, _ := state.coreModeIntent("12")
+				if err != nil || command != nil || intent.RepairStatus != "healthy" || !intent.DriftDetectedAt.IsZero() {
+					t.Fatalf("official recovery: %#v %v %v", intent, command, err)
+				}
+			})
+		}
+	}
+}
+
+func TestCoreModeWaitingOfficialStillRepairsLocalDrift(t *testing.T) {
+	for _, signal := range []string{"mode", "ownership"} {
+		t.Run(signal, func(t *testing.T) {
+			state := newCoreModeTestState(t)
+			intent := newCoreModeIntent("external", time.Now())
+			intent.RepairStatus = "waiting_official"
+			state.data.CoreModeIntents["12"] = intent
+			status := healthyExternalStatus()
+			if signal == "mode" {
+				status.CoreMode = "embedded"
+			} else {
+				status.Ownership.RuntimeOwned = false
+			}
+			runtime := remoteServerRuntime{XrayMode: "external", Status: "offline"}
+			for tick := 0; tick <= 5; tick++ {
+				advanceCoreModeTestTime(state, 5*time.Second)
+				command, err := state.reconcileCoreMode("12", status, runtime, nil)
+				if err != nil || (tick < 4 && command != nil) || (tick == 5 && command == nil) {
+					t.Fatalf("tick %d local %s drift: %v %v", tick, signal, command, err)
+				}
+			}
+			if len(state.data.ManagementCommands["12"]) != 1 {
+				t.Fatal("local drift must queue exactly one repair")
+			}
+		})
+	}
+}
+
+func TestCoreModeSuccessfulUnsettledApplyKeepsBackoff(t *testing.T) {
+	state := newCoreModeTestState(t)
+	intent := newCoreModeIntent("external", time.Now())
+	intent.DriftDetectedAt = time.Now().Add(-time.Minute)
+	state.data.CoreModeIntents["12"] = intent
+	status := healthyExternalStatus()
+	status.Ownership.RuntimeOwned = false
+	runtime := remoteServerRuntime{XrayMode: "external", Status: "connected"}
+	for attempt, delay := range coreRepairBackoff {
+		command, err := state.reconcileCoreMode("12", status, runtime, nil)
+		if err != nil || command == nil {
+			t.Fatalf("attempt %d: %v %v", attempt, command, err)
+		}
+		state.data.ManagementCommands["12"] = nil
+		result := &managementResult{Action: "core.mode.apply", Success: true, CompletedAt: time.Now()}
+		command, err = state.reconcileCoreMode("12", status, runtime, result)
+		intent, _ = state.coreModeIntent("12")
+		if err != nil || command != nil || intent.RepairAttempts != attempt+1 || time.Until(intent.NextRepairAt) < delay-time.Second {
+			t.Fatalf("success reset unsettled backoff: %#v %v %v", intent, command, err)
+		}
+		for elapsed := 5 * time.Second; elapsed < delay; elapsed += 5 * time.Second {
+			advanceCoreModeTestTime(state, 5*time.Second)
+			status.ReportedAt = time.Now()
+			command, err = state.reconcileCoreMode("12", status, runtime, nil)
+			if err != nil || command != nil {
+				t.Fatalf("attempt %d requeued after %s: %v %v", attempt, elapsed, command, err)
+			}
+		}
+		advanceCoreModeTestTime(state, 6*time.Second)
+	}
+	status.Ownership.RuntimeOwned = true
+	command, err := state.reconcileCoreMode("12", status, runtime, nil)
+	intent, _ = state.coreModeIntent("12")
+	if err != nil || command != nil || intent.RepairStatus != "healthy" || intent.RepairAttempts != 0 || !intent.NextRepairAt.IsZero() {
+		t.Fatalf("observed recovery did not clear backoff: %#v %v %v", intent, command, err)
 	}
 }
 
