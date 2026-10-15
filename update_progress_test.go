@@ -78,8 +78,9 @@ func TestUpdateProgressPayloadBoundsAndLog(t *testing.T) {
 	}
 	id := state.recordLegacyReporter("5", "private-token", "v0.7.1")
 	app := &app{helperState: state}
+	helperVersion := "v0.7.1"
 	post := func(extra string, token string) int {
-		body := `{"server_id":"` + id + `","helper_version":"v0.7.1","component":"helper","phase":"downloading","target_version":"v0.7.2"` + extra + `}`
+		body := `{"server_id":"` + id + `","helper_version":"` + helperVersion + `","component":"helper","phase":"downloading","target_version":"v0.7.2"` + extra + `}`
 		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+token)
 		res := httptest.NewRecorder()
@@ -95,7 +96,7 @@ func TestUpdateProgressPayloadBoundsAndLog(t *testing.T) {
 		t.Fatalf("unauthorized=%d", code)
 	}
 	for _, version := range []string{"v0.6.9", "v0.7.1"} {
-		_ = version // Old Helpers send exactly the same phase-only fields.
+		helperVersion = version
 		if code := post("", "private-token"); code != 200 {
 			t.Fatalf("legacy=%d", code)
 		}
@@ -206,5 +207,30 @@ func TestUpdateProgressPersistenceAndTerminalStates(t *testing.T) {
 	}
 	if completeObservedUpdate(completed, agentStatus{}, now.Add(3*time.Minute)) != completed {
 		t.Fatal("terminal heartbeat changed completion time")
+	}
+}
+
+func TestRejectedLegacyUpdateFinishesProgress(t *testing.T) {
+	state, err := openHelperState(filepath.Join(t.TempDir(), "helper-state.json"), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.recordLegacyReporter("5", "helper-token", "v0.6.9")
+	payload, _ := json.Marshal(managementArtifact{URL: "https://github.com/ImoLR/mmwx-custom/releases/download/v1.4.51/mmwxc-helper-linux-amd64", SHA256: strings.Repeat("a", 64), Version: "v0.7.2"})
+	command, err := state.enqueueManagementCommand("5", "helper.update", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := managementResult{CommandID: command.ID, Action: command.Action, Success: false, Message: "management command expired", CompletedAt: time.Now()}
+	result.Signature, err = signManagementResult(result, hashSecret("helper-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.acceptManagementReport("5", "helper-token", &managementReport{Status: agentStatus{Helper: componentStatus{Version: "v0.6.9"}}, Result: &result}); err != nil {
+		t.Fatal(err)
+	}
+	progress := state.data.AgentStatuses["5"].Update
+	if progress.Phase != "failed" || !strings.Contains(progress.Log[len(progress.Log)-1].Text, "management command expired") {
+		t.Fatalf("rejection left running: %+v", progress)
 	}
 }

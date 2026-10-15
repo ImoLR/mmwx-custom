@@ -299,6 +299,15 @@ func (s *helperState) acceptManagementReport(serverID, token string, report *man
 		if report.Result != nil {
 			commands := s.data.ManagementCommands[serverID]
 			if len(commands) > 0 && commands[0].ID == report.Result.CommandID && commands[0].Action == report.Result.Action {
+				if progress := report.Status.Update; !report.Result.Success && progress != nil && !terminalUpdatePhase(progress.Phase) && (report.Result.Action == progress.Component+".update" || report.Result.Action == "core.install" && progress.Component == "core") {
+					failed := *progress
+					failed.Phase = "failed"
+					failed.UpdatedAt = now
+					failed.Message = sanitizeUpdateText(report.Result.Message)
+					failed.appendLine(now, "升级失败："+failed.Message)
+					report.Status.Update = &failed
+					s.data.AgentStatuses[serverID] = report.Status
+				}
 				s.data.ManagementCommands[serverID] = commands[1:]
 			}
 			history := append(s.data.ManagementResults[serverID], *report.Result)
