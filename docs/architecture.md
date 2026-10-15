@@ -104,6 +104,21 @@ mmwxc-core.service
 /var/lib/mmwxc/rollback
 ```
 
+Helper v0.7.1 checks service cgroups before periodic systemd probes. A new
+cgroup bypasses the inactive cache immediately; without one, a one-minute
+negative cache uses `list-units`, which does not load stopped/garbage-collected
+units. Inactive services skip MainPID queries. Enablement is read only for
+rollback snapshots; Helper lifecycle actions invalidate every service cache.
+Official units and the ownership drop-in contents are unchanged.
+
+External handoff verifies an admin session before arming can stop Core. A
+refused Embedded rollback preserves the current ownership/runtime; if an
+External handoff already stopped its service, it resumes that External service.
+Missing sessions surface as degraded intent with the administrator-session
+error and the existing 1/5/15/30-minute retry backoff. Configuration-repair
+backoff retains its error instead of reporting false recovery, so repeated
+failures use the existing ten-minute log summary.
+
 Helper and Core binaries are downloaded into staging, size-limited, checked by
 SHA256, ELF architecture, and version output, then atomically renamed. An active
 Custom Core is restarted and health checked after update; an inactive Core is
