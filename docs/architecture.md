@@ -125,7 +125,9 @@ snapshot confirmation is pending.
 Helper startup installs a 128M/7-day journald cap only when no SystemMaxUse is
 configured, and a 20M/two-rotation mmw-agent rule only when absent. It reports
 cap/rotation presence, journald usage and agent log size in `agent_status.logs`,
-cached for one minute. Custom Core defaults empty access logs to none;
+cached for one minute, with a startup baseline and unit line counts for the last
+10 minutes. Journal metadata sampling is bounded to three seconds/50,000 rows;
+incomplete samples are marked explicitly. Custom Core defaults empty access logs to none;
 `MMWXC_CORE_ACCESS_LOG=console` or a path enables debugging without changing the
 official config. Explicit access paths and error logging retain their behavior.
 

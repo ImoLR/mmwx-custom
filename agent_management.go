@@ -95,11 +95,14 @@ type agentStatus struct {
 }
 
 type logHousekeepingStatus struct {
-	JournaldCapped    bool      `json:"journald_capped"`
-	AgentLogrotate    bool      `json:"agent_logrotate"`
-	JournaldDiskUsage string    `json:"journald_disk_usage,omitempty"`
-	AgentLogBytes     int64     `json:"agent_log_bytes"`
-	CheckedAt         time.Time `json:"checked_at"`
+	JournaldCapped    bool                   `json:"journald_capped"`
+	AgentLogrotate    bool                   `json:"agent_logrotate"`
+	JournaldDiskUsage string                 `json:"journald_disk_usage,omitempty"`
+	AgentLogBytes     int64                  `json:"agent_log_bytes"`
+	CheckedAt         time.Time              `json:"checked_at"`
+	UnitLines         map[string]int         `json:"unit_lines_10m,omitempty"`
+	SampleComplete    bool                   `json:"sample_complete"`
+	Before            *logHousekeepingStatus `json:"before,omitempty"`
 }
 
 type takeoverState struct {

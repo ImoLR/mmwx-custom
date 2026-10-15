@@ -150,9 +150,12 @@ func main() {
 		return
 	}
 	housekeepingCtx, cancelHousekeeping := context.WithTimeout(context.Background(), 15*time.Second)
+	executor.logHousekeeping = &logHousekeeping{}
+	beforeLogs := *executor.logHousekeeping.snapshot(housekeepingCtx)
+	executor.logHousekeeping.before = &beforeLogs
 	installLogHousekeeping(housekeepingCtx, "/", systemctl, func(message string) { log.Printf("[mmwxc-helper] %s", message) })
 	cancelHousekeeping()
-	executor.logHousekeeping = &logHousekeeping{}
+	executor.logHousekeeping.status.CheckedAt = time.Time{}
 	unitsChanged := false
 	for _, unit := range []struct{ path, contents string }{
 		{coreServicePath, coreServiceUnit},

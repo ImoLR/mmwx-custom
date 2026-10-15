@@ -1,12 +1,29 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestJournalSampleIsBoundedAndCountsUnitsWithoutMessages(t *testing.T) {
+	input := "{\"_SYSTEMD_UNIT\":\"xray.service\"}\n{\"_SYSTEMD_UNIT\":\"mmw-agent.service\"}\n{\"_SYSTEMD_UNIT\":\"xray.service\"}\n"
+	counts, complete := journalUnitCounts(bufio.NewScanner(strings.NewReader(input)), 3)
+	if !complete || counts["xray.service"] != 2 || counts["mmw-agent.service"] != 1 {
+		t.Fatalf("sample %v complete=%t", counts, complete)
+	}
+	counts, complete = journalUnitCounts(bufio.NewScanner(strings.NewReader(input)), 1)
+	if complete || counts["xray.service"] != 1 {
+		t.Fatal("sample limit was ignored")
+	}
+	if _, complete := journalUnitCounts(bufio.NewScanner(strings.NewReader("invalid\n")), 3); complete {
+		t.Fatal("invalid sample marked complete")
+	}
+}
 
 func TestLogHousekeepingInstallsOnce(t *testing.T) {
 	root := t.TempDir()
