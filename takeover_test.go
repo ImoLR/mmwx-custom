@@ -16,7 +16,7 @@ func TestHelperTakeoverUpdatesOnlyAuthorizedMappedServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	uuid := state.recordLegacyReporter("12", "helper-secret", "v0.4.3")
-	application := &app{adminStore: store, helperState: state}
+	application, _ := newOfficialCoreModeFixture(t, store, state)
 	body := []byte(`{"server_id":"` + uuid + `","helper_version":"v0.4.3","xray_mode":"external"}`)
 	request := httptest.NewRequest(http.MethodPost, "/api/custom/agent/takeover", bytes.NewReader(body))
 	request.Header.Set("Authorization", "Bearer helper-secret")

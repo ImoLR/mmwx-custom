@@ -62,17 +62,20 @@ LimitNOFILE=1048576
 `
 
 type externalOwnershipState struct {
-	Prepared               bool      `json:"prepared,omitempty"`
-	Armed                  bool      `json:"armed,omitempty"`
-	Enabled                bool      `json:"enabled,omitempty"`
-	BackupDir              string    `json:"backup_dir,omitempty"`
-	ExpectedCoreSHA        string    `json:"expected_core_sha256,omitempty"`
-	LastGoodConfigSHA      string    `json:"last_good_config_sha256,omitempty"`
-	RejectedConfigSHA      string    `json:"rejected_config_sha256,omitempty"`
-	InvalidConfigAt        time.Time `json:"invalid_config_at,omitempty"`
-	LastRepairAt           time.Time `json:"last_repair_at,omitempty"`
-	LastRepairReason       string    `json:"last_repair_reason,omitempty"`
-	CompatibilityLinkOwned bool      `json:"compatibility_link_owned,omitempty"`
+	Prepared                  bool      `json:"prepared,omitempty"`
+	Armed                     bool      `json:"armed,omitempty"`
+	Enabled                   bool      `json:"enabled,omitempty"`
+	BackupDir                 string    `json:"backup_dir,omitempty"`
+	ExpectedCoreSHA           string    `json:"expected_core_sha256,omitempty"`
+	LastGoodConfigSHA         string    `json:"last_good_config_sha256,omitempty"`
+	RejectedConfigSHA         string    `json:"rejected_config_sha256,omitempty"`
+	InvalidConfigAt           time.Time `json:"invalid_config_at,omitempty"`
+	LastRepairAt              time.Time `json:"last_repair_at,omitempty"`
+	LastRepairReason          string    `json:"last_repair_reason,omitempty"`
+	CompatibilityLinkOwned    bool      `json:"compatibility_link_owned,omitempty"`
+	AgentConfigReloadPending  bool      `json:"agent_config_reload_pending,omitempty"`
+	ExternalConfigSyncPending bool      `json:"external_config_sync_pending,omitempty"`
+	NextConfigRepairAt        time.Time `json:"next_config_repair_at,omitempty"`
 }
 
 type externalOwnershipStatus struct {

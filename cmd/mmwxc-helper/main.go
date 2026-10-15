@@ -25,7 +25,7 @@ const (
 	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
 	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
 	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
-	helperVersion        = "v0.6.9"
+	helperVersion        = "v0.7.0"
 )
 
 type config struct {
@@ -194,6 +194,7 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 	cfg, client, core, state, lifecycle := executor.config, executor.client, executor.core, executor.state, executor.lifecycle
 	reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), 30*time.Second)
 	logs.report("external ownership reconcile failed", lifecycle.reconcileExternalOwnership(reconcileCtx, &state.ExternalOwnership))
+	logs.report("external control config reconcile failed", ensureExternalControlConfig(reconcileCtx, client, cfg, state, false))
 	cancelReconcile()
 	applyCtx, cancelApply := context.WithTimeout(context.Background(), 5*time.Second)
 	logs.report("core config unavailable", executor.applyCoreSettings(applyCtx))

@@ -102,6 +102,10 @@ func createHousekeepingFile(path, contents string) error {
 	if err != nil {
 		return err
 	}
+	if err := file.Chmod(0644); err != nil {
+		_ = file.Close()
+		return err
+	}
 	_, writeErr := file.WriteString(contents)
 	closeErr := file.Close()
 	if writeErr != nil {

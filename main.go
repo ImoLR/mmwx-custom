@@ -118,6 +118,7 @@ type app struct {
 	userStatusTasks        *managedUserStatusTaskStore
 	userLifecycleMu        sync.Mutex
 	userLifecycleLocks     map[string]*sync.Mutex
+	coreModeSessions       sync.Map
 	trafficGroupsMu        sync.Mutex
 	trafficGroupsReady     bool
 	trafficGroupBlocks     map[string][]serverConnectionIdentity

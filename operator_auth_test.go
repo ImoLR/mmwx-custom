@@ -26,14 +26,12 @@ func (s *fakeAdminSessionStore) RemoteServerExists(context.Context, string) (boo
 
 func (s *fakeAdminSessionStore) Close() error { return nil }
 
-func (s *fakeAdminSessionStore) RemoteServerRuntime(context.Context, string) (remoteServerRuntime, error) {
-	return s.runtime, s.err
+func (s *fakeAdminSessionStore) CoreModeAdminSession(context.Context) (string, error) {
+	return "admin-session", s.err
 }
 
-func (s *fakeAdminSessionStore) SetRemoteServerXrayMode(_ context.Context, _ string, mode string) error {
-	s.mode = mode
-	s.runtime.XrayMode = mode
-	return s.err
+func (s *fakeAdminSessionStore) RemoteServerRuntime(context.Context, string) (remoteServerRuntime, error) {
+	return s.runtime, s.err
 }
 
 func TestOperatorAuthorizationUsesIndependentBearerToken(t *testing.T) {

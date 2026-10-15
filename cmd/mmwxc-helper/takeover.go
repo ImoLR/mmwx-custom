@@ -29,7 +29,15 @@ type takeoverResponse struct {
 }
 
 func requestTakeoverRuntime(ctx context.Context, client *http.Client, cfg config, mode string) (takeoverRuntime, error) {
-	body, err := json.Marshal(map[string]string{"server_id": cfg.ServerID, "helper_version": helperVersion, "xray_mode": mode})
+	return requestTakeover(ctx, client, cfg, mode, "")
+}
+
+func requestTakeover(ctx context.Context, client *http.Client, cfg config, mode, configPhase string) (takeoverRuntime, error) {
+	payload := map[string]any{"server_id": cfg.ServerID, "helper_version": helperVersion, "xray_mode": mode}
+	if configPhase != "" {
+		payload["external_config_phase"] = configPhase
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return takeoverRuntime{}, err
 	}
@@ -78,7 +86,7 @@ func ensureExternalDesiredState(ctx context.Context, client *http.Client, cfg co
 		}
 		status := lifecycle.externalOwnershipStatus(ctx, &state.ExternalOwnership)
 		if status.RuntimeOwned && status.SingleCore && status.CoreReady && serviceActive(ctx, "mmw-agent.service") {
-			return nil
+			return ensureExternalControlConfig(ctx, client, cfg, state, true)
 		}
 	}
 	if runtime.Status != "connected" || runtime.LastHeartbeat == nil || time.Since(*runtime.LastHeartbeat) > 90*time.Second {
@@ -137,6 +145,12 @@ func ensureExternalDesiredState(ctx context.Context, client *http.Client, cfg co
 	// a deliberately stopped healthy service.
 	if err := bootstrapExternalOwnershipService(ctx, systemctl); err != nil {
 		return rollbackTakeover(ctx, client, cfg, lifecycle, state, fmt.Errorf("bootstrap external xray.service: %w", err))
+	}
+	if err := waitExternalTakeoverHealthy(ctx, client, cfg, lifecycle, state); err != nil {
+		return rollbackTakeover(ctx, client, cfg, lifecycle, state, err)
+	}
+	if err := ensureExternalControlConfig(ctx, client, cfg, state, true); err != nil {
+		return rollbackTakeover(ctx, client, cfg, lifecycle, state, err)
 	}
 	if err := waitExternalTakeoverHealthy(ctx, client, cfg, lifecycle, state); err != nil {
 		return rollbackTakeover(ctx, client, cfg, lifecycle, state, err)

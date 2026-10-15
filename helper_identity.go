@@ -36,15 +36,16 @@ type helperState struct {
 }
 
 type helperStateData struct {
-	GitHubAccelerator  *string                             `json:"github_accelerator,omitempty"`
-	Servers            map[string]helperServerIdentity     `json:"servers"`
-	InstallTokens      map[string]helperInstallToken       `json:"install_tokens"`
-	ConnectionSettings map[string]serverConnectionSettings `json:"connection_settings,omitempty"`
-	ManagementCommands map[string][]managementCommand      `json:"management_commands,omitempty"`
-	ManagementResults  map[string][]managementResult       `json:"management_results,omitempty"`
-	AgentStatuses      map[string]agentStatus              `json:"agent_statuses,omitempty"`
-	CoreModeIntents    map[string]coreModeIntent           `json:"core_mode_intents,omitempty"`
-	RebindTokens       map[string]helperRebindToken        `json:"rebind_tokens,omitempty"`
+	GitHubAccelerator     *string                             `json:"github_accelerator,omitempty"`
+	Servers               map[string]helperServerIdentity     `json:"servers"`
+	InstallTokens         map[string]helperInstallToken       `json:"install_tokens"`
+	ConnectionSettings    map[string]serverConnectionSettings `json:"connection_settings,omitempty"`
+	ManagementCommands    map[string][]managementCommand      `json:"management_commands,omitempty"`
+	ManagementResults     map[string][]managementResult       `json:"management_results,omitempty"`
+	AgentStatuses         map[string]agentStatus              `json:"agent_statuses,omitempty"`
+	CoreModeIntents       map[string]coreModeIntent           `json:"core_mode_intents,omitempty"`
+	ExternalConfigRepairs map[string]string                   `json:"external_config_repairs,omitempty"`
+	RebindTokens          map[string]helperRebindToken        `json:"rebind_tokens,omitempty"`
 }
 
 type helperServerIdentity struct {

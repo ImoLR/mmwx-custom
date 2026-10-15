@@ -10,9 +10,10 @@ import (
 const maxTakeoverRequestBytes = 4096
 
 type helperTakeoverRequest struct {
-	ServerID      any    `json:"server_id"`
-	HelperVersion string `json:"helper_version,omitempty"`
-	XrayMode      string `json:"xray_mode,omitempty"`
+	ServerID            any    `json:"server_id"`
+	HelperVersion       string `json:"helper_version,omitempty"`
+	XrayMode            string `json:"xray_mode,omitempty"`
+	ExternalConfigPhase string `json:"external_config_phase,omitempty"`
 }
 
 func (a *app) helperTakeoverHandler(w http.ResponseWriter, r *http.Request) {
@@ -48,8 +49,8 @@ func (a *app) helperTakeoverHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid xray_mode"})
 			return
 		}
-		if err := store.SetRemoteServerXrayMode(r.Context(), officialID, mode); err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "message": "xray_mode update failed"})
+		if err := a.setOfficialCoreMode(r.Context(), officialID, mode); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "message": sanitizeCoreModeMessage(err.Error())})
 			return
 		}
 	}
@@ -57,6 +58,21 @@ func (a *app) helperTakeoverHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "message": "remote server status unavailable"})
 		return
+	}
+	if request.ExternalConfigPhase != "" {
+		if request.ExternalConfigPhase != "prepare" && request.ExternalConfigPhase != "confirm" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid External config phase"})
+			return
+		}
+		intent, configured := a.helperState.coreModeIntent(officialID)
+		if runtime.XrayMode != "external" || (configured && intent.PendingChange && intent.DesiredMode != "external") {
+			writeJSON(w, http.StatusConflict, map[string]any{"success": false, "message": "External config repair requires External mode"})
+			return
+		}
+		if err := a.ensureOfficialExternalConfig(r.Context(), officialID, request.ExternalConfigPhase); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "message": sanitizeCoreModeMessage(err.Error())})
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "server_id": officialID, "runtime": runtime})
 }

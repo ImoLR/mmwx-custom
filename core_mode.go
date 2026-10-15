@@ -327,6 +327,9 @@ func (a *app) coreModeHandler(w http.ResponseWriter, r *http.Request, serverID s
 			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
 			return
 		}
+		if token := strings.TrimSpace(r.Header.Get("MM-Authorization")); token != "" {
+			a.coreModeSessions.Store(serverID, token)
+		}
 	} else if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"success": false, "message": "method not allowed"})
 		return

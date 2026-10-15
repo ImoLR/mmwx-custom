@@ -34,7 +34,6 @@ type adminSessionStore interface {
 
 type remoteServerModeStore interface {
 	RemoteServerRuntime(context.Context, string) (remoteServerRuntime, error)
-	SetRemoteServerXrayMode(context.Context, string, string) error
 }
 
 type userTrafficCounter struct {
@@ -200,27 +199,6 @@ func (s *postgresAdminSessionStore) UserTrafficCounters(ctx context.Context) ([]
 		result = append(result, item)
 	}
 	return result, rows.Err()
-}
-
-func (s *postgresAdminSessionStore) SetRemoteServerXrayMode(ctx context.Context, serverID, mode string) error {
-	parsed, err := strconv.ParseInt(strings.TrimSpace(serverID), 10, 64)
-	if err != nil || parsed <= 0 || (mode != "embedded" && mode != "external") {
-		return errors.New("invalid xray mode update")
-	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	result, err := s.db.ExecContext(ctx, `UPDATE remote_servers SET xray_mode = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, mode, parsed)
-	if err != nil {
-		return err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows != 1 {
-		return errOperatorServerNotFound
-	}
-	return nil
 }
 
 func (s *postgresAdminSessionStore) Close() error {
