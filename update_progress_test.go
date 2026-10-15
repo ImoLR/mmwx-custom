@@ -234,3 +234,54 @@ func TestRejectedLegacyUpdateFinishesProgress(t *testing.T) {
 		t.Fatalf("rejection left running: %+v", progress)
 	}
 }
+
+func TestProgressHTTPAuthenticationDoesNotBypassPersistenceThrottle(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		state, err := openHelperState(filepath.Join(t.TempDir(), "helper-state.json"), time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := state.recordLegacyReporter("5", "helper-token", "v0.7.1")
+		app := &app{helperState: state, helperTokens: map[string]string{"5": "helper-token"}}
+		if legacy {
+			id = "5"
+		}
+		post := func(phase string, percent int) {
+			t.Helper()
+			body, _ := json.Marshal(map[string]any{"server_id": id, "helper_version": "v0.7.2", "component": "helper", "phase": phase, "target_version": "v0.7.2", "percent": percent})
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer helper-token")
+			res := httptest.NewRecorder()
+			app.helperUpdateProgressHandler(res, req)
+			if res.Code != http.StatusOK {
+				t.Fatalf("HTTP %d", res.Code)
+			}
+		}
+		post("downloading", 0)
+		saved, err := os.Stat(state.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, percent := range []int{5, 10, 15, 20} {
+			post("downloading", percent)
+		}
+		current, err := os.Stat(state.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !os.SameFile(saved, current) {
+			t.Fatalf("legacy=%t: authentication rewrote state for percent-only updates", legacy)
+		}
+		if *state.data.AgentStatuses["5"].Update.Percent != 20 {
+			t.Fatal("in-memory progress not refreshed")
+		}
+		post("verifying", 100)
+		terminal, err := os.Stat(state.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if os.SameFile(current, terminal) {
+			t.Fatal("phase change did not persist")
+		}
+	}
+}

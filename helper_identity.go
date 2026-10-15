@@ -296,7 +296,7 @@ func (s *helperState) consumeInstallToken(rawToken string) (helperInstallToken, 
 	return record, true, nil
 }
 
-func (s *helperState) authorizeReporter(reportedID, token, version string) (string, string, bool) {
+func (s *helperState) authorizeReporter(reportedID, token, version string, persist ...bool) (string, string, bool) {
 	if reportedID == "" || token == "" {
 		return "", "", false
 	}
@@ -310,7 +310,9 @@ func (s *helperState) authorizeReporter(reportedID, token, version string) (stri
 			identity.LastHelperVersion = strings.TrimSpace(version)
 			identity.UpdatedAt = now
 			s.data.Servers[officialID] = identity
-			_ = s.saveLocked()
+			if len(persist) == 0 || persist[0] {
+				_ = s.saveLocked()
+			}
 			return officialID, identity.CustomServerUUID, true
 		}
 	}
@@ -321,7 +323,7 @@ func (identity helperServerIdentity) acceptsPendingToken(tokenHash string, now t
 	return identity.PendingHelperTokenHash != "" && identity.PendingHelperTokenHash == tokenHash && now.Before(identity.PendingHelperTokenExpiresAt)
 }
 
-func (s *helperState) recordLegacyReporter(officialServerID, token, version string) string {
+func (s *helperState) recordLegacyReporter(officialServerID, token, version string, persist ...bool) string {
 	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -345,7 +347,9 @@ func (s *helperState) recordLegacyReporter(officialServerID, token, version stri
 	identity.HelperTokenHash = hashSecret(token)
 	identity.UpdatedAt = now
 	s.data.Servers[officialServerID] = identity
-	_ = s.saveLocked()
+	if !ok || len(persist) == 0 || persist[0] {
+		_ = s.saveLocked()
+	}
 	return identity.CustomServerUUID
 }
 

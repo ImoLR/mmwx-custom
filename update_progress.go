@@ -170,7 +170,9 @@ func (a *app) helperUpdateProgressHandler(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid server_id"})
 		return
 	}
-	officialID, _, authorized := a.authorizedHelper(r, reporterID, strings.TrimSpace(request.HelperVersion))
+	// Progress owns the persistence cadence; authentication must not save on
+	// every download sample before recordUpdateProgress applies its throttle.
+	officialID, _, authorized := a.authorizedHelper(r, reporterID, strings.TrimSpace(request.HelperVersion), false)
 	if !authorized {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "unauthorized"})
 		return
