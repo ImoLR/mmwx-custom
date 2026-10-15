@@ -410,6 +410,15 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "unauthorized"})
 		return
 	}
+	unlock := a.lockUserLifecycle("server-delete:" + officialID)
+	defer unlock()
+	if a.adminStore != nil {
+		exists, err := a.adminStore.RemoteServerExists(r.Context(), officialID)
+		if err != nil || !exists {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "unauthorized"})
+			return
+		}
+	}
 	if err := validateDetailedSnapshot(request.Snapshot); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
 		return
@@ -588,6 +597,10 @@ func normalizeDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) server
 }
 
 func (a *app) serverConnectionsHandler(w http.ResponseWriter, r *http.Request) {
+	if id, preview, ok := parseServerDeletionPath(r.URL.Path); ok {
+		a.serverDeletionHandler(w, r, id, preview)
+		return
+	}
 	if serverID, ok := parseCoreModePath(r.URL.Path); ok {
 		a.coreModeHandler(w, r, serverID)
 		return

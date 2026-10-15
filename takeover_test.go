@@ -14,7 +14,7 @@ import (
 
 func TestHelperTakeoverUpdatesOnlyAuthorizedMappedServer(t *testing.T) {
 	heartbeat := time.Now().UTC()
-	store := &fakeAdminSessionStore{runtime: remoteServerRuntime{XrayMode: "embedded", Status: "connected", LastHeartbeat: &heartbeat}}
+	store := &fakeAdminSessionStore{server: true, runtime: remoteServerRuntime{XrayMode: "embedded", Status: "connected", LastHeartbeat: &heartbeat}}
 	state, err := openHelperState(t.TempDir()+"/helper-state.json", time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +32,7 @@ func TestHelperTakeoverUpdatesOnlyAuthorizedMappedServer(t *testing.T) {
 }
 
 func TestHelperTakeoverRejectsWrongHelperIdentity(t *testing.T) {
-	store := &fakeAdminSessionStore{runtime: remoteServerRuntime{XrayMode: "embedded", Status: "connected"}}
+	store := &fakeAdminSessionStore{server: true, runtime: remoteServerRuntime{XrayMode: "embedded", Status: "connected"}}
 	state, err := openHelperState(t.TempDir()+"/helper-state.json", time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +58,7 @@ func TestAutomaticTakeoverWithoutAdminSessionFailsClosed(t *testing.T) {
 	for _, mode := range []string{"external", "embedded"} {
 		t.Run(mode, func(t *testing.T) {
 			state := newCoreModeTestState(t)
-			store := &noCoreModeSessionStore{fakeAdminSessionStore: fakeAdminSessionStore{runtime: remoteServerRuntime{XrayMode: "external", Status: "connected"}}}
+			store := &noCoreModeSessionStore{fakeAdminSessionStore: fakeAdminSessionStore{server: true, runtime: remoteServerRuntime{XrayMode: "external", Status: "connected"}}}
 			application := &app{adminStore: store, helperState: state}
 			application.coreModeSessions.Store("12", "expired-session")
 			body := []byte(`{"server_id":"` + state.data.Servers["12"].CustomServerUUID + `","helper_version":"v0.5.1","xray_mode":"` + mode + `"}`)

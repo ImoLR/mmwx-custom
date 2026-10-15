@@ -1,3 +1,5 @@
+import { ServerDeleteDialog, ServerDeletionHistory } from "./server-delete";
+import type { ServerDeletionPlan } from "./server-delete-state";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { UpgradeProgressView } from "./upgrade-progress";
@@ -321,6 +323,7 @@ function Dashboard({
   const [serviceGroupDialogOpen, setServiceGroupDialogOpen] = useState(false);
   const [serviceMenuServer, setServiceMenuServer] = useState<RemoteServer | null>(null);
   const [serviceDialog, setServiceDialog] = useState<{ kind: "add" | "access" | "edit" | "xray" | "agent" | "helper" | "connections" | "batch-agent"; server?: RemoteServer } | null>(null);
+  const [serverDeletion, setServerDeletion] = useState<{ server: { id: number; name: string }; plan?: ServerDeletionPlan } | null>(null);
   const [trafficRange, setTrafficRange] = useState<TrafficRange>("today");
   const [periodLoading, setPeriodLoading] = useState(true);
   const [trafficDialog, setTrafficDialog] = useState<"nodes" | "users" | null>(null);
@@ -879,6 +882,8 @@ function Dashboard({
           onOpenGlobalMenu={() => setMenuOpen(true)}
           onOpenMenu={setServiceMenuServer}
           onOpenDialog={(kind, server) => setServiceDialog({ kind, server })}
+          onDeleteServer={session.isAdmin ? (server) => setServerDeletion({ server }) : undefined}
+          deletionHistory={session.isAdmin ? <ServerDeletionHistory token={session.token} onOpen={(plan) => setServerDeletion({ server: { id: plan.server_id, name: plan.server_name }, plan })} /> : undefined}
         />
       ) : activeTab === "nodes" ? (
         <NodeManagementPage token={session.token} servers={state.servers} username={session.username} />
@@ -966,6 +971,8 @@ function Dashboard({
           connectionMetric={state.connectionMetrics[String(serviceMenuServer.id)]}
         />
       )}
+
+      {session.isAdmin && serverDeletion && <ServerDeleteDialog token={session.token} server={serverDeletion.server} initialPlan={serverDeletion.plan} onClose={() => setServerDeletion(null)} onChanged={loadDashboard} />}
 
       {serviceDialog && (
         <ServiceDialog
@@ -1417,7 +1424,11 @@ function ServiceManagementPage({
   onOpenGlobalMenu,
   onOpenMenu,
   onOpenDialog,
+  onDeleteServer,
+  deletionHistory,
 }: {
+  onDeleteServer?: (server: RemoteServer) => void;
+  deletionHistory?: React.ReactNode;
   servers: RemoteServer[];
   allServers: RemoteServer[];
   serviceGroups: ServiceGroup[];
@@ -1514,6 +1525,7 @@ function ServiceManagementPage({
       </section>
       {groupError && <div className="service-group-error" role="status"><AlertTriangle /><span>{groupError}</span></div>}
 
+      {deletionHistory}
       <section className={`service-server-list ${viewMode}`}>
         {servers.length ? (
           servers.map((server) => (
@@ -1524,6 +1536,7 @@ function ServiceManagementPage({
               coreMode={coreModes[String(server.id)]}
               onSwitchCoreMode={(mode) => onSwitchCoreMode(server, mode)}
               viewMode={viewMode}
+              onDelete={onDeleteServer ? () => onDeleteServer(server) : undefined}
               onOpenMenu={() => onOpenMenu(server)}
               onOpenDialog={(kind) => onOpenDialog(kind, server)}
             />
@@ -1778,7 +1791,9 @@ function ServiceServerCard({
   viewMode,
   onOpenMenu,
   onOpenDialog,
+  onDelete,
 }: {
+  onDelete?: () => void;
   server: RemoteServer;
   connectionMetric?: ConnectionMetric;
   coreMode?: CoreModeSummary;
@@ -1839,6 +1854,7 @@ function ServiceServerCard({
       </div>
 
       <div className="service-card-actions">
+        {onDelete && <button type="button" className="server-delete-action" onClick={onDelete}><Trash2 /><span>删除服务器</span></button>}
         <button type="button" onClick={() => onOpenDialog("xray")}>
           <TerminalSquare />
           <span>Xray 配置</span>

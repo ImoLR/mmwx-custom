@@ -237,6 +237,15 @@ func (a *app) ingestConnectionMetrics(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "unauthorized"})
 		return
 	}
+	unlock := a.lockUserLifecycle("server-delete:" + officialServerID)
+	defer unlock()
+	if a.adminStore != nil {
+		exists, err := a.adminStore.RemoteServerExists(r.Context(), officialServerID)
+		if err != nil || !exists {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "unauthorized"})
+			return
+		}
+	}
 	if req.TCPCount < 0 || req.UDPCount < 0 || req.ConnectionCount < 0 || req.TCPCount+req.UDPCount != req.ConnectionCount {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid metrics"})
 		return
@@ -301,7 +310,20 @@ func (a *app) authorizedHelper(r *http.Request, serverID, version string, persis
 	got := strings.TrimSpace(strings.TrimPrefix(value, prefix))
 	if a.helperState != nil {
 		if officialID, customUUID, ok := a.helperState.authorizeReporter(serverID, got, version, persist...); ok {
+			if a.adminStore != nil {
+				exists, err := a.adminStore.RemoteServerExists(r.Context(), officialID)
+				if err != nil || !exists {
+					return "", "", false
+				}
+			}
 			return officialID, customUUID, true
+		}
+	}
+	// Static legacy tokens must not recreate a deleted server identity.
+	if a.adminStore != nil {
+		exists, err := a.adminStore.RemoteServerExists(r.Context(), serverID)
+		if err != nil || !exists {
+			return "", "", false
 		}
 	}
 	want, ok := a.helperTokens[serverID]

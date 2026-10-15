@@ -1,0 +1,253 @@
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+)
+
+func deletionFixture(t *testing.T) serverDeletionInventory {
+	t.Helper()
+	var data serverDeletionInventory
+	if err := json.Unmarshal([]byte(`{
+ "remote_servers":[{"id":1,"name":"A","ip_address":"192.0.2.1","token":"secret"},{"id":2,"name":"B","ip_address":"192.0.2.2"}],
+ "nodes":[
+ {"id":10,"node_name":"A node","original_server":"A","clash_config":"{\"server\":\"192.0.2.1\",\"port\":443,\"uuid\":\"private-credential\"}"},
+ {"id":20,"node_name":"B node","original_server":"B"},
+ {"id":21,"node_name":"relay","original_server":"B","clash_config":"{\"server\":\"192.0.2.1\",\"port\":443}"},
+ {"id":22,"node_name":"routed","original_server":"B","routed_target_node_id":10},
+ {"id":23,"node_name":"chain","original_server":"B","chain_proxy_node_id":22},
+ {"id":24,"node_name":"alternatives","original_server":"B","relay_group_node_ids":"[10,20]"},
+ {"id":25,"node_name":"empty relay","original_server":"B","relay_group_node_ids":"[10,22]"}],
+ "packages":[{"id":101,"name":"empty","nodes":"[10,21]"},{"id":102,"name":"mixed","nodes":"[10,20]"},{"id":103,"name":"keep","nodes":"[20]"},{"id":104,"name":"all","nodes":"[]"}],
+ "users":[{"username":"alice","package_id":101}],"user_package_assignments":[{"username":"bob","package_id":102}],
+ "mmwxc_package_traffic_groups":[{"id":1,"package_id":101,"node_ids":[10],"limit_bytes":99},{"id":2,"package_id":102,"node_ids":[10,20],"limit_bytes":88}],
+ "forward_groups":[{"id":1,"name":"only A"},{"id":2,"name":"A or B"}],
+ "forward_group_members":[{"group_id":1,"server_id":1},{"group_id":2,"server_id":1},{"group_id":2,"server_id":2}],
+ "forward_chains":[{"id":1,"name":"broken"},{"id":2,"name":"usable"}],
+ "forward_chain_hops":[{"chain_id":1,"group_id":1},{"chain_id":2,"group_id":2}],
+ "forward_chain_nodes":[{"chain_id":1,"node_id":21},{"chain_id":2,"node_id":24}]
+ }`), &data); err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestServerDeletionCascadeAndAlternatives(t *testing.T) {
+	p, err := planServerDeletion(deletionFixture(t), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := deletionPlanIDs(&p)
+	if hashJSON(ids) != hashJSON([]int64{10, 21, 22, 23, 25}) {
+		t.Fatalf("deleted scope=%v", ids)
+	}
+	if len(p.Packages) != 2 || !p.Packages[0].Delete || p.Packages[1].Delete {
+		t.Fatalf("packages=%+v", p.Packages)
+	}
+	if len(p.Groups) != 2 || !p.Groups[0].Delete || p.Groups[1].Delete || p.Groups[1].Limit != 88 || hashJSON(p.Groups[1].NodeIDs) != hashJSON([]int64{20}) {
+		t.Fatalf("groups=%+v", p.Groups)
+	}
+	if len(p.Packages[0].Users) != 1 || p.Packages[0].Users[0] != "alice" || p.Packages[1].Users[0] != "bob" {
+		t.Fatalf("users=%+v", p.Packages)
+	}
+	for _, step := range p.Steps {
+		if step.Kind == "chain" && step.ID == 2 {
+			t.Fatal("removed viable alternative chain")
+		}
+	}
+	if len(p.Attention) != 2 {
+		t.Fatalf("attention=%v", p.Attention)
+	}
+}
+
+func TestServerDeletionPublicPlanAndStableFingerprint(t *testing.T) {
+	data := deletionFixture(t)
+	p, err := planServerDeletion(data, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Steps = append(p.Steps, serverDeletionStep{Payload: json.RawMessage(`{"password":"private-credential"}`)})
+	raw, _ := json.Marshal(publicServerDeletion(p))
+	if strings.Contains(string(raw), "private-credential") || strings.Contains(string(raw), "subscription_nodes") || strings.Contains(string(raw), "payload") {
+		t.Fatal("private plan exposed")
+	}
+	for n := 0; n < 20; n++ {
+		other, err := planServerDeletion(data, 1)
+		if err != nil || p.Fingerprint != other.Fingerprint {
+			t.Fatal("non-deterministic scope")
+		}
+	}
+	data["nodes"][0]["node_name"] = "changed"
+	changed, _ := planServerDeletion(data, 1)
+	if changed.Fingerprint == p.Fingerprint {
+		t.Fatal("scope change was not detected")
+	}
+	data["remote_servers"][1]["name"] = "A"
+	if _, err := planServerDeletion(data, 1); err == nil {
+		t.Fatal("ambiguous server name accepted")
+	}
+}
+
+func TestServerDeletionTunnelDependencies(t *testing.T) {
+	data := deletionFixture(t)
+	data["nodes"] = append(data["nodes"], map[string]any{"id": float64(30), "node_name": "tunnel entry", "original_server": "B", "clash_config": `{"server":"192.0.2.2","port":2345}`})
+	data["tunnel_chains"] = []map[string]any{{"label": "B-A", "hops": []any{map[string]any{"server_id": float64(2), "tag": "tunnel-b-a-h0", "listen_port": float64(2345), "target_address": "192.0.2.1", "target_port": float64(2346)}, map[string]any{"server_id": float64(1), "tag": "tunnel-b-a-h1", "listen_port": float64(2346)}}}}
+	p, err := planServerDeletion(data, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsLifecycleNode(deletionPlanIDs(&p), 30) {
+		t.Fatal("tunnel dependent survives")
+	}
+	found := false
+	for _, step := range p.Steps {
+		if step.Kind == "tunnel" && step.ServerID == 2 && step.Tag == "tunnel-b-a-h0" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("remote tunnel cleanup missing")
+	}
+}
+
+func TestServerDeletionSubscriptionCaches(t *testing.T) {
+	nodes := []deletedSubscriptionNode{{Host: "192.0.2.1", Port: 443, Name: "retired node"}}
+	for _, content := range []string{`{"proxies":[{"server":"192.0.2.1","port":443}]}`, "proxies:\n - name: retired node\n   server: 192.0.2.1\n   port: 443", "vless://fixture@192.0.2.1:443#retired%20node", "vmess://" + base64.RawStdEncoding.EncodeToString([]byte(`{"add":"192.0.2.1","port":"443"}`))} {
+		for _, encoded := range []string{content, base64.StdEncoding.EncodeToString([]byte(content))} {
+			if !subscriptionContainsDeletedNode([]byte(encoded), nodes, 0) {
+				t.Fatal("stale subscription served")
+			}
+		}
+	}
+	if subscriptionContainsDeletedNode([]byte(`{"server":"192.0.2.2","port":443,"name":"kept node"}`), nodes, 0) {
+		t.Fatal("unrelated subscription rejected")
+	}
+	for _, content := range []string{`proxies: [{name: 「2倍」retired relay, server: 192.0.2.2, port: 443}]`, `{"tag":"retired relay / suffix"}`, "vless://fixture@192.0.2.2:443#prefix-retired%20relay"} {
+		if !subscriptionContainsDeletedNode([]byte(content), []deletedSubscriptionNode{{Name: "retired relay"}}, 0) {
+			t.Fatal("renamed relay cache served")
+		}
+	}
+}
+
+func TestDeletedServerRejectsRegisteredAndLegacyTokens(t *testing.T) {
+	state := newCoreModeTestState(t)
+	a := &app{adminStore: &fakeAdminSessionStore{server: false}, helperState: state, helperTokens: map[string]string{"12": "legacy"}}
+	r := httptest.NewRequest("POST", "/api/custom/agent/connections", nil)
+	r.Header.Set("Authorization", "Bearer helper-token")
+	if _, _, ok := a.authorizedHelper(r, state.data.Servers["12"].CustomServerUUID, "v0.7.3"); ok {
+		t.Fatal("registered token survives official deletion")
+	}
+	r.Header.Set("Authorization", "Bearer legacy")
+	if _, _, ok := a.authorizedHelper(r, "12", "v0.7.3"); ok {
+		t.Fatal("legacy token resurrected server")
+	}
+}
+
+func TestServerDeletionRejectsForwardLoopAsAlternative(t *testing.T) {
+	members := map[int64][]map[string]any{1: {{"server_id": int64(2)}}, 2: {{"server_id": int64(2)}}}
+	if deletionChainHasPath([]int64{1, 2}, members) {
+		t.Fatal("same-server loop accepted as usable path")
+	}
+	members[2] = append(members[2], map[string]any{"server_id": int64(3)})
+	if !deletionChainHasPath([]int64{1, 2}, members) {
+		t.Fatal("distinct usable path rejected")
+	}
+}
+
+func TestServerDeletionRetiresOnlyTargetHelperState(t *testing.T) {
+	state := newCoreModeTestState(t)
+	state.data.Servers["2"] = helperServerIdentity{OfficialServerID: "2"}
+	state.data.InstallTokens["retired"] = helperInstallToken{OfficialServerID: "12"}
+	state.data.InstallTokens["kept"] = helperInstallToken{OfficialServerID: "2"}
+	state.data.RebindTokens["retired"] = helperRebindToken{OfficialServerID: "12"}
+	state.data.ConnectionSettings["12"] = serverConnectionSettings{}
+	blocked := []serverConnectionIdentity{{InboundTag: "retired", User: "old"}, {InboundTag: "kept", User: "current"}}
+	state.data.ConnectionSettings["2"] = serverConnectionSettings{BlockedIdentities: &blocked, Ports: []serverPortConnectionSettings{{InboundTag: "retired"}, {InboundTag: "kept"}}}
+	a := &app{helperState: state}
+	p := serverDeletionPlan{ServerID: 12, Inbounds: []serverDeletionInbound{{ServerID: 2, Tag: "retired"}}}
+	if err := a.retireDeletedServerState(&p); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.data.Servers["12"]; ok {
+		t.Fatal("deleted Helper still authorizes reports")
+	}
+	if _, ok := state.data.InstallTokens["retired"]; ok {
+		t.Fatal("deleted install token retained")
+	}
+	if _, ok := state.data.RebindTokens["retired"]; ok {
+		t.Fatal("deleted rebind token retained")
+	}
+	kept := state.data.ConnectionSettings["2"]
+	if len(state.data.Servers) != 1 || len(state.data.InstallTokens) != 1 || len(kept.Ports) != 1 || kept.Ports[0].InboundTag != "kept" || len(*kept.BlockedIdentities) != 1 {
+		t.Fatal("unrelated Helper settings changed or retired settings remain")
+	}
+}
+
+func TestServerDeletionRoutedTunnelKeepsPartiallyUsableInbound(t *testing.T) {
+	for _, conditional := range []bool{false, true} {
+		data := serverDeletionInventory{"tunnels": {{"kind": "routed", "server_id": int64(2), "tag": "tunnel-route", "inbound_tag": "shared", "target_address": "192.0.2.1", "target_port": int64(443), "conditional": conditional}}}
+		p := serverDeletionPlan{ServerID: 1}
+		reasons := map[int64]string{}
+		planDeletionTunnels(data, &p, map[int64]map[string]any{2: {"name": "B"}}, map[int64]map[string]any{10: {"original_server": "B", "inbound_tag": "shared"}}, reasons, map[string]bool{"192.0.2.1": true})
+		if (reasons[10] == "") != conditional || len(p.Steps) != 1 || (len(p.Attention) > 0) != conditional {
+			t.Fatalf("conditional=%t reasons=%v steps=%v notes=%v", conditional, reasons, p.Steps, p.Attention)
+		}
+	}
+}
+
+func TestServerDeletionRoutedTunnelResumesWithoutTouchingOtherRules(t *testing.T) {
+	config := map[string]any{"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom"}, map[string]any{"tag": "broken", "protocol": "freedom", "settings": map[string]any{"redirect": "192.0.2.1:443"}}}, "routing": map[string]any{"rules": []any{map[string]any{"outboundTag": "direct"}, map[string]any{"outboundTag": "broken"}, map[string]any{"outboundTag": "broken"}}}}
+	fixture, server := newLifecycleAgentFixture(map[int64]map[string]any{2: config})
+	defer server.Close()
+	failed := false
+	fixture.extraHandler = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != http.MethodPost {
+			return false
+		}
+		var payload map[string]any
+		if json.NewDecoder(r.Body).Decode(&payload) != nil {
+			t.Error("invalid remote operation")
+			return false
+		}
+		switch r.URL.Path {
+		case "/api/admin/remote/routing":
+			routing := deletionObject(config["routing"])
+			rules := routing["rules"].([]any)
+			i := int(deletionID(payload["index"]))
+			routing["rules"] = append(rules[:i], rules[i+1:]...)
+		case "/api/admin/remote/outbounds":
+			if !failed {
+				failed = true
+				writeJSON(w, 502, map[string]any{"error": "injected"})
+				return true
+			}
+			config["outbounds"] = config["outbounds"].([]any)[:1]
+		default:
+			return false
+		}
+		writeJSON(w, 200, map[string]any{"success": true})
+		return true
+	}
+	target, _ := url.Parse(server.URL)
+	a := &app{officialInternalTarget: target}
+	step := serverDeletionStep{ServerID: 2, Tag: "broken"}
+	expected := map[string]any{"target_address": "192.0.2.1", "target_port": int64(443)}
+	if err := a.removeServerDeletionRoutedTunnel(context.Background(), "session", &step, expected, config); err == nil {
+		t.Fatal("injected outage was not retained")
+	}
+	for retry := 0; retry < 2; retry++ {
+		if err := a.removeServerDeletionRoutedTunnel(context.Background(), "session", &step, expected, config); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rules := deletionObject(config["routing"])["rules"].([]any)
+	if len(rules) != 1 || deletionObject(rules[0])["outboundTag"] != "direct" || len(config["outbounds"].([]any)) != 1 {
+		t.Fatal("unrelated routing changed")
+	}
+}

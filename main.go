@@ -203,6 +203,9 @@ func main() {
 			_ = adminStore.Close()
 			log.Fatalf("[mmwx-custom] user lifecycle migration failed: %v", err)
 		}
+		if _, err := adminStore.db.ExecContext(context.Background(), serverDeletionSchema); err != nil {
+			log.Fatalf("server deletion schema: %v", err)
+		}
 		if err := adminStore.EnsurePackageTrafficGroupsSchema(context.Background()); err != nil {
 			_ = adminStore.Close()
 			log.Fatalf("[mmwx-custom] package traffic groups migration failed: %v", err)
@@ -278,13 +281,14 @@ func newMux(api *app, mmwxAPITarget *url.URL, frontendDir string) *http.ServeMux
 	mux.HandleFunc("/api/custom/ui/routing-presets", api.withCORS(api.uiRoutingPresetsHandler))
 	mux.HandleFunc("/api/custom/users/", api.withCORS(api.userManagementHandler))
 	mux.HandleFunc("/api/custom/nodes/owners", api.withCORS(api.nodeOwnersHandler))
+	mux.HandleFunc("/api/custom/server-deletions", api.withCORS(api.serverDeletionIndexHandler))
 	mux.HandleFunc("/api/custom/user-lifecycle", api.withCORS(api.userLifecycleIndexHandler))
 	mux.HandleFunc("/api/custom/packages/", api.withCORS(api.packageTrafficGroupsHandler))
 	mux.HandleFunc("/api/custom/user-status-tasks", api.withCORS(api.userStatusTaskHandler))
 	mux.HandleFunc("/api/custom/user-status-tasks/", api.withCORS(api.userStatusTaskHandler))
 	mux.Handle("/api/", api.withCORSHandler(mmwxAPIProxy(mmwxAPITarget)))
-	mux.Handle("/x/", mmwxAPIProxy(mmwxAPITarget))
-	mux.Handle("/t/", mmwxAPIProxy(mmwxAPITarget))
+	mux.Handle("/x/", api.subscriptionProxy(mmwxAPITarget))
+	mux.Handle("/t/", api.subscriptionProxy(mmwxAPITarget))
 	mux.Handle("/", spaHandler(frontendDir))
 
 	return mux

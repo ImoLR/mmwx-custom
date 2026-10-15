@@ -1705,3 +1705,19 @@ export function repairRelayCredentials(token: string, apply = false) {
     body: "null",
   });
 }
+
+export function fetchServerDeletionPreview(token: string, serverId: number) {
+  return requestCustomOperator<{ plan: import("./server-delete-state").ServerDeletionPlan }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/deletion-preview`), token, { cache: "no-store" });
+}
+
+export function fetchServerDeletion(token: string, serverId: number) {
+  return requestCustomOperator<{ plan: import("./server-delete-state").ServerDeletionPlan }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/delete`), token, { cache: "no-store" });
+}
+
+export function executeServerDeletion(token: string, serverId: number, body: { confirm_name: string; fingerprint: string; operation_id?: string; uninstall_agent: boolean }) {
+  return requestCustomOperator<{ plan: import("./server-delete-state").ServerDeletionPlan }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/delete`), token, { method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } });
+}
+
+export function fetchServerDeletions(token: string) {
+  return requestCustomOperator<{ plans: import("./server-delete-state").ServerDeletionPlan[] }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/server-deletions"), token, { cache: "no-store" });
+}
