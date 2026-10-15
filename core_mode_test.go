@@ -96,6 +96,52 @@ func TestCoreModeHealthyDoesNotQueueRepair(t *testing.T) {
 	}
 }
 
+func TestCoreModeDebouncesReconnectAndRepairsPersistentDrift(t *testing.T) {
+	for _, mode := range []string{"external", "embedded"} {
+		t.Run(mode, func(t *testing.T) {
+			state := newCoreModeTestState(t)
+			_, _ = state.setCoreModeIntent("12", mode)
+			status := healthyExternalStatus()
+			if mode == "embedded" {
+				status.CoreMode = mode
+				status.Ownership = externalOwnershipStatus{}
+			}
+			runtime := remoteServerRuntime{XrayMode: mode, Status: "connected"}
+			_, _ = state.reconcileCoreMode("12", status, runtime, nil)
+			runtime.Status = "disconnected"
+			command, err := state.reconcileCoreMode("12", status, runtime, nil)
+			intent, _ := state.coreModeIntent("12")
+			if err != nil || command != nil || intent.RepairStatus != "healthy" || intent.DriftDetectedAt.IsZero() {
+				t.Fatalf("transient reconnect surfaced: %#v %v %v", intent, command, err)
+			}
+			intent.DriftDetectedAt = time.Now().Add(-15 * time.Second)
+			state.data.CoreModeIntents["12"] = intent
+			command, err = state.reconcileCoreMode("12", status, runtime, nil)
+			if err != nil || command != nil {
+				t.Fatalf("15s reconnect repaired: %v %v", command, err)
+			}
+			runtime.Status = "connected"
+			_, _ = state.reconcileCoreMode("12", status, runtime, nil)
+			intent, _ = state.coreModeIntent("12")
+			if !intent.DriftDetectedAt.IsZero() || intent.RepairStatus != "healthy" {
+				t.Fatalf("recovery: %#v", intent)
+			}
+			// A later incident gets its own grace, then one repair after 20s.
+			runtime.Status = "disconnected"
+			_, _ = state.reconcileCoreMode("12", status, runtime, nil)
+			intent, _ = state.coreModeIntent("12")
+			intent.DriftDetectedAt = time.Now().Add(-coreDriftGrace - time.Second)
+			state.data.CoreModeIntents["12"] = intent
+			for i := 0; i < 3; i++ {
+				command, err = state.reconcileCoreMode("12", status, runtime, nil)
+				if err != nil || command == nil || len(state.data.ManagementCommands["12"]) != 1 {
+					t.Fatalf("persistent drift: %v %v", command, err)
+				}
+			}
+		})
+	}
+}
+
 func TestExternalIntentDetectsEveryRequiredDriftSignal(t *testing.T) {
 	tests := []struct {
 		name    string

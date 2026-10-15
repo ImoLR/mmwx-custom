@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-const coreModeRequestBytes = 4096
+const (
+	coreModeRequestBytes = 4096
+	coreDriftGrace       = 20 * time.Second
+)
 
 var coreRepairBackoff = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute}
 
@@ -26,6 +29,7 @@ type coreModeIntent struct {
 	LastRepairError  string    `json:"last_repair_error,omitempty"`
 	NextRepairAt     time.Time `json:"next_repair_at,omitempty"`
 	LastObservedMode string    `json:"last_observed_mode,omitempty"`
+	DriftDetectedAt  time.Time `json:"drift_detected_at,omitempty"`
 	// A recorded xray_mode change that the Custom UI did not request. A switch
 	// to Embedded is kept (it may be a manual edit in the official UI) but is
 	// flagged until an administrator confirms or reverts it.
@@ -124,6 +128,7 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 	}
 	now := time.Now().UTC()
 	formalKnown := runtime.XrayMode == "embedded" || runtime.XrayMode == "external"
+	formalChanged := formalKnown && ((intent.LastObservedMode != "" && intent.LastObservedMode != runtime.XrayMode) || (!intent.PendingChange && intent.DesiredMode != runtime.XrayMode))
 	if formalKnown && intent.LastObservedMode != "" && intent.LastObservedMode != runtime.XrayMode {
 		if intent.PendingChange && intent.LifecycleSource == "custom-explicit" && intent.DesiredMode == runtime.XrayMode {
 			intent.FormalChangeUnconfirmed = false
@@ -168,6 +173,7 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		}
 	}
 	if coreModeHealthy(intent, status, runtime) {
+		intent.DriftDetectedAt = time.Time{}
 		intent.PendingChange = false
 		intent.LifecycleSource = "formal"
 		intent.RepairStatus = "healthy"
@@ -185,6 +191,19 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 			intent.UpdatedAt = now
 			s.data.CoreModeIntents[serverID] = intent
 			return &command, s.saveLocked()
+		}
+	}
+	// A reconnect can temporarily make the official runtime look unhealthy.
+	// Keep the last settled UI state and wait for sustained drift. Explicit
+	// lifecycle requests and recorded controller-mode changes remain immediate.
+	if !intent.PendingChange && !formalChanged {
+		if intent.DriftDetectedAt.IsZero() {
+			intent.DriftDetectedAt = now
+		}
+		if now.Sub(intent.DriftDetectedAt) <= coreDriftGrace {
+			intent.UpdatedAt = now
+			s.data.CoreModeIntents[serverID] = intent
+			return nil, s.saveLocked()
 		}
 	}
 	if !hasCapability(status, "core.mode.apply") {
