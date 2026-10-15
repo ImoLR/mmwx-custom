@@ -25,7 +25,7 @@ const (
 	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
 	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
 	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
-	helperVersion        = "v0.7.1"
+	helperVersion        = "v0.7.2"
 )
 
 type config struct {
@@ -106,6 +106,9 @@ func main() {
 	machineProtection := newMachineProtectionManager()
 	lifecycle := newLifecycleManager(core)
 	executor := &commandExecutor{lifecycle: lifecycle, core: core, state: &state, client: client, config: cfg}
+	executor.progressReporter = newUpdateProgressReporter(client, cfg)
+	defer executor.progressReporter.close()
+	executor.startupUpdate = state.HelperVersion != "" && state.HelperVersion != helperVersion
 	lifecycle.progress = executor.reportUpdateProgress
 	if *rollbackTakeoverOnce {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -224,6 +227,10 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 		state.PendingResult = nil
 	}
 	state.ControllerConnectedAt = time.Now().UTC()
+	if executor.startupUpdate {
+		executor.startupUpdate = false
+		executor.reportUpdateProgress("helper", "success", helperVersion, "", updateProgressDetails{LogLine: "新 Helper 进程已启动，首次上报成功"})
+	}
 	state.updateSettings(response.Settings)
 	if response.Command != nil && !completedCommand(state.CompletedCommandIDs, response.Command.ID) {
 		commandCtx, cancelCommand := context.WithTimeout(context.Background(), 31*time.Minute)

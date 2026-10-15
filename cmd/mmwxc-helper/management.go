@@ -148,18 +148,20 @@ func signManagementResult(result *managementResult, token string) error {
 }
 
 type commandExecutor struct {
-	lifecycle       *lifecycleManager
-	core            *coreClient
-	state           *localState
-	client          *http.Client
-	config          config
-	logHousekeeping *logHousekeeping
+	lifecycle        *lifecycleManager
+	core             *coreClient
+	state            *localState
+	client           *http.Client
+	config           config
+	logHousekeeping  *logHousekeeping
+	progressReporter *updateProgressReporter
+	startupUpdate    bool
 }
 
-func (executor *commandExecutor) reportUpdateProgress(component, phase, version, message string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = postUpdateProgress(ctx, executor.client, executor.config, component, phase, version, message)
+func (executor *commandExecutor) reportUpdateProgress(component, phase, version, message string, details ...updateProgressDetails) {
+	if executor.progressReporter != nil {
+		executor.progressReporter.report(component, phase, version, message, details...)
+	}
 }
 
 func (executor *commandExecutor) status(ctx context.Context) agentStatus {

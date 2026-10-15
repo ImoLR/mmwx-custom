@@ -399,7 +399,7 @@ func (manager *lifecycleManager) installOrUpdateExternalOwnedCore(ctx context.Co
 		return err
 	}
 	defer os.Remove(staged)
-	manager.reportProgress("core", "verifying", artifact.Version, "")
+	manager.reportProgress("core", "verifying", artifact.Version, "SHA-256 校验通过")
 	if err := validateELFArchitecture(staged); err != nil {
 		return err
 	}
@@ -416,7 +416,7 @@ func (manager *lifecycleManager) installOrUpdateExternalOwnedCore(ctx context.Co
 	if err != nil {
 		return err
 	}
-	manager.reportProgress("core", "installing", artifact.Version, "")
+	manager.reportProgress("core", "installing", artifact.Version, "保存 Core 回滚文件")
 	if err := os.MkdirAll(filepath.Dir(ownershipImagePath), 0700); err != nil {
 		return err
 	}
@@ -434,6 +434,7 @@ func (manager *lifecycleManager) installOrUpdateExternalOwnedCore(ctx context.Co
 	}
 	previousState := *state
 	applyErr := func() error {
+		manager.reportProgress("core", "installing", artifact.Version, "替换 Core 文件与受保护副本")
 		if err := replaceFileFrom(staged, ownershipImagePath, 0755); err != nil {
 			return fmt.Errorf("update protected Core image: %w", err)
 		}
@@ -441,11 +442,11 @@ func (manager *lifecycleManager) installOrUpdateExternalOwnedCore(ctx context.Co
 			return fmt.Errorf("update owned Core binary: %w", err)
 		}
 		state.ExpectedCoreSHA = newHash
-		manager.reportProgress("core", "restarting", artifact.Version, "")
+		manager.reportProgress("core", "restarting", artifact.Version, "重启服务：停止旧进程 → 启动新进程")
 		if err := systemctl(ctx, "restart", "xray.service"); err != nil {
 			return err
 		}
-		if err := manager.waitOwnedCoreReady(ctx, 25*time.Second); err != nil {
+		if err := manager.waitOwnedCoreReady(ctx, 25*time.Second, manager.updateHealthProgress(artifact.Version, 25*time.Second)); err != nil {
 			return err
 		}
 		status := manager.externalOwnershipStatus(ctx, state)
@@ -455,6 +456,7 @@ func (manager *lifecycleManager) installOrUpdateExternalOwnedCore(ctx context.Co
 		return nil
 	}()
 	if applyErr != nil {
+		manager.reportProgress("core", manager.progressPhase, artifact.Version, "更新失败，恢复上一版本："+applyErr.Error())
 		*state = previousState
 		rollbackErr := func() error {
 			if err := replaceFileFrom(backupPath, ownershipImagePath, 0755); err != nil {
@@ -816,9 +818,12 @@ func restoreOwnershipPath(path, directory string, backup ownershipPathBackup) er
 	return copyFile(filepath.Join(directory, backup.BackupName), path, backup.Mode)
 }
 
-func (manager *lifecycleManager) waitOwnedCoreReady(ctx context.Context, timeout time.Duration) error {
+func (manager *lifecycleManager) waitOwnedCoreReady(ctx context.Context, timeout time.Duration, progress ...func()) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		if len(progress) > 0 {
+			progress[0]()
+		}
 		pid, _ := serviceMainPID(ctx, "xray.service")
 		if pid > 0 && sameFile(filepath.Join("/proc", strconv.Itoa(pid), "exe"), coreBinaryPath) {
 			probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)

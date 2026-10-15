@@ -60,12 +60,13 @@ WantedBy=multi-user.target
 `
 
 type lifecycleManager struct {
-	httpClient  *http.Client
-	core        *coreClient
-	versionMu   sync.Mutex
-	coreMTime   time.Time
-	coreVersion string
-	progress    func(component, phase, version, message string)
+	httpClient    *http.Client
+	core          *coreClient
+	versionMu     sync.Mutex
+	coreMTime     time.Time
+	coreVersion   string
+	progress      func(component, phase, version, message string, details ...updateProgressDetails)
+	progressPhase string
 }
 
 func newLifecycleManager(core *coreClient) *lifecycleManager {
@@ -80,9 +81,10 @@ func newLifecycleManager(core *coreClient) *lifecycleManager {
 	}, core: core}
 }
 
-func (manager *lifecycleManager) reportProgress(component, phase, version, message string) {
+func (manager *lifecycleManager) reportProgress(component, phase, version, message string, details ...updateProgressDetails) {
+	manager.progressPhase = phase
 	if manager.progress != nil {
-		manager.progress(component, phase, version, message)
+		manager.progress(component, phase, version, message, details...)
 	}
 }
 
@@ -129,7 +131,7 @@ func (manager *lifecycleManager) downloadArtifact(ctx context.Context, artifact 
 			if strings.Contains(name, "helper") {
 				component = "helper"
 			}
-			manager.reportProgress(component, "downloading", artifact.Version, "GitHub 加速下载失败，正在尝试 GitHub 官方")
+			manager.reportProgress(component, "downloading", artifact.Version, "加速地址失败，改用 GitHub 直连")
 			return "", err
 		}
 		return manager.downloadArtifactCandidate(ctx, artifact, name, candidate)
@@ -169,14 +171,26 @@ func (manager *lifecycleManager) downloadArtifactCandidate(ctx context.Context, 
 	if response.StatusCode != http.StatusOK {
 		return cleanup(fmt.Errorf("artifact download HTTP %d", response.StatusCode))
 	}
+	component := "core"
+	if strings.Contains(name, "helper") {
+		component = "helper"
+	}
+	progress := &downloadProgressWriter{total: response.ContentLength, now: time.Now, lastAt: time.Now(), report: func(detail updateProgressDetails) {
+		manager.reportProgress(component, "downloading", artifact.Version, "", detail)
+	}}
+	if response.ContentLength > 0 && response.ContentLength <= maxArtifactBytes {
+		zero := 0
+		manager.reportProgress(component, "downloading", artifact.Version, "", updateProgressDetails{Percent: &zero, BytesTotal: response.ContentLength})
+	}
 	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(response.Body, maxArtifactBytes+1))
+	written, err := io.Copy(io.MultiWriter(file, hash, progress), io.LimitReader(response.Body, maxArtifactBytes+1))
 	if err != nil {
 		return cleanup(err)
 	}
 	if written > maxArtifactBytes {
 		return cleanup(errors.New("artifact is too large"))
 	}
+	manager.reportProgress(component, "verifying", artifact.Version, "校验 SHA-256")
 	if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), artifact.SHA256) {
 		return cleanup(errors.New("artifact sha256 mismatch"))
 	}
@@ -344,7 +358,7 @@ func (manager *lifecycleManager) installOrUpdateCore(ctx context.Context, artifa
 		return err
 	}
 	defer os.Remove(staged)
-	manager.reportProgress("core", "verifying", artifact.Version, "")
+	manager.reportProgress("core", "verifying", artifact.Version, "SHA-256 校验通过")
 	if err := validateELFArchitecture(staged); err != nil {
 		return err
 	}
@@ -354,14 +368,14 @@ func (manager *lifecycleManager) installOrUpdateCore(ctx context.Context, artifa
 	if err != nil || !strings.Contains(strings.ToLower(version), "xray") {
 		return errors.New("artifact is not a supported Xray Core")
 	}
-	manager.reportProgress("core", "installing", artifact.Version, "")
+	manager.reportProgress("core", "installing", artifact.Version, "备份并替换 Core 文件")
 	wasActive := serviceActive(ctx, coreServiceName)
 	if err := installAtomic(staged, coreBinaryPath, "core"); err != nil {
 		return err
 	}
 	if err := writeCoreService(); err != nil {
 		if wasActive {
-			return manager.restoreCoreAfterFailure(ctx, err)
+			return manager.restoreCoreAfterFailure(ctx, err, artifact.Version)
 		}
 		return err
 	}
@@ -370,19 +384,19 @@ func (manager *lifecycleManager) installOrUpdateCore(ctx context.Context, artifa
 	}
 	if _, err := os.Stat(coreConfigPath); err != nil {
 		if wasActive {
-			return manager.restoreCoreAfterFailure(ctx, errors.New("Custom Core config is not ready; refusing to activate"))
+			return manager.restoreCoreAfterFailure(ctx, errors.New("Custom Core config is not ready; refusing to activate"), artifact.Version)
 		}
 		return errors.New("Custom Core config is not ready; refusing to activate")
 	}
 	if err := systemctl(ctx, "enable", coreServiceName); err != nil {
-		return manager.restoreCoreAfterFailure(ctx, err)
+		return manager.restoreCoreAfterFailure(ctx, err, artifact.Version)
 	}
-	manager.reportProgress("core", "restarting", artifact.Version, "")
+	manager.reportProgress("core", "restarting", artifact.Version, "重启服务：停止旧进程 → 启动新进程")
 	if err := systemctl(ctx, "restart", coreServiceName); err != nil {
-		return manager.restoreCoreAfterFailure(ctx, err)
+		return manager.restoreCoreAfterFailure(ctx, err, artifact.Version)
 	}
-	if err := manager.waitCoreReady(ctx, 20*time.Second); err != nil {
-		return manager.restoreCoreAfterFailure(ctx, err)
+	if err := manager.waitCoreReady(ctx, 20*time.Second, manager.updateHealthProgress(artifact.Version, 20*time.Second)); err != nil {
+		return manager.restoreCoreAfterFailure(ctx, err, artifact.Version)
 	}
 	return nil
 }
@@ -805,7 +819,10 @@ func (manager *lifecycleManager) rollbackCore(ctx context.Context) error {
 	return nil
 }
 
-func (manager *lifecycleManager) restoreCoreAfterFailure(ctx context.Context, cause error) error {
+func (manager *lifecycleManager) restoreCoreAfterFailure(ctx context.Context, cause error, version ...string) error {
+	if len(version) > 0 {
+		manager.reportProgress("core", manager.progressPhase, version[0], "更新失败，恢复上一版本："+cause.Error())
+	}
 	backup, err := latestRollback("core")
 	if err != nil {
 		return fmt.Errorf("Custom Core update failed and no rollback is available: %w", cause)
@@ -825,9 +842,12 @@ func (manager *lifecycleManager) restoreCoreAfterFailure(ctx context.Context, ca
 	return fmt.Errorf("Custom Core update failed and the previous binary was restored: %w", cause)
 }
 
-func (manager *lifecycleManager) waitCoreReady(ctx context.Context, timeout time.Duration) error {
+func (manager *lifecycleManager) waitCoreReady(ctx context.Context, timeout time.Duration, progress ...func()) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		if len(progress) > 0 {
+			progress[0]()
+		}
 		if serviceActive(ctx, coreServiceName) {
 			probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			_, err := manager.core.snapshot(probeCtx)
@@ -948,11 +968,9 @@ func runManagedHelperUpdate(ctx context.Context, artifact managementArtifact, co
 		return err
 	}
 	manager := newLifecycleManager(newCoreClient(defaultCoreSocket))
-	manager.progress = func(component, phase, version, message string) {
-		progressCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = postUpdateProgress(progressCtx, manager.httpClient, cfg, component, phase, version, message)
-	}
+	reporter := newUpdateProgressReporter(manager.httpClient, cfg)
+	defer reporter.close()
+	manager.progress = reporter.report
 	defer func() {
 		if returnErr == nil {
 			return
@@ -970,7 +988,7 @@ func runManagedHelperUpdate(ctx context.Context, artifact managementArtifact, co
 		return err
 	}
 	defer os.Remove(staged)
-	manager.reportProgress("helper", "verifying", artifact.Version, "")
+	manager.reportProgress("helper", "verifying", artifact.Version, "SHA-256 校验通过")
 	if err := validateELFArchitecture(staged); err != nil {
 		return err
 	}
@@ -984,15 +1002,16 @@ func runManagedHelperUpdate(ctx context.Context, artifact managementArtifact, co
 	if artifact.Version != "" && artifact.Version != newVersion {
 		return errors.New("helper version does not match command")
 	}
-	manager.reportProgress("helper", "installing", artifact.Version, "")
+	manager.reportProgress("helper", "installing", artifact.Version, "备份并替换 Helper 文件")
 	if err := installAtomic(staged, helperBinaryPath, "helper"); err != nil {
 		return err
 	}
-	manager.reportProgress("helper", "restarting", artifact.Version, "")
+	manager.reportProgress("helper", "restarting", artifact.Version, "重启服务：停止旧进程 → 启动新进程")
 	if err := systemctl(ctx, "restart", helperServiceName); err != nil {
+		manager.reportProgress("helper", "restarting", artifact.Version, "重启失败，恢复上一版本："+err.Error())
 		return restoreHelperAfterFailure(ctx, err)
 	}
-	manager.reportProgress("helper", "reconnecting", artifact.Version, "")
+	manager.reportProgress("helper", "reconnecting", artifact.Version, "服务已启动，等待新进程首次上报")
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		state, loadErr := loadLocalState(cfg.StatePath)
@@ -1002,6 +1021,7 @@ func runManagedHelperUpdate(ctx context.Context, artifact managementArtifact, co
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+	manager.reportProgress("helper", "reconnecting", artifact.Version, "首次上报超时，恢复上一版本")
 	return restoreHelperAfterFailure(ctx, errors.New("helper heartbeat health check timed out"))
 }
 
