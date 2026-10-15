@@ -10,6 +10,7 @@ import (
 )
 
 type localState struct {
+	UninstallPending      bool                    `json:"uninstall_pending,omitempty"`
 	Settings              connectionSettings      `json:"settings"`
 	PendingResult         *managementResult       `json:"pending_result,omitempty"`
 	CompletedCommandIDs   []string                `json:"completed_command_ids,omitempty"`

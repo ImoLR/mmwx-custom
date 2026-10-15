@@ -25,7 +25,7 @@ const (
 	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
 	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
 	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
-	helperVersion        = "v0.7.2"
+	helperVersion        = "v0.7.3"
 )
 
 type config struct {
@@ -198,6 +198,16 @@ func main() {
 
 func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftables *nftablesManager, machineProtection *machineProtectionManager, logs *periodicLogLimiter) {
 	cfg, client, core, state, lifecycle := executor.config, executor.client, executor.core, executor.state, executor.lifecycle
+	if state.UninstallPending {
+		// Do not reconcile or restart Core after a successful uninstall prepare.
+		report := &managementReport{Status: executor.status(context.Background()), Result: state.PendingResult}
+		_, err := uploadDetailedMetrics(context.Background(), client, cfg, detailedConnectionSnapshot{}, report)
+		if err == nil {
+			err = executor.finishHelperUninstall()
+		}
+		logs.report("uninstall completion pending", err)
+		return
+	}
 	reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), 30*time.Second)
 	logs.report("external ownership reconcile failed", lifecycle.reconcileExternalOwnership(reconcileCtx, &state.ExternalOwnership))
 	logs.report("external control config reconcile failed", ensureExternalControlConfig(reconcileCtx, client, cfg, state, false))
@@ -241,6 +251,9 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 		rememberCompletedCommand(state, response.Command.ID)
 	}
 	logs.report("save state failed", saveLocalState(cfg.StatePath, *state))
+	if state.UninstallPending {
+		return
+	}
 	applyCtx, cancelApply = context.WithTimeout(context.Background(), 5*time.Second)
 	logs.report("apply updated core config failed", executor.applyCoreSettings(applyCtx))
 	cancelApply()

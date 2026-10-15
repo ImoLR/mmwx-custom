@@ -86,7 +86,7 @@ type managementReport struct {
 }
 
 var helperCapabilities = []string{
-	"helper.status", "helper.version", "helper.update",
+	"helper.status", "helper.version", "helper.update", "helper.uninstall",
 	"core.status", "core.version", "core.install", "core.update", "core.restart", "core.stop", "core.rollback", "core.config.apply",
 	"official.xray.stop", "official.xray.start",
 	"official.xray.attach-custom", "official.xray.detach-custom",
@@ -216,6 +216,16 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 	var data any
 	var err error
 	switch command.Action {
+	case "helper.uninstall":
+		err = prepareHelperUninstall(ctx)
+		if err == nil {
+			executor.state.UninstallPending = true
+			executor.state.ExternalOwnership = externalOwnershipState{}
+			err = saveLocalState(executor.config.StatePath, *executor.state)
+			if err == nil {
+				data = map[string]bool{"core_stopped": true, "helper_removal_pending": true}
+			}
+		}
 	case "helper.status", "helper.version":
 		data = executor.status(ctx)
 	case "helper.update":
