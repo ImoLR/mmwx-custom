@@ -47,7 +47,7 @@ if [[ "${1:-}" != "--finish" ]]; then
   for executable in /proc/[0-9]*/exe; do
     target="$(readlink "$executable" 2>/dev/null || true)"
     case "$target" in
-      /opt/mmwxc/core/xray|'/opt/mmwxc/core/xray (deleted)'|/var/lib/mmwxc/ownership/xray)
+      /opt/mmwxc/core/xray|'/opt/mmwxc/core/xray (deleted)'|/var/lib/mmwxc/ownership/xray|'/var/lib/mmwxc/ownership/xray (deleted)')
         echo "MMWXC Core is still running; manual review required" >&2
         exit 1 ;;
     esac
@@ -66,7 +66,8 @@ fi
 # stopped-Core result is acknowledged by the controller.
 systemctl disable mmwxc-helper.service 2>/dev/null || true
 rm -f /etc/systemd/system/mmwxc-helper.service /usr/local/bin/mmwxc-helper /etc/mmwxc-helper.env
-rm -rf /opt/mmwxc/core /etc/mmwxc /var/lib/mmwxc /run/mmwxc
+rm -f /etc/systemd/journald.conf.d/90-mmwxc-cap.conf
+rm -rf /opt/mmwxc/core /etc/mmwxc /var/lib/mmwxc /var/lib/mmwxc-helper /run/mmwxc
 systemctl daemon-reload
 echo "MMWXC Core and Helper removed; uninstall the official Agent separately"
 systemctl stop mmwxc-helper.service 2>/dev/null || true

@@ -11,7 +11,7 @@ docker run -i --name "$name" --memory 192m --network none \
   -e GOMAXPROCS=2 -v "$root/scripts/uninstall-helper.sh:/fixture/uninstall.sh:ro" \
   -v "$MMWXC_TEST_CORE_BINARY:/fixture/core:ro" debian:trixie-slim bash -s <<'CONTAINER'
 set -euo pipefail
-mkdir -p /opt/mmwxc/core /etc/mmwxc/core /var/lib/mmwxc /etc/systemd/system/xray.service.d /fixture-bin /other-project
+mkdir -p /opt/mmwxc/core /etc/mmwxc/core /var/lib/mmwxc /var/lib/mmwxc-helper /etc/systemd/system/xray.service.d /fixture-bin /other-project
 cp /fixture/core /opt/mmwxc/core/xray
 printf 'foreign-data\n' >/other-project/keep
 printf '[Service]\nExecStart=/usr/local/bin/xray run\n' >/etc/systemd/system/xray.service
@@ -44,6 +44,7 @@ test -e /usr/local/bin/mmwxc-helper
 bash /fixture/uninstall.sh --finish
 ! test -e /usr/local/bin/mmwxc-helper
 ! test -e /var/lib/mmwxc
+! test -e /var/lib/mmwxc-helper
 ! test -e /opt/mmwxc/core
 kill -0 "$other_pid"
 test "$(cat /other-project/keep)" = foreign-data

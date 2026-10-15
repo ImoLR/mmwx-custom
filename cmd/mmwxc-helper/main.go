@@ -202,8 +202,17 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 		// Do not reconcile or restart Core after a successful uninstall prepare.
 		report := &managementReport{Status: executor.status(context.Background()), Result: state.PendingResult}
 		_, err := uploadDetailedMetrics(context.Background(), client, cfg, detailedConnectionSnapshot{}, report)
-		if err == nil {
-			err = executor.finishHelperUninstall()
+		if uninstallAcknowledged(err) {
+			// A lost acknowledgement may be followed by token revocation.
+			// The persisted signed uninstall intent still authorizes completion.
+			if state.PendingResult == nil {
+				err = prepareHelperUninstall(context.Background())
+			} else {
+				err = nil
+			}
+			if err == nil {
+				err = executor.finishHelperUninstall()
+			}
 		}
 		logs.report("uninstall completion pending", err)
 		return
