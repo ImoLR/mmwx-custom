@@ -627,6 +627,7 @@ export async function updateRemoteServer(token: string, body: Partial<RemoteServ
   if (typeof secrets.pull_token !== "string") throw new Error("无法读取拉取令牌，未保存服务器");
   if (body.xray_mode && body.xray_mode !== current.xray_mode) {
     const raw = (await fetchXrayConfig(token, body.id)).config;
+    if (typeof raw !== "string") throw new Error("无法读取 Core 配置，尚未切换");
     const prepared = modeSwitchConfig(raw);
     if (prepared !== raw) {
       const latest = (await fetchXrayConfig(token, body.id)).config;
