@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ImoLR/mmwx-custom/internal/externalconfig"
 )
@@ -76,6 +77,26 @@ func (a *app) setOfficialCoreMode(ctx context.Context, serverID, mode string) er
 		payload["pull_token"] = *secrets.PullToken
 		payload["xray_mode"] = mode
 		if err := a.officialLifecycleJSON(ctx, token, http.MethodPost, "/api/v3", map[string]any{"op": "2146f0b13a7196cb", "payload": payload}, nil); err != nil {
+			// Official writes xray_mode before validating the rest of the update.
+			// Even a timeout or success:false can therefore mean the mode changed.
+			// Read its database independently of the failed request's deadline.
+			verifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			store, ok := a.adminStore.(remoteServerModeStore)
+			if !ok {
+				return err
+			}
+			runtime, readErr := store.RemoteServerRuntime(verifyCtx, serverID)
+			if readErr != nil || (runtime.XrayMode != "embedded" && runtime.XrayMode != "external") {
+				return errors.Join(err, errors.New("official mode could not be verified after the failed update"), readErr)
+			}
+			if saveErr := a.helperState.observeOfficialModeAfterWrite(serverID, runtime.XrayMode); saveErr != nil {
+				return saveErr
+			}
+			if runtime.XrayMode != mode {
+				return err
+			}
+		} else if err := a.helperState.observeOfficialModeAfterWrite(serverID, mode); err != nil {
 			return err
 		}
 		if mode == "embedded" {
@@ -84,6 +105,31 @@ func (a *app) setOfficialCoreMode(ctx context.Context, serverID, mode string) er
 		return nil
 	}
 	return errOperatorServerNotFound
+}
+
+func (s *helperState) observeOfficialModeAfterWrite(serverID, mode string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	intent, ok := s.data.CoreModeIntents[serverID]
+	if !ok {
+		return nil
+	}
+	intent.LastObservedMode = mode
+	// A rejected change or a completed rollback ends the previous request.
+	// Requeue must repair the real mode, not repeat a failed user transition.
+	if intent.PendingChange && intent.DesiredMode != mode {
+		intent.DesiredMode = mode
+		intent.PendingChange = false
+		intent.LifecycleSource = "formal"
+		intent.RepairStatus = "drift_detected"
+		intent.RepairAttempts = 0
+		intent.LastRepairError = ""
+		intent.LastRepairReason = "official mode retained after handoff failure or rollback"
+		intent.NextRepairAt = time.Time{}
+	}
+	intent.UpdatedAt = time.Now().UTC()
+	s.data.CoreModeIntents[serverID] = intent
+	return s.saveLocked()
 }
 
 // Keep this rule in sync with frontend/src/server-update.ts. Echo the latest

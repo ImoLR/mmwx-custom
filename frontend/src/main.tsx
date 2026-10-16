@@ -2960,7 +2960,20 @@ function EditRemoteServerDialog({
       await onChanged();
     } catch (error) {
       const message = error instanceof Error ? error.message : "保存服务器失败";
-      setNotice({ kind: "error", text: deployModeApplied ? `部署模式已切换，但其余字段保存失败：${message}` : message });
+      let observed = "";
+      try {
+        const latest = (await fetchRemoteServers(sessionToken)).servers?.find((item) => item.id === server.id);
+        if (latest) {
+          const next = editRemoteServerState(latest);
+          setForm(next);
+          setBaseline(next);
+          observed = ` 已重新读取正式服务，当前 Core 模式为 ${latest.xray_mode === "embedded" ? "Embedded" : "External"}。`;
+        }
+        await onChanged();
+      } catch {
+        observed = " 无法重新读取正式服务，切换结果尚未确认，请刷新后核对。";
+      }
+      setNotice({ kind: "error", text: (deployModeApplied ? `部署模式已切换，但其余字段未完整保存：${message}` : `保存未完整完成：${message}`) + observed });
     } finally {
       setSaving(false);
     }

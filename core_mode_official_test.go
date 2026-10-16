@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/ImoLR/mmwx-custom/internal/externalconfig"
 )
@@ -16,6 +17,9 @@ type officialCoreModeFixture struct {
 	writes, accepts  int
 	modeWrites       int
 	settings         map[string]any
+	modeError        int
+	rejectMode       bool
+	afterModeWrite   func()
 }
 
 func newOfficialCoreModeFixture(t *testing.T, store *fakeAdminSessionStore, state *helperState) (*app, *officialCoreModeFixture) {
@@ -79,8 +83,17 @@ func newOfficialCoreModeFixture(t *testing.T, store *fakeAdminSessionStore, stat
 				t.Fatal("redacted token was sent")
 			}
 			f.modeWrites++
-			store.mode = request.Payload["xray_mode"].(string)
-			store.runtime.XrayMode = store.mode
+			if !f.rejectMode {
+				store.mode = request.Payload["xray_mode"].(string)
+				store.runtime.XrayMode = store.mode
+			}
+			if f.afterModeWrite != nil {
+				f.afterModeWrite()
+			}
+			if f.modeError != 0 {
+				writeJSON(w, f.modeError, map[string]any{"success": false, "message": "DDNS provider does not exist"})
+				return true
+			}
 			writeJSON(w, 200, map[string]any{"success": true})
 		case "0f1dfff4d60aad8f":
 			if request.Q != "server_id=12&with_config=true" {
@@ -145,6 +158,79 @@ func TestOfficialCoreModeSwitchKeepsDDNS(t *testing.T) {
 	}
 	if f.modeWrites != 1 || store.mode != "embedded" {
 		t.Fatal("mode switch not written")
+	}
+}
+
+func TestOfficialModePartialWriteUsesRealState(t *testing.T) {
+	for _, target := range []string{"embedded", "external"} {
+		for _, status := range []int{200, 400, 503} {
+			t.Run(target+http.StatusText(status), func(t *testing.T) {
+				previous := "external"
+				if target == "external" {
+					previous = "embedded"
+				}
+				state := newCoreModeTestState(t)
+				_, _ = state.setCoreModeIntent("12", target)
+				store := &fakeAdminSessionStore{runtime: remoteServerRuntime{XrayMode: previous, Status: "connected"}}
+				a, f := newOfficialCoreModeFixture(t, store, state)
+				f.modeError = status
+				if err := a.setOfficialCoreMode(context.Background(), "12", target); err != nil {
+					t.Fatalf("committed mode was reported failed: %v", err)
+				}
+				observed := healthyExternalStatus()
+				if target == "embedded" {
+					observed = agentStatus{CoreMode: "embedded", ReportedAt: time.Now(), Capabilities: []string{"core.mode.apply"}}
+				}
+				for i := 0; i < 5; i++ {
+					command, err := state.reconcileCoreMode("12", observed, store.runtime, nil)
+					if err != nil || command != nil {
+						t.Fatalf("partial write triggered repair loop: %v %v", command, err)
+					}
+				}
+				intent, _ := state.coreModeIntent("12")
+				if intent.RepairStatus != "healthy" || intent.PendingChange || intent.DesiredMode != target || f.modeWrites != 1 {
+					t.Fatalf("unsettled partial write: %+v writes=%d", intent, f.modeWrites)
+				}
+			})
+		}
+	}
+}
+
+func TestOfficialModeReadbackSurvivesCanceledWrite(t *testing.T) {
+	state := newCoreModeTestState(t)
+	a, f := newOfficialCoreModeFixture(t, &fakeAdminSessionStore{runtime: remoteServerRuntime{XrayMode: "embedded"}}, state)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.afterModeWrite = cancel
+	if err := a.setOfficialCoreMode(ctx, "12", "external"); err != nil {
+		t.Fatalf("lost response hid committed mode: %v", err)
+	}
+}
+
+func TestRejectedModeAndRollbackDoNotRepeatTransition(t *testing.T) {
+	for _, reject := range []bool{true, false} {
+		state := newCoreModeTestState(t)
+		_, _ = state.setCoreModeIntent("12", "external")
+		previous, target := "external", "embedded" // completed rollback
+		if reject {
+			previous, target = "embedded", "external"
+		}
+		store := &fakeAdminSessionStore{runtime: remoteServerRuntime{XrayMode: previous, Status: "connected"}}
+		a, f := newOfficialCoreModeFixture(t, store, state)
+		f.rejectMode = reject
+		if reject {
+			f.modeError = 400
+		}
+		err := a.setOfficialCoreMode(context.Background(), "12", target)
+		if (err != nil) != reject {
+			t.Fatalf("rejected=%v err=%v", reject, err)
+		}
+		observed := agentStatus{CoreMode: "embedded", ReportedAt: time.Now(), Capabilities: []string{"core.mode.apply"}}
+		command, err := state.reconcileCoreMode("12", observed, store.runtime, &managementResult{Action: "core.mode.apply", CompletedAt: time.Now(), Message: "embedded restored"})
+		intent, _ := state.coreModeIntent("12")
+		if err != nil || command != nil || intent.PendingChange || intent.DesiredMode != "embedded" || intent.RepairStatus != "healthy" {
+			t.Fatalf("failed transition requeued: %+v %v %v", intent, command, err)
+		}
 	}
 }
 
