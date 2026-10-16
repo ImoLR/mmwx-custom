@@ -76,6 +76,9 @@ func (a *app) setOfficialCoreMode(ctx context.Context, serverID, mode string) er
 		}
 		payload["pull_token"] = *secrets.PullToken
 		payload["xray_mode"] = mode
+		if err := a.prepareOfficialModeConfig(ctx, token, serverID); err != nil {
+			return err
+		}
 		if err := a.officialLifecycleJSON(ctx, token, http.MethodPost, "/api/v3", map[string]any{"op": "2146f0b13a7196cb", "payload": payload}, nil); err != nil {
 			// Official writes xray_mode before validating the rest of the update.
 			// Even a timeout or success:false can therefore mean the mode changed.
@@ -105,6 +108,33 @@ func (a *app) setOfficialCoreMode(ctx context.Context, serverID, mode string) er
 		return nil
 	}
 	return errOperatorServerNotFound
+}
+
+func (a *app) prepareOfficialModeConfig(ctx context.Context, token, serverID string) error {
+	path := "/api/admin/remote/xray/config?server_id=" + url.QueryEscape(serverID)
+	var current struct{ Config string }
+	if err := a.officialLifecycleJSON(ctx, token, http.MethodGet, path, nil, &current); err != nil {
+		return err
+	}
+	prepared, err := externalconfig.Statistics([]byte(current.Config))
+	if err != nil || equivalentCoreConfig(current.Config, string(prepared)) {
+		return err
+	}
+	before, err := externalconfig.UserConfigHash([]byte(current.Config))
+	if err != nil {
+		return err
+	}
+	if after, err := externalconfig.UserConfigHash(prepared); err != nil || after != before {
+		return errors.New("mode preparation would change user configuration")
+	}
+	var latest struct{ Config string }
+	if err := a.officialLifecycleJSON(ctx, token, http.MethodGet, path, nil, &latest); err != nil {
+		return err
+	}
+	if !equivalentCoreConfig(current.Config, latest.Config) {
+		return errors.New("Core configuration changed before mode preparation")
+	}
+	return a.officialLifecycleJSON(ctx, token, http.MethodPost, path, map[string]any{"config": string(prepared)}, nil)
 }
 
 func (s *helperState) observeOfficialModeAfterWrite(serverID, mode string) error {
@@ -223,6 +253,16 @@ func (a *app) ensureOfficialExternalConfig(ctx context.Context, serverID, phase 
 		repaired, err := externalconfig.Repair([]byte(raw), current.Config)
 		if err != nil {
 			return err
+		}
+		if protected, err := externalconfig.UserConfigHash(repaired); err != nil || protected != fingerprint {
+			return errors.New("External repair would change user configuration")
+		}
+		latest, err := readConfig()
+		if err != nil {
+			return err
+		}
+		if !equivalentCoreConfig(raw, latest) {
+			return errors.New("Core configuration changed before External repair; no configuration was written")
 		}
 		// The official system-config writer replaces user policy. Save a merge
 		// through its existing config API instead, retaining all user subtrees.

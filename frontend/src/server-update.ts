@@ -14,3 +14,22 @@ export function remoteServerUpdatePayload(current: RemoteServer, changes: Partia
 export function remoteServerEditChanges(current: RemoteServerUpdateRequest, baseline: RemoteServerUpdateRequest): Partial<RemoteServerUpdateRequest> & { id: number } {
   return Object.fromEntries(Object.entries(current).filter(([key, value]) => key === "id" || value !== baseline[key as keyof RemoteServerUpdateRequest])) as Partial<RemoteServerUpdateRequest> & { id: number };
 }
+
+// Same as externalconfig.Statistics. Agent startup otherwise replaces the
+// entire policy when statistics are missing, losing timeouts and user levels.
+export function modeSwitchConfig(raw: string): string {
+  const config = JSON.parse(raw);
+  const before = JSON.stringify(config);
+  config.stats ??= {};
+  config.policy ??= {};
+  config.policy.levels ??= {};
+  config.policy.levels["0"] ??= {};
+  for (const level of Object.values(config.policy.levels) as Array<Record<string, unknown>>) {
+    level.statsUserUplink = true;
+    level.statsUserDownlink = true;
+  }
+  config.policy.system ??= {};
+  for (const key of ["statsInboundUplink", "statsInboundDownlink", "statsOutboundUplink", "statsOutboundDownlink"]) config.policy.system[key] = true;
+  const prepared = JSON.stringify(config);
+  return before === prepared ? raw : prepared;
+}

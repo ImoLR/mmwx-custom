@@ -22,6 +22,7 @@ type officialCoreModeFixture struct {
 	afterModeWrite   func()
 	restarts         int
 	restartError     bool
+	settingsRead     func()
 }
 
 func newOfficialCoreModeFixture(t *testing.T, store *fakeAdminSessionStore, state *helperState) (*app, *officialCoreModeFixture) {
@@ -45,6 +46,9 @@ func newOfficialCoreModeFixture(t *testing.T, store *fakeAdminSessionStore, stat
 				t.Fatal("wrong server")
 			}
 			if r.Method == http.MethodGet {
+				if f.settingsRead != nil {
+					f.settingsRead()
+				}
 				writeJSON(w, 200, map[string]any{"success": true, "config": map[string]any{"grpc_port": 46736, "metrics_listen": "127.0.0.1:38889"}})
 			} else {
 				t.Fatal("destructive official system-config POST was used")
@@ -170,6 +174,39 @@ func TestOfficialCoreModeSwitchKeepsDDNS(t *testing.T) {
 	}
 	if f.modeWrites != 1 || store.mode != "embedded" {
 		t.Fatal("mode switch not written")
+	}
+}
+
+func TestOfficialModeStartupKeepsUserPolicy(t *testing.T) {
+	for _, target := range []string{"embedded", "external"} {
+		t.Run(target, func(t *testing.T) {
+			previous := "embedded"
+			if target == previous {
+				previous = "external"
+			}
+			a, f := newOfficialCoreModeFixture(t, &fakeAdminSessionStore{runtime: remoteServerRuntime{XrayMode: previous}}, newCoreModeTestState(t))
+			f.agent.configs[12]["policy"] = map[string]any{"levels": map[string]any{"0": map[string]any{"connIdle": 711}, "3": map[string]any{"handshake": 13}}}
+			before, _ := json.Marshal(f.agent.configs[12])
+			f.afterModeWrite = func() {
+				policy := f.agent.configs[12]["policy"].(map[string]any)
+				levels := policy["levels"].(map[string]any)
+				if levels["0"].(map[string]any)["statsUserUplink"] != true || levels["3"].(map[string]any)["handshake"] != float64(13) {
+					t.Fatal("Agent startup would replace the user's policy")
+				}
+			}
+			if err := a.setOfficialCoreMode(context.Background(), "12", target); err != nil {
+				t.Fatal(err)
+			}
+			after, _ := json.Marshal(f.agent.configs[12])
+			beforeHash, _ := externalconfig.UserConfigHash(before)
+			afterHash, _ := externalconfig.UserConfigHash(after)
+			if beforeHash != afterHash || f.writes != 1 || f.restarts != 0 {
+				t.Fatalf("unexpected preparation: writes=%d restarts=%d", f.writes, f.restarts)
+			}
+			if err := a.prepareOfficialModeConfig(context.Background(), "admin-session", "12"); err != nil || f.writes != 1 {
+				t.Fatalf("prepared config was rewritten: %v", err)
+			}
+		})
 	}
 }
 
@@ -299,5 +336,14 @@ func TestExternalRepairLostRestartResponseRetriesActivationOnly(t *testing.T) {
 	}
 	if err := a.ensureOfficialExternalConfig(context.Background(), "12", "prepare"); err != nil || f.restarts != 2 {
 		t.Fatal("settled activation repeated")
+	}
+}
+
+func TestExternalRepairRejectsConfigEditBeforeWrite(t *testing.T) {
+	state := newCoreModeTestState(t)
+	a, f := newOfficialCoreModeFixture(t, &fakeAdminSessionStore{}, state)
+	f.settingsRead = func() { f.agent.configs[12]["log"] = map[string]any{"loglevel": "warning"} }
+	if err := a.ensureOfficialExternalConfig(context.Background(), "12", "prepare"); err == nil || f.writes != 0 || f.restarts != 0 {
+		t.Fatalf("concurrent edit overwritten: writes=%d restarts=%d err=%v", f.writes, f.restarts, err)
 	}
 }

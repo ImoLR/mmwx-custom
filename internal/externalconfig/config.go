@@ -148,9 +148,6 @@ func Repair(data []byte, settings map[string]any) ([]byte, error) {
 	settings = Settings(settings)
 	config["api"] = encode(map[string]any{"tag": "api", "services": []string{"HandlerService", "LoggerService", "StatsService", "RoutingService"}})
 	config["metrics"] = encode(map[string]any{"tag": "Metrics", "listen": settings["metrics_listen"]})
-	if _, ok := config["stats"]; !ok {
-		config["stats"] = json.RawMessage(`{}`)
-	}
 	var inbounds []json.RawMessage
 	if raw := config["inbounds"]; len(raw) > 0 {
 		if err := json.Unmarshal(raw, &inbounds); err != nil {
@@ -199,10 +196,53 @@ func Repair(data []byte, settings map[string]any) ([]byte, error) {
 	}
 	routing["rules"] = encode(rules)
 	config["routing"] = encode(routing)
+	if err := enableStatistics(config); err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(config)
+}
+
+// Settings uses the official system-config readback to preserve explicit ports.
+func Settings(current map[string]any) map[string]any {
+	result := make(map[string]any, len(current))
+	for key, value := range current {
+		result[key] = value
+	}
+	result["metrics_enabled"], result["grpc_enabled"], result["stats_enabled"] = true, true, true
+	if value, ok := result["metrics_listen"].(string); !ok || value == "" {
+		result["metrics_listen"] = "127.0.0.1:38889"
+	}
+	if value, ok := result["grpc_port"].(float64); !ok || value < 1 {
+		result["grpc_port"] = 46736
+	}
+	return result
+}
+
+// Statistics prepares the file before the official Agent restarts in either
+// mode. Its startup completion replaces the whole policy if stats are missing.
+func Statistics(data []byte) ([]byte, error) {
+	var config map[string]json.RawMessage
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+	if config == nil {
+		return nil, errors.New("Core configuration must be an object")
+	}
+	if err := enableStatistics(config); err != nil {
+		return nil, err
+	}
+	return json.Marshal(config)
+}
+
+func enableStatistics(config map[string]json.RawMessage) error {
+	if raw := config["stats"]; len(raw) == 0 || string(raw) == "null" {
+		config["stats"] = json.RawMessage(`{}`)
+	}
 	policy := map[string]any{}
 	if raw := config["policy"]; len(raw) > 0 {
 		if err := json.Unmarshal(raw, &policy); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if policy == nil {
@@ -227,22 +267,6 @@ func Repair(data []byte, settings map[string]any) ([]byte, error) {
 	for _, key := range []string{"statsInboundUplink", "statsInboundDownlink", "statsOutboundUplink", "statsOutboundDownlink"} {
 		system[key] = true
 	}
-	config["policy"] = encode(policy)
-	return json.Marshal(config)
-}
-
-// Settings uses the official system-config readback to preserve explicit ports.
-func Settings(current map[string]any) map[string]any {
-	result := make(map[string]any, len(current))
-	for key, value := range current {
-		result[key] = value
-	}
-	result["metrics_enabled"], result["grpc_enabled"], result["stats_enabled"] = true, true, true
-	if value, ok := result["metrics_listen"].(string); !ok || value == "" {
-		result["metrics_listen"] = "127.0.0.1:38889"
-	}
-	if value, ok := result["grpc_port"].(float64); !ok || value < 1 {
-		result["grpc_port"] = 46736
-	}
-	return result
+	config["policy"], _ = json.Marshal(policy)
+	return nil
 }

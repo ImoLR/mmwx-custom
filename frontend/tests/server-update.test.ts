@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { remoteServerEditChanges, remoteServerUpdatePayload } from "../src/server-update.ts";
+import { modeSwitchConfig, remoteServerEditChanges, remoteServerUpdatePayload } from "../src/server-update.ts";
 import type { RemoteServerUpdateRequest } from "../src/types.ts";
 
 test("mode changes retain DDNS, IPv6 pull, ports, hidden pull token and unknown fields", () => {
@@ -36,4 +36,19 @@ test("explicit traffic edits and empty IPv6 addresses remain intentional changes
   const payload = remoteServerUpdatePayload({ id: 1, name: "fixture", traffic_used: 99 }, changes, "secret");
   assert.equal(payload.traffic_used, 0);
   assert.equal(payload.pull_address_v6, "");
+});
+
+test("mode startup keeps custom policy, user ports and credentials when statistics are missing", () => {
+  const config = {
+    inbounds: [{ tag: "user", port: 10001, settings: { password: "keep" } }],
+    routing: { rules: [{ type: "field", outboundTag: "direct" }] },
+    policy: { levels: { "0": { handshake: 17, connIdle: 711, bufferSize: 64 }, "3": { connIdle: 701 } }, system: { statsInboundUplink: false } },
+  };
+  const raw = modeSwitchConfig(JSON.stringify(config));
+  const prepared = JSON.parse(raw);
+  assert.deepEqual(prepared.inbounds, config.inbounds);
+  assert.deepEqual(prepared.routing, config.routing);
+  assert.deepEqual(prepared.policy.levels["0"], { ...config.policy.levels["0"], statsUserUplink: true, statsUserDownlink: true });
+  assert.deepEqual(prepared.policy.levels["3"], { ...config.policy.levels["3"], statsUserUplink: true, statsUserDownlink: true });
+  assert.equal(modeSwitchConfig(raw), raw);
 });

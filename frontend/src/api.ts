@@ -1,4 +1,4 @@
-import { remoteServerUpdatePayload } from "./server-update";
+import { modeSwitchConfig, remoteServerUpdatePayload } from "./server-update";
 import type {
   AdminTrafficResponse,
   AgentSyncNodesResponse,
@@ -625,6 +625,16 @@ export async function updateRemoteServer(token: string, body: Partial<RemoteServ
   if (!current) throw new Error("找不到服务器，未保存");
   const secrets = await revealRemoteServerToken(token, body.id);
   if (typeof secrets.pull_token !== "string") throw new Error("无法读取拉取令牌，未保存服务器");
+  if (body.xray_mode && body.xray_mode !== current.xray_mode) {
+    const raw = (await fetchXrayConfig(token, body.id)).config;
+    const prepared = modeSwitchConfig(raw);
+    if (prepared !== raw) {
+      const latest = (await fetchXrayConfig(token, body.id)).config;
+      if (latest !== raw) throw new Error("Core 配置已变化，尚未切换，请刷新后重试");
+      const saved = await saveXrayConfig(token, body.id, prepared);
+      if (saved.success === false) throw new Error(saved.message || "保留 Core 策略失败，尚未切换");
+    }
+  }
   return requestOperation<RemoteServerMutationResponse>(token, "2146f0b13a7196cb", remoteServerUpdatePayload(current, body, secrets.pull_token));
 }
 
