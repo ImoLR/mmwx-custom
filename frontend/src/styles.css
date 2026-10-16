@@ -7616,10 +7616,10 @@ button {
 .server-delete-progress .failed { color: #dc2626; }
 .server-delete-progress small { display: block; margin-top: 4px; }
 .server-delete-step-dot { width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; margin: 4px; }
-.server-delete-dialog .danger, .service-card-actions .server-delete-action { color: #dc2626; }
+.server-delete-dialog .danger { color: #dc2626; }
 .server-delete-history { margin: 0 0 16px; border: 1px solid var(--line); padding: 12px; border-radius: 12px; }
 .server-delete-history summary { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
 .server-delete-history summary svg { width: 15px; height: 15px; }
 .server-delete-history summary b { color: #b45309; margin-left: auto; }
 .server-delete-history > button { display: flex; justify-content: space-between; gap: 10px; width: 100%; margin-top: 10px; padding: 9px; text-align: left; }
-@media (max-width: 600px) { .server-delete-dialog { width: 100%; } .server-delete-body { padding: 18px; } .server-delete-counts { grid-template-columns: 1fr; } .server-delete-identity { flex-direction: column; } .service-card-actions:has(.server-delete-action) { flex-wrap: wrap; } }
+@media (max-width: 600px) { .server-delete-dialog { width: 100%; } .server-delete-body { padding: 18px; } .server-delete-counts { grid-template-columns: 1fr; } .server-delete-identity { flex-direction: column; } }

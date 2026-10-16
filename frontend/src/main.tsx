@@ -882,7 +882,6 @@ function Dashboard({
           onOpenGlobalMenu={() => setMenuOpen(true)}
           onOpenMenu={setServiceMenuServer}
           onOpenDialog={(kind, server) => setServiceDialog({ kind, server })}
-          onDeleteServer={session.isAdmin ? (server) => setServerDeletion({ server }) : undefined}
           deletionHistory={session.isAdmin ? <ServerDeletionHistory token={session.token} onOpen={(plan) => setServerDeletion({ server: { id: plan.server_id, name: plan.server_name }, plan })} /> : undefined}
         />
       ) : activeTab === "nodes" ? (
@@ -968,6 +967,10 @@ function Dashboard({
             setServiceMenuServer(null);
             void runXrayAction(action, serviceMenuServer);
           }}
+          onDelete={session.isAdmin ? () => {
+            setServerDeletion({ server: serviceMenuServer });
+            setServiceMenuServer(null);
+          } : undefined}
           connectionMetric={state.connectionMetrics[String(serviceMenuServer.id)]}
         />
       )}
@@ -1424,10 +1427,8 @@ function ServiceManagementPage({
   onOpenGlobalMenu,
   onOpenMenu,
   onOpenDialog,
-  onDeleteServer,
   deletionHistory,
 }: {
-  onDeleteServer?: (server: RemoteServer) => void;
   deletionHistory?: React.ReactNode;
   servers: RemoteServer[];
   allServers: RemoteServer[];
@@ -1536,7 +1537,6 @@ function ServiceManagementPage({
               coreMode={coreModes[String(server.id)]}
               onSwitchCoreMode={(mode) => onSwitchCoreMode(server, mode)}
               viewMode={viewMode}
-              onDelete={onDeleteServer ? () => onDeleteServer(server) : undefined}
               onOpenMenu={() => onOpenMenu(server)}
               onOpenDialog={(kind) => onOpenDialog(kind, server)}
             />
@@ -1791,9 +1791,7 @@ function ServiceServerCard({
   viewMode,
   onOpenMenu,
   onOpenDialog,
-  onDelete,
 }: {
-  onDelete?: () => void;
   server: RemoteServer;
   connectionMetric?: ConnectionMetric;
   coreMode?: CoreModeSummary;
@@ -1854,7 +1852,6 @@ function ServiceServerCard({
       </div>
 
       <div className="service-card-actions">
-        {onDelete && <button type="button" className="server-delete-action" onClick={onDelete}><Trash2 /><span>删除服务器</span></button>}
         <button type="button" onClick={() => onOpenDialog("xray")}>
           <TerminalSquare />
           <span>Xray 配置</span>
@@ -2568,12 +2565,14 @@ function ServerActionsLayer({
   onClose,
   onOpenDialog,
   onXrayAction,
+  onDelete,
 }: {
   server: RemoteServer;
   connectionMetric?: ConnectionMetric;
   onClose: () => void;
   onOpenDialog: (kind: "edit" | "xray" | "agent" | "helper" | "connections") => void;
   onXrayAction: (action: "start" | "stop" | "restart") => void;
+  onDelete?: () => void;
 }) {
   const helper = helperStatus(connectionMetric);
 
@@ -2623,7 +2622,7 @@ function ServerActionsLayer({
           <ActionButton icon={<Power />} label={server.xray_running ? "停止 Xray" : "启动 Xray"} danger onClick={() => onXrayAction(server.xray_running ? "stop" : "start")} />
           <ActionButton icon={<RotateCw />} label="重启 Xray" danger onClick={() => onXrayAction("restart")} />
           <ActionButton icon={<Trash2 />} label="卸载 Agent" danger onClick={() => onOpenDialog("agent")} />
-          <ActionButton icon={<Trash2 />} label="删除服务器" danger disabled />
+          {onDelete && <ActionButton icon={<Trash2 />} label="删除服务器" danger onClick={onDelete} />}
         </ActionGroup>
       </div>
     </div>
