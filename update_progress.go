@@ -134,7 +134,8 @@ func (s *helperState) recordUpdateProgressAt(serverID string, progress component
 	}
 	status.Update = &progress
 	s.data.AgentStatuses[serverID] = status
-	if !phaseChanged && !terminalUpdatePhase(progress.Phase) && now.Sub(s.updateProgressSavedAt[serverID]) < 5*time.Second {
+	s.updateProgressDirty = true
+	if now.Sub(s.updateProgressSavedAt) < 5*time.Second {
 		return nil
 	}
 	if err := s.saveLocked(); err != nil {
@@ -142,10 +143,8 @@ func (s *helperState) recordUpdateProgressAt(serverID string, progress component
 		s.data.AgentStatuses[serverID] = status
 		return err
 	}
-	if s.updateProgressSavedAt == nil {
-		s.updateProgressSavedAt = make(map[string]time.Time)
-	}
-	s.updateProgressSavedAt[serverID] = now
+	s.updateProgressSavedAt = now
+	s.updateProgressDirty = false
 	return nil
 }
 
@@ -201,4 +200,16 @@ func (a *app) helperUpdateProgressHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// The batch scheduler also flushes a final progress post when no further reports arrive.
+func (s *helperState) flushUpdateProgressLocked(now time.Time) error {
+	if !s.updateProgressDirty || now.Sub(s.updateProgressSavedAt) < 5*time.Second {
+		return nil
+	}
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+	s.updateProgressSavedAt, s.updateProgressDirty = now, false
+	return nil
 }

@@ -33,7 +33,8 @@ type helperState struct {
 
 	mu                    sync.Mutex
 	data                  helperStateData
-	updateProgressSavedAt map[string]time.Time
+	updateProgressSavedAt time.Time
+	updateProgressDirty   bool
 }
 
 type helperStateData struct {

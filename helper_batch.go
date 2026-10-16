@@ -213,7 +213,7 @@ func (s *helperState) advanceHelperBatch(servers []helperBatchServer, now time.T
 	defer s.mu.Unlock()
 	previous := s.data.HelperBatch
 	if previous == nil || previous.Phase != "running" {
-		return nil
+		return s.flushUpdateProgressLocked(now)
 	}
 	job := cloneHelperBatch(previous)
 	oldCommands, oldStatuses := s.data.ManagementCommands, s.data.AgentStatuses
@@ -290,7 +290,7 @@ func (s *helperState) advanceHelperBatch(servers []helperBatchServer, now time.T
 	finishHelperBatch(job, now)
 	if reflect.DeepEqual(previous, job) {
 		s.data.ManagementCommands, s.data.AgentStatuses = oldCommands, oldStatuses
-		return nil
+		return s.flushUpdateProgressLocked(now)
 	}
 	job.UpdatedAt = now
 	s.data.HelperBatch = job
@@ -298,6 +298,7 @@ func (s *helperState) advanceHelperBatch(servers []helperBatchServer, now time.T
 		s.data.HelperBatch, s.data.ManagementCommands, s.data.AgentStatuses = previous, oldCommands, oldStatuses
 		return err
 	}
+	s.updateProgressSavedAt, s.updateProgressDirty = now, false
 	return nil
 }
 
@@ -313,6 +314,9 @@ func (a *app) runHelperBatch(ctx context.Context) {
 			active := a.helperState.data.HelperBatch != nil && a.helperState.data.HelperBatch.Phase == "running"
 			a.helperState.mu.Unlock()
 			if !active {
+				a.helperState.mu.Lock()
+				_ = a.helperState.flushUpdateProgressLocked(now.UTC())
+				a.helperState.mu.Unlock()
 				continue
 			}
 			store, ok := a.adminStore.(helperBatchServerStore)

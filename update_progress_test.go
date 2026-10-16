@@ -164,8 +164,8 @@ func TestUpdateProgressPersistenceAndTerminalStates(t *testing.T) {
 	if err := json.Unmarshal(changed, &saved); err != nil {
 		t.Fatal(err)
 	}
-	if saved.AgentStatuses["5"].Update.Phase != "installing" {
-		t.Fatal("phase change not immediately persisted")
+	if saved.AgentStatuses["5"].Update.Phase != "downloading" {
+		t.Fatal("phase change bypassed five-second throttle")
 	}
 	for i := 0; i < 50; i++ {
 		record(now.Add(7*time.Second), strings.Repeat("测", 220)+" https://hidden.example")
@@ -179,16 +179,17 @@ func TestUpdateProgressPersistenceAndTerminalStates(t *testing.T) {
 			t.Fatal("invalid log bound or UTF-8")
 		}
 	}
-	for _, phase := range []string{"success", "rolled_back", "failed"} {
+	for i, phase := range []string{"success", "rolled_back", "failed"} {
 		update.Phase = phase
-		record(now.Add(8*time.Second), "terminal")
+		at := now.Add(time.Duration(10+i*5) * time.Second)
+		record(at, "terminal")
 		changed, _ = os.ReadFile(state.path)
 		_ = json.Unmarshal(changed, &saved)
 		if saved.AgentStatuses["5"].Update.Phase != phase {
 			t.Fatalf("terminal %s not persisted", phase)
 		}
 		update.Phase = "reconnecting"
-		record(now.Add(9*time.Second), "late post")
+		record(at.Add(time.Second), "late post")
 		if state.data.AgentStatuses["5"].Update.Phase != phase {
 			t.Fatal("late post reopened terminal state")
 		}
@@ -280,8 +281,51 @@ func TestProgressHTTPAuthenticationDoesNotBypassPersistenceThrottle(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		if os.SameFile(current, terminal) {
-			t.Fatal("phase change did not persist")
+		if !os.SameFile(current, terminal) {
+			t.Fatal("phase change bypassed HTTP persistence throttle")
 		}
+	}
+}
+
+func TestConcurrentServerProgressBurstAndFinalFlush(t *testing.T) {
+	state, err := openHelperState(filepath.Join(t.TempDir(), "state.json"), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for i, phase := range []string{"downloading", "verifying", "installing", "restarting", "reconnecting", "success"} {
+		for _, id := range []string{"5", "12"} {
+			if err := state.recordUpdateProgressAt(id, componentUpdateProgress{Component: "helper", Phase: phase, TargetVersion: "v0.7.4"}, "", now.Add(time.Duration(i)*time.Millisecond)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	before, _ := os.Stat(state.path)
+	if err := state.flushUpdateProgressLocked(now.Add(4 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.Stat(state.path)
+	if !os.SameFile(before, after) {
+		t.Fatal("early flush wrote state")
+	}
+	if err := state.flushUpdateProgressLocked(now.Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := openHelperState(state.path, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"5", "12"} {
+		if reloaded.data.AgentStatuses[id].Update.Phase != "success" {
+			t.Fatal("final state lost")
+		}
+	}
+	before, _ = os.Stat(state.path)
+	if err := state.flushUpdateProgressLocked(now.Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	after, _ = os.Stat(state.path)
+	if !os.SameFile(before, after) {
+		t.Fatal("clean flush wrote state")
 	}
 }

@@ -143,6 +143,23 @@ never started by installation. Core configuration is validated with Xray's
 `run -test` before activation. At most two rollback files are retained for each
 component.
 
+Helper batch upgrades persist their selected servers and signed command IDs in
+`helper-state.json`. An authenticated administrator previews and starts the job
+through `/api/custom/helper-batch`. The controller dispatches at most two Helpers
+at a time, waits up to five minutes per server, continues after failures, and can
+cancel only the remaining queue. Restarting Custom resumes the same commands.
+Single-server updates share the batch reservation and upgrade lock; overlapping
+Helper/Core updates return HTTP 409. Batch transitions are saved together on the
+five-second scheduler; unchanged jobs do not write. Progress posts across servers
+share a five-second persistence limit, with a trailing flush for terminal posts.
+The existing ordinary heartbeat persistence is unchanged. Helper and Core versions
+remain independent; the batch path never dispatches a Core update.
+
+An official reconnect with a healthy local Core retains the existing repair
+logic and grace period. `waiting_official_since` records that presentation window
+until recovery, allowing the UI to show a calm reconnect message for 90 seconds
+and then the elapsed interruption with the last official heartbeat.
+
 After an External handoff and during ownership reconciliation, missing API,
 metrics, API inbound or routing sections are merged into the existing config.
 Official system-config GET supplies the ports (defaults 46736 and 38889); its
