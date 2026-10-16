@@ -206,7 +206,9 @@ func ensureEmbeddedDesiredState(ctx context.Context, client *http.Client, cfg co
 	if err := writeAgentXrayMode(officialAgentConfigPath, "embedded"); err != nil {
 		return rollback(err)
 	}
-	_ = systemctl(ctx, "stop", "xray.service")
+	if err := stopExternalServices(ctx, systemctl, serviceActive); err != nil {
+		return rollback(err)
+	}
 	if err := systemctl(ctx, "restart", "mmw-agent.service"); err != nil {
 		return rollback(err)
 	}
@@ -262,10 +264,8 @@ func restoreEmbeddedTakeover(ctx context.Context, client *http.Client, cfg confi
 		if err := writeAgentXrayMode(officialAgentConfigPath, "embedded"); err != nil {
 			return err
 		}
-		for _, service := range []string{"xray.service", coreServiceName} {
-			if err := systemctl(ctx, "disable", "--now", service); err != nil && serviceActive(ctx, service) {
-				return err
-			}
+		if err := stopExternalServices(ctx, systemctl, serviceActive); err != nil {
+			return err
 		}
 		if err := systemctl(ctx, "restart", "mmw-agent.service"); err != nil {
 			return fmt.Errorf("Agent restart rollback: %w", err)
@@ -304,6 +304,15 @@ func resumeExternalServices(ctx context.Context, run systemctlRunner) error {
 	// External Core can keep serving even if the Agent cannot restart.
 	agentErr := run(ctx, "restart", "mmw-agent.service")
 	return errors.Join(agentErr, bootstrapExternalOwnershipService(ctx, run))
+}
+
+func stopExternalServices(ctx context.Context, run systemctlRunner, active serviceActiveProbe) error {
+	for _, service := range []string{"xray.service", coreServiceName} {
+		if err := run(ctx, "disable", "--now", service); err != nil && active(ctx, service) {
+			return err
+		}
+	}
+	return nil
 }
 
 func waitExternalTakeoverHealthy(ctx context.Context, client *http.Client, cfg config, lifecycle *lifecycleManager, state *localState) error {

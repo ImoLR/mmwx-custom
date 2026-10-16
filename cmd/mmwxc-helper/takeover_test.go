@@ -182,3 +182,23 @@ func TestFailedAgentRestartStillResumesExternalCore(t *testing.T) {
 		t.Fatalf("Agent failure prevented Core recovery: %v %v", calls, err)
 	}
 }
+
+func TestEmbeddedHandoffStopsBothExternalServices(t *testing.T) {
+	for _, stopFails := range []bool{false, true} {
+		var stopped []string
+		err := stopExternalServices(context.Background(), func(_ context.Context, args ...string) error {
+			stopped = append(stopped, strings.Join(args, " "))
+			if stopFails {
+				return errors.New("service still running")
+			}
+			return nil
+		}, func(context.Context, string) bool { return stopFails })
+		if stopFails {
+			if err == nil {
+				t.Fatal("Embedded activation would proceed with the port still occupied")
+			}
+		} else if err != nil || strings.Join(stopped, "|") != "disable --now xray.service|disable --now mmwxc-core.service" {
+			t.Fatalf("External service could restart on reboot: %v %v", stopped, err)
+		}
+	}
+}
