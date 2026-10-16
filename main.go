@@ -243,6 +243,7 @@ func main() {
 	defer stop()
 	go api.releaseCache.run(ctx, defaultReleaseRefreshInterval)
 	go api.runTrafficGroups(ctx)
+	go api.runHelperBatch(ctx)
 
 	go func() {
 		log.Printf("[mmwx-custom] listening on %s", listenAddr)
@@ -275,6 +276,7 @@ func newMux(api *app, mmwxAPITarget *url.URL, frontendDir string) *http.ServeMux
 	mux.HandleFunc("/api/custom/helper/install/", api.withCORS(api.helperInstallScriptHandler))
 	mux.HandleFunc("/api/custom/helper/rebind", api.withCORS(api.helperRebindHandler))
 	mux.HandleFunc("/api/custom/agent/update-progress", api.withCORS(api.helperUpdateProgressHandler))
+	mux.HandleFunc("/api/custom/helper-batch", api.withCORS(api.helperBatchHandler))
 	mux.HandleFunc("/api/custom/releases", api.withCORS(api.releaseInfoHandler))
 	mux.HandleFunc("/api/custom/settings/github-accelerator", api.withCORS(api.githubAcceleratorHandler))
 	mux.HandleFunc("/api/custom/ui/service-groups", api.withCORS(api.uiServiceGroupsHandler))

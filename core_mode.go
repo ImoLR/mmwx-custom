@@ -17,19 +17,20 @@ const (
 var coreRepairBackoff = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute}
 
 type coreModeIntent struct {
-	DesiredMode      string    `json:"desired_core_mode"`
-	CustomCoreOwned  bool      `json:"custom_core_owned"`
-	PendingChange    bool      `json:"pending_lifecycle_change,omitempty"`
-	LifecycleSource  string    `json:"lifecycle_source,omitempty"`
-	MachineID        string    `json:"machine_id,omitempty"`
-	RepairStatus     string    `json:"repair_status"`
-	RepairAttempts   int       `json:"repair_attempts"`
-	LastRepairAt     time.Time `json:"last_repair_at,omitempty"`
-	LastRepairReason string    `json:"last_repair_reason,omitempty"`
-	LastRepairError  string    `json:"last_repair_error,omitempty"`
-	NextRepairAt     time.Time `json:"next_repair_at,omitempty"`
-	LastObservedMode string    `json:"last_observed_mode,omitempty"`
-	DriftDetectedAt  time.Time `json:"drift_detected_at,omitempty"`
+	DesiredMode          string    `json:"desired_core_mode"`
+	CustomCoreOwned      bool      `json:"custom_core_owned"`
+	PendingChange        bool      `json:"pending_lifecycle_change,omitempty"`
+	LifecycleSource      string    `json:"lifecycle_source,omitempty"`
+	MachineID            string    `json:"machine_id,omitempty"`
+	RepairStatus         string    `json:"repair_status"`
+	WaitingOfficialSince time.Time `json:"waiting_official_since,omitempty"`
+	RepairAttempts       int       `json:"repair_attempts"`
+	LastRepairAt         time.Time `json:"last_repair_at,omitempty"`
+	LastRepairReason     string    `json:"last_repair_reason,omitempty"`
+	LastRepairError      string    `json:"last_repair_error,omitempty"`
+	NextRepairAt         time.Time `json:"next_repair_at,omitempty"`
+	LastObservedMode     string    `json:"last_observed_mode,omitempty"`
+	DriftDetectedAt      time.Time `json:"drift_detected_at,omitempty"`
 	// A recorded xray_mode change that the Custom UI did not request. A switch
 	// to Embedded is kept (it may be a manual edit in the official UI) but is
 	// flagged until an administrator confirms or reverts it.
@@ -40,13 +41,14 @@ type coreModeIntent struct {
 }
 
 type coreModeView struct {
-	Success          bool           `json:"success"`
-	Configured       bool           `json:"configured"`
-	Intent           coreModeIntent `json:"intent"`
-	CurrentMode      string         `json:"current_mode,omitempty"`
-	ControllerMode   string         `json:"controller_mode,omitempty"`
-	ControllerStatus string         `json:"controller_status,omitempty"`
-	AgentStatus      agentStatus    `json:"agent_status"`
+	Success               bool           `json:"success"`
+	Configured            bool           `json:"configured"`
+	Intent                coreModeIntent `json:"intent"`
+	CurrentMode           string         `json:"current_mode,omitempty"`
+	ControllerMode        string         `json:"controller_mode,omitempty"`
+	ControllerStatus      string         `json:"controller_status,omitempty"`
+	LastOfficialHeartbeat *time.Time     `json:"last_official_heartbeat,omitempty"`
+	AgentStatus           agentStatus    `json:"agent_status"`
 }
 
 func newCoreModeIntent(mode string, now time.Time) coreModeIntent {
@@ -131,6 +133,9 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		return nil, nil
 	}
 	now := time.Now().UTC()
+	if coreModeHealthy(intent, status, runtime) || runtime.XrayMode != intent.DesiredMode || !coreModeLocalHealthy(intent, status) {
+		intent.WaitingOfficialSince = time.Time{}
+	}
 	formalKnown := runtime.XrayMode == "embedded" || runtime.XrayMode == "external"
 	formalChanged := formalKnown && ((intent.LastObservedMode != "" && intent.LastObservedMode != runtime.XrayMode) || (!intent.PendingChange && intent.DesiredMode != runtime.XrayMode))
 	if formalKnown && intent.LastObservedMode != "" && intent.LastObservedMode != runtime.XrayMode {
@@ -202,6 +207,9 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 			intent.DriftDetectedAt = now
 		}
 		if intent.PendingChange || formalChanged || intent.RepairStatus == "waiting_official" || now.Sub(intent.DriftDetectedAt) > coreDriftGrace {
+			if intent.WaitingOfficialSince.IsZero() {
+				intent.WaitingOfficialSince = now
+			}
 			intent.RepairStatus = "waiting_official"
 			intent.LastRepairReason = "local Core healthy; waiting for official runtime"
 			intent.LastRepairError = ""
@@ -269,6 +277,7 @@ type coreModeSummary struct {
 	DesiredMode             string    `json:"desired_mode,omitempty"`
 	CurrentMode             string    `json:"current_mode,omitempty"`
 	RepairStatus            string    `json:"repair_status,omitempty"`
+	WaitingOfficialSince    time.Time `json:"waiting_official_since,omitempty"`
 	PendingChange           bool      `json:"pending_change,omitempty"`
 	LastRepairError         string    `json:"last_repair_error,omitempty"`
 	FormalChangedFrom       string    `json:"formal_changed_from,omitempty"`
@@ -287,7 +296,7 @@ func (s *helperState) coreModeSummaries() map[string]coreModeSummary {
 		intent, configured := s.data.CoreModeIntents[serverID]
 		out[serverID] = coreModeSummary{
 			Configured: configured, DesiredMode: intent.DesiredMode, CurrentMode: status.CoreMode,
-			RepairStatus: intent.RepairStatus, PendingChange: intent.PendingChange, LastRepairError: intent.LastRepairError,
+			RepairStatus: intent.RepairStatus, WaitingOfficialSince: intent.WaitingOfficialSince, PendingChange: intent.PendingChange, LastRepairError: intent.LastRepairError,
 			FormalChangedFrom: intent.FormalChangedFrom, FormalChangedAt: intent.FormalChangedAt, FormalChangeUnconfirmed: intent.FormalChangeUnconfirmed,
 			Fresh:     !status.ReportedAt.IsZero() && time.Since(status.ReportedAt) <= helperStaleTimeout,
 			CanSwitch: hasCapability(status, "core.mode.apply"),
@@ -361,5 +370,5 @@ func (a *app) coreModeHandler(w http.ResponseWriter, r *http.Request, serverID s
 	status := a.helperState.data.AgentStatuses[serverID]
 	a.helperState.mu.Unlock()
 	intent, configured := a.helperState.coreModeIntent(serverID)
-	writeJSON(w, http.StatusOK, coreModeView{Success: true, Configured: configured, Intent: intent, CurrentMode: status.CoreMode, ControllerMode: runtime.XrayMode, ControllerStatus: runtime.Status, AgentStatus: status})
+	writeJSON(w, http.StatusOK, coreModeView{Success: true, Configured: configured, Intent: intent, CurrentMode: status.CoreMode, ControllerMode: runtime.XrayMode, ControllerStatus: runtime.Status, LastOfficialHeartbeat: runtime.LastHeartbeat, AgentStatus: status})
 }

@@ -193,13 +193,41 @@ func (s *helperState) enqueueManagementCommand(serverID, action string, payload 
 	if err := validateManagementPayload(action, payload); err != nil {
 		return managementCommand{}, err
 	}
-	now := time.Now().UTC()
-	id, err := randomUUID()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previousCommands, previousStatus := s.data.ManagementCommands[serverID], s.data.AgentStatuses[serverID]
+	command, err := s.enqueueManagementCommandLocked(serverID, action, payload, time.Now().UTC(), false)
 	if err != nil {
 		return managementCommand{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.saveLocked(); err != nil {
+		s.data.ManagementCommands[serverID], s.data.AgentStatuses[serverID] = previousCommands, previousStatus
+		return managementCommand{}, err
+	}
+	return command, nil
+}
+
+var errUpgradeInProgress = errors.New("升级进行中，请等待当前任务完成")
+
+func updateAction(action string) bool {
+	return action == "helper.update" || action == "core.update" || action == "core.install"
+}
+
+func (s *helperState) upgradeInProgressLocked(serverID string, now time.Time) bool {
+	for _, command := range s.data.ManagementCommands[serverID] {
+		if updateAction(command.Action) && now.Before(command.ExpiresAt) {
+			return true
+		}
+	}
+	progress := s.data.AgentStatuses[serverID].Update
+	return progress != nil && !terminalUpdatePhase(progress.Phase) && progress.Phase != ""
+}
+
+// Caller holds the state lock and persists command plus any batch transition together.
+func (s *helperState) enqueueManagementCommandLocked(serverID, action string, payload json.RawMessage, now time.Time, batch bool) (managementCommand, error) {
+	if updateAction(action) && (s.upgradeInProgressLocked(serverID, now) || (!batch && s.batchServerBusyLocked(serverID))) {
+		return managementCommand{}, errUpgradeInProgress
+	}
 	identity, ok := s.data.Servers[serverID]
 	if !ok || identity.HelperTokenHash == "" {
 		return managementCommand{}, errors.New("helper is not registered")
@@ -207,13 +235,20 @@ func (s *helperState) enqueueManagementCommand(serverID, action string, payload 
 	if len(s.data.ManagementCommands[serverID]) >= managementQueueMax {
 		return managementCommand{}, errors.New("management queue is full")
 	}
+	id, err := randomUUID()
+	if err != nil {
+		return managementCommand{}, err
+	}
 	command := managementCommand{ID: id, Action: action, Payload: append(json.RawMessage(nil), payload...), CreatedAt: now, ExpiresAt: now.Add(managementCommandTTL)}
+	if batch {
+		command.ExpiresAt = now.Add(helperBatchTimeout)
+	}
 	command.Signature, err = signManagementCommand(command, identity.HelperTokenHash)
 	if err != nil {
 		return managementCommand{}, err
 	}
-	s.data.ManagementCommands[serverID] = append(s.data.ManagementCommands[serverID], command)
-	if action == "helper.update" || action == "core.update" || action == "core.install" {
+	s.data.ManagementCommands[serverID] = append(append([]managementCommand(nil), s.data.ManagementCommands[serverID]...), command)
+	if updateAction(action) {
 		var artifact managementArtifact
 		_ = json.Unmarshal(payload, &artifact)
 		component := "core"
@@ -223,9 +258,6 @@ func (s *helperState) enqueueManagementCommand(serverID, action string, payload 
 		status := s.data.AgentStatuses[serverID]
 		status.Update = dispatchedUpdate(component, artifact.Version, now)
 		s.data.AgentStatuses[serverID] = status
-	}
-	if err := s.saveLocked(); err != nil {
-		return managementCommand{}, err
 	}
 	return command, nil
 }
@@ -463,8 +495,9 @@ func (a *app) agentManagementHandler(w http.ResponseWriter, r *http.Request, ser
 		status := a.helperState.data.AgentStatuses[serverID]
 		commands := append([]managementCommand(nil), a.helperState.data.ManagementCommands[serverID]...)
 		results := append([]managementResult(nil), a.helperState.data.ManagementResults[serverID]...)
+		batchPending := a.helperState.batchServerBusyLocked(serverID)
 		a.helperState.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{"success": true, "status": status, "pending": commands, "results": results})
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "status": status, "pending": commands, "results": results, "batch_pending": batchPending})
 	case http.MethodPost:
 		var request enqueueManagementRequest
 		decoder := json.NewDecoder(io.LimitReader(r.Body, managementPayloadMax+4096))
@@ -475,7 +508,11 @@ func (a *app) agentManagementHandler(w http.ResponseWriter, r *http.Request, ser
 		}
 		command, err := a.helperState.enqueueManagementCommand(serverID, strings.TrimSpace(request.Action), request.Payload)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
+			statusCode := http.StatusBadRequest
+			if errors.Is(err, errUpgradeInProgress) {
+				statusCode = http.StatusConflict
+			}
+			writeJSON(w, statusCode, map[string]any{"success": false, "message": err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"success": true, "command": command})

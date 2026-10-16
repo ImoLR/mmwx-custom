@@ -667,3 +667,39 @@ func TestNoAdminSessionDriftRepairIsDegradedAndBacksOff(t *testing.T) {
 		t.Fatalf("bounded retry missing: %v %v", command, err)
 	}
 }
+
+func TestWaitingOfficialSincePersistsAndResets(t *testing.T) {
+	state := newCoreModeTestState(t)
+	intent := newCoreModeIntent("external", time.Now())
+	intent.DriftDetectedAt = time.Now().Add(-coreDriftGrace - time.Second)
+	state.data.CoreModeIntents["12"] = intent
+	status := healthyExternalStatus()
+	runtime := remoteServerRuntime{XrayMode: "external", Status: "offline"}
+	if _, err := state.reconcileCoreMode("12", status, runtime, nil); err != nil {
+		t.Fatal(err)
+	}
+	first := state.data.CoreModeIntents["12"].WaitingOfficialSince
+	if first.IsZero() {
+		t.Fatal("waiting start missing")
+	}
+	if _, err := state.reconcileCoreMode("12", status, runtime, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !state.data.CoreModeIntents["12"].WaitingOfficialSince.Equal(first) {
+		t.Fatal("waiting timer restarted")
+	}
+	reloaded, err := openHelperState(state.path, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.data.CoreModeIntents["12"].WaitingOfficialSince.Equal(first) {
+		t.Fatal("waiting start not persisted")
+	}
+	runtime.Status = "connected"
+	if _, err := reloaded.reconcileCoreMode("12", status, runtime, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.data.CoreModeIntents["12"].WaitingOfficialSince.IsZero() {
+		t.Fatal("waiting start survived recovery")
+	}
+}

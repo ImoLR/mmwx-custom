@@ -37,6 +37,7 @@ type helperState struct {
 }
 
 type helperStateData struct {
+	HelperBatch           *helperBatchJob                     `json:"helper_batch,omitempty"`
 	GitHubAccelerator     *string                             `json:"github_accelerator,omitempty"`
 	Servers               map[string]helperServerIdentity     `json:"servers"`
 	InstallTokens         map[string]helperInstallToken       `json:"install_tokens"`
