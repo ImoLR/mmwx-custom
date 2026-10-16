@@ -222,6 +222,7 @@ export type CoreModeSummary = {
   desired_mode?: string;
   current_mode?: string;
   repair_status?: string;
+  waiting_official_since?: string;
   pending_change?: boolean;
   last_repair_error?: string;
   formal_changed_from?: string;
@@ -554,6 +555,7 @@ export type GitHubAcceleratorSettingsResponse = {
 
 export type CustomAgentStatusResponse = {
   success: boolean;
+  batch_pending?: boolean;
   status?: {
     helper?: { installed?: boolean; active?: boolean; ready?: boolean; version?: string };
     core?: { installed?: boolean; active?: boolean; ready?: boolean; version?: string };
@@ -577,11 +579,13 @@ export type CoreModeResponse = {
   current_mode?: string;
   controller_mode?: string;
   controller_status?: string;
+  last_official_heartbeat?: string;
   intent: {
     desired_core_mode?: "external" | "embedded";
     custom_core_owned?: boolean;
     machine_id?: string;
     repair_status?: "healthy" | "drift_detected" | "repairing" | "degraded" | "disabled" | string;
+    waiting_official_since?: string;
     repair_attempts?: number;
     last_repair_at?: string;
     last_repair_reason?: string;
@@ -1636,4 +1640,32 @@ export type Session = {
   role: string;
   isAdmin: boolean;
   expiresAt: string;
+};
+
+export type HelperBatchRow = {
+  server_id: string;
+  name: string;
+  version: string;
+  phase: string;
+  reason?: string;
+  first_upgrade?: boolean;
+  started_at?: string;
+  finished_at?: string;
+};
+
+export type HelperBatchJob = {
+  id: string;
+  phase: "running" | "success" | "failed";
+  started_at: string;
+  updated_at: string;
+  finished_at?: string;
+  stopped: boolean;
+  rows: HelperBatchRow[];
+};
+
+export type HelperBatchResponse = {
+  success: boolean;
+  version: string;
+  preview: HelperBatchRow[];
+  job?: HelperBatchJob | null;
 };

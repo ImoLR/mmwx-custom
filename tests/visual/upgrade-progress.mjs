@@ -20,11 +20,11 @@ const names = ["CoreControlPanel", "InfoBlock", "coreVersionLabel", "componentUp
 const functions = tree.statements.filter((node) => ts.isFunctionDeclaration(node) && names.includes(node.name?.text)).map((node) => node.getText(tree)).join("\n");
 assert.equal(functions.match(/function /g)?.length, 6); // Includes the upgrade handler.
 const bundle = await build({ stdin: { contents: `
-import React, {useCallback,useEffect,useState} from 'react';
+import React, {useCallback,useEffect,useState,useRef} from 'react';
 import {createRoot} from 'react-dom/client';
 import {RefreshCw} from 'lucide-react';
 import {UpgradeProgressView} from './src/upgrade-progress';
-import {componentUpgradeLabel,upgradeRunning,progressForComponent} from './src/upgrade-progress-state';
+import {componentUpgradeLabel,upgradeRunning,progressForComponent,upgradeBlocked,officialReconnectText} from './src/upgrade-progress-state';
 import {serverCoreVersion} from './src/xray-capabilities';
 const fetchCoreMode = async () => ({configured:true,controller_mode:'external',current_mode:'external',intent:{repair_status:'healthy',desired_core_mode:'external'}});
 const fetchCustomReleaseInfo = async () => ({release:{latest_helper_version:'v0.7.2',latest_core_version:'8f5b614'}});

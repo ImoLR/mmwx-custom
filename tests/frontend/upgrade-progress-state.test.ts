@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deriveUpgradeProgress, progressForComponent, upgradeDuration, upgradeRunning } from "../../frontend/src/upgrade-progress-state.ts";
+import { deriveUpgradeProgress, progressForComponent, upgradeDuration, upgradeRunning, upgradeBlocked, upgradeDismissKey, officialReconnectText } from "../../frontend/src/upgrade-progress-state.ts";
 
 const now = Date.parse("2026-10-15T16:00:00Z");
 const at = (seconds: number) => new Date(now - seconds * 1000).toISOString();
@@ -42,7 +42,7 @@ test("terminal state freezes elapsed and uses the failing step", () => {
     assert.equal(state.elapsed, 75);
   }
   assert.equal(deriveUpgradeProgress({ ...base, phase: "success", updated_at: at(599) }, at(1), now).visible, true);
-  assert.equal(deriveUpgradeProgress({ ...base, phase: "success", updated_at: at(600) }, at(1), now).visible, false);
+  assert.equal(deriveUpgradeProgress({ ...base, phase: "success", updated_at: at(600) }, at(1), now).collapsed, true);
 });
 
 test("old Helper phase-only payload has an indeterminate bar and a useful log", () => {
@@ -55,4 +55,45 @@ test("old Helper phase-only payload has an indeterminate bar and a useful log", 
   assert.equal(upgradeRunning("offline"), false);
   assert.equal(progressForComponent({ success: true, pending: [{ id: "test", action: "helper.update", created_at: at(1) }] }, "helper", true, now)?.phase, "dispatching");
   assert.equal(progressForComponent({ success: true, results: [{ action: "helper.update", success: true, completed_at: at(1) }] }, "helper", true, now)?.phase, "reconnecting");
+});
+
+
+test("all running phases, another component, batch reservation and immediate click block dispatch", () => {
+  for (const phase of ["dispatching", "downloading", "verifying", "installing", "restarting", "reconnecting"] as const) {
+    assert.equal(upgradeBlocked({ success: true, pending: [] }, { ...base, phase }), true);
+    assert.equal(upgradeBlocked({ success: true, status: { update: { ...base, phase, component: "core" } } }), true);
+  }
+  assert.equal(upgradeBlocked({ success: true, batch_pending: true }), true);
+  assert.equal(upgradeBlocked(null, undefined, true), true);
+  assert.equal(upgradeBlocked({ success: true }, { ...base, phase: "success" }), false);
+});
+
+test("finished state stays static and dismissal identity changes only for a new attempt", () => {
+  for (const phase of ["success", "failed", "rolled_back"] as const) {
+    const progress = { ...base, phase };
+    const first = deriveUpgradeProgress(progress, at(1), now);
+    const later = deriveUpgradeProgress(progress, at(1), now + 70_000);
+    assert.equal(first.elapsed, later.elapsed);
+    assert.equal(first.lastAge, null);
+    assert.equal(later.lastAge, null);
+    assert.equal(later.collapsed, phase === "success");
+  }
+  assert.notEqual(upgradeDismissKey(5, "helper", at(1)), upgradeDismissKey(5, "core", at(1)));
+  assert.notEqual(upgradeDismissKey(5, "helper", at(1)), upgradeDismissKey(16, "helper", at(1)));
+  assert.notEqual(upgradeDismissKey(5, "helper", at(1)), upgradeDismissKey(5, "helper", at(2)));
+});
+
+test("legacy successful command cannot stay reconnecting indefinitely", () => {
+  const agent = { success: true, results: [{ action: "helper.update", success: true, completed_at: at(180) }] };
+  assert.equal(progressForComponent(agent, "helper", true, now)?.phase, "failed");
+  assert.equal(progressForComponent(agent, "helper", false, now)?.phase, "success");
+  const ended = progressForComponent(agent, "helper", true, now)!;
+  assert.equal(ended.updated_at, new Date(now).toISOString());
+  assert.equal(progressForComponent(agent, "helper", true, now + 10_000)?.updated_at, ended.updated_at);
+});
+
+test("official reconnect wording waits 90 seconds and includes the last heartbeat", () => {
+  assert.equal(officialReconnectText(at(89), at(90), now), "正常（官方 Agent 正在重连）");
+  assert.match(officialReconnectText(at(90), at(91), now), /连接中断 1 分钟.*本机 Core 正常.*最后官方心跳/);
+  assert.match(officialReconnectText(at(190), at(191), now), /连接中断 3 分钟/);
 });

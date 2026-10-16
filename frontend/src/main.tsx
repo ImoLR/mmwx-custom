@@ -3,8 +3,9 @@ import { ServerDeleteDialog, ServerDeletionHistory } from "./server-delete";
 import type { ServerDeletionPlan } from "./server-delete-state";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { HelperBatchUpgrade } from "./helper-batch";
 import { UpgradeProgressView } from "./upgrade-progress";
-import { componentUpgradeLabel, upgradeRunning, progressForComponent } from "./upgrade-progress-state";
+import { componentUpgradeLabel, upgradeRunning, progressForComponent, upgradeBlocked, officialReconnectText } from "./upgrade-progress-state";
 import {
   AlertTriangle,
   ArrowDown,
@@ -866,6 +867,7 @@ function Dashboard({
 
       {activeTab === "services" ? (
         <ServiceManagementPage
+          sessionToken={session.token}
           servers={visibleServiceServers}
           allServers={state.servers}
           serviceGroups={serviceGroups}
@@ -1411,6 +1413,7 @@ function TrafficListDialog({
 }
 
 function ServiceManagementPage({
+  sessionToken,
   servers,
   allServers,
   serviceGroups,
@@ -1430,6 +1433,7 @@ function ServiceManagementPage({
   onOpenDialog,
   deletionHistory,
 }: {
+  sessionToken: string;
   deletionHistory?: React.ReactNode;
   servers: RemoteServer[];
   allServers: RemoteServer[];
@@ -1486,6 +1490,8 @@ function ServiceManagementPage({
           </button>
         </div>
       </header>
+
+      <HelperBatchUpgrade token={sessionToken} />
 
       <section className="service-summary-grid" aria-label="服务统计">
         <ServiceSummaryItem icon={<span aria-hidden="true">●</span>} value={String(online)} tone="success" label="在线" />
@@ -1927,12 +1933,16 @@ function CoreControlPanel({ server, sessionToken, compact = false }: { server: R
   const [agent, setAgent] = useState<CustomAgentStatusResponse | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const dispatching = useRef(false);
+  const generation = useRef(0);
 
   const load = useCallback(async () => {
+    const current = generation.current;
     try {
       const [modeResponse, releaseResponse, agentResponse] = await Promise.all([
         fetchCoreMode(sessionToken, server.id), fetchCustomReleaseInfo(sessionToken), fetchCustomAgentStatus(sessionToken, server.id),
       ]);
+      if (current !== generation.current) return;
       setMode(modeResponse);
       setRelease(releaseResponse);
       setAgent(agentResponse);
@@ -1966,27 +1976,34 @@ function CoreControlPanel({ server, sessionToken, compact = false }: { server: R
   const helperUpgradeState = componentUpgradeState(helperProgress, helperReportStale, helperPending, helperResult, helperUpdate);
   const coreUpgradeState = componentUpgradeState(coreProgress, helperReportStale, corePending, coreResult, coreUpdate);
 
-  const upgrading = helperPending || corePending || upgradeRunning(helperProgress?.phase) || upgradeRunning(coreProgress?.phase);
+  const upgrading = upgradeBlocked(agent, helperProgress) || upgradeBlocked(agent, coreProgress);
+  const blocked = upgrading || busy !== "";
   useEffect(() => {
     const timer = window.setInterval(() => void load(), upgrading ? 2000 : 5000);
     return () => window.clearInterval(timer);
   }, [load, upgrading]);
 
   async function upgrade(component: "helper" | "core") {
+    if (dispatching.current || blocked) return;
     const artifact = component === "helper" ? release?.release.helper_artifacts?.[architecture] : release?.release.core_artifacts?.[architecture];
     const version = component === "helper" ? latestHelper : latestCore;
     if (!artifact || !version) {
       setError("最新版本缓存缺少当前架构的升级产物");
       return;
     }
+    dispatching.current = true;
+    generation.current++;
     setBusy(component);
     setError("");
     try {
-      await dispatchCustomAgentAction(sessionToken, server.id, `${component}.update`, { ...artifact, version, activate: false });
-      window.setTimeout(() => void load(), 1000);
+      const response = await dispatchCustomAgentAction(sessionToken, server.id, `${component}.update`, { ...artifact, version, activate: false });
+      setAgent((current) => ({ ...current, success: true, pending: [...(current?.pending || []), { id: response.command?.id || "dispatching", action: `${component}.update`, created_at: new Date().toISOString() }] }));
+      generation.current++;
+      await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "升级任务下发失败");
     } finally {
+      dispatching.current = false;
       setBusy("");
     }
   }
@@ -1999,14 +2016,14 @@ function CoreControlPanel({ server, sessionToken, compact = false }: { server: R
         <InfoBlock label="期望模式" value={desired === "external" ? "External" : "Embedded"} />
         <InfoBlock label="主控记录" value={mode?.controller_mode || "--"} />
         <InfoBlock label="当前运行" value={mode?.current_mode || "--"} />
-        <InfoBlock label="状态" value={status === "healthy" ? "正常" : status === "waiting_official" ? "本机正常，等待官方连接恢复" : status === "repairing" ? "模式漂移，正在自动恢复" : status === "degraded" ? "自动恢复失败" : status === "disabled" ? "尚未配置" : "检测到模式漂移"} />
+        <InfoBlock label="状态" value={status === "healthy" ? "正常" : status === "waiting_official" ? officialReconnectText(mode?.intent.waiting_official_since, mode?.last_official_heartbeat) : status === "repairing" ? "模式漂移，正在自动恢复" : status === "degraded" ? "自动恢复失败" : status === "disabled" ? "尚未配置" : "检测到模式漂移"} />
       </div>
       {mode?.intent.formal_change_unconfirmed && <div className="agent-notice error">主控记录在 {formatDateTime(mode.intent.formal_changed_at)} 被改为 Embedded，且不是魔改页面操作。如果不是你手动修改的，请在服务卡片上切回 External。</div>}
       {mode?.intent.last_repair_error && <div className="agent-notice error">{mode.intent.last_repair_error}</div>}
       {status !== "healthy" && status !== "waiting_official" && mode?.configured && <p className="agent-note">尝试次数：{mode.intent.repair_attempts || 0}{mode.intent.next_repair_at ? ` · 下次尝试 ${formatDateTime(mode.intent.next_repair_at)}` : ""}</p>}
       <div className="component-upgrade-grid">
-        <article><div><strong>Helper {currentHelper || (helperInstalled ? "版本未知" : "未安装")}</strong>{helperUpdate && <span className="update-dot" title="Helper 有更新" />}</div><small>最新：{latestHelper || (release?.last_error ? "缓存暂不可用" : "读取中")}</small>{helperInstalled && helperNeedsFirstUpgrade && <small>需要首次升级</small>}<small>状态：{componentUpgradeLabel(helperUpgradeState)}</small><UpgradeProgressView progress={helperProgress} reportedAt={agent?.status?.reported_at} /><button type="button" disabled={!helperInstalled || !helperUpdate || helperPending || busy !== ""} onClick={() => void upgrade("helper")}>{helperPending ? "升级进行中" : helperNeedsFirstUpgrade ? "首次升级 Helper" : "升级 Helper"}</button></article>
-        <article><div><strong>Fork Core {coreVersionLabel(currentCore)}</strong>{coreUpdate && <span className="update-dot" title="Core 有更新" />}</div>{server.xray_mode === "external" && currentCore && <small>来源：Helper 最近上报</small>}{coreVersion.officialVersion && <small>官方 Agent 读数（参考）：{coreVersionLabel(coreVersion.officialVersion)}</small>}<small>最新：{latestCore || (release?.last_error ? "缓存暂不可用" : "读取中")}</small><small>状态：{componentUpgradeLabel(coreUpgradeState)}</small><UpgradeProgressView progress={coreProgress} reportedAt={agent?.status?.reported_at} /><button type="button" disabled={!helperInstalled || !coreUpdate || corePending || busy !== ""} onClick={() => void upgrade("core")}>{corePending ? "升级进行中" : "升级 Core"}</button></article>
+        <article><div><strong>Helper {currentHelper || (helperInstalled ? "版本未知" : "未安装")}</strong>{helperUpdate && <span className="update-dot" title="Helper 有更新" />}</div><small>最新：{latestHelper || (release?.last_error ? "缓存暂不可用" : "读取中")}</small>{helperInstalled && helperNeedsFirstUpgrade && <small>需要首次升级</small>}<small>状态：{componentUpgradeLabel(helperUpgradeState)}</small><UpgradeProgressView serverID={server.id} progress={helperProgress} reportedAt={agent?.status?.reported_at} /><button type="button" disabled={!helperInstalled || !helperUpdate || blocked} onClick={() => void upgrade("helper")}>{blocked ? "升级进行中" : helperNeedsFirstUpgrade ? "首次升级 Helper" : "升级 Helper"}</button></article>
+        <article><div><strong>Fork Core {coreVersionLabel(currentCore)}</strong>{coreUpdate && <span className="update-dot" title="Core 有更新" />}</div>{server.xray_mode === "external" && currentCore && <small>来源：Helper 最近上报</small>}{coreVersion.officialVersion && <small>官方 Agent 读数（参考）：{coreVersionLabel(coreVersion.officialVersion)}</small>}<small>最新：{latestCore || (release?.last_error ? "缓存暂不可用" : "读取中")}</small><small>状态：{componentUpgradeLabel(coreUpgradeState)}</small><UpgradeProgressView serverID={server.id} progress={coreProgress} reportedAt={agent?.status?.reported_at} /><button type="button" disabled={!helperInstalled || !coreUpdate || blocked} onClick={() => void upgrade("core")}>{blocked ? "升级进行中" : "升级 Core"}</button></article>
       </div>
       {release?.last_error && release.cached && <p className="agent-note">GitHub 暂时不可达，继续使用 {formatDateTime(release.release.fetched_at)} 的上次成功缓存。</p>}
       {agent?.status?.update?.message && (agent.status.update.phase === "failed" || agent.status.update.phase === "rolled_back") && <div className="agent-notice error">{agent.status.update.message}</div>}
@@ -2026,7 +2043,7 @@ function componentUpgradeState(progress: NonNullable<CustomAgentStatusResponse["
   if (pending) return "dispatching";
   if (result && Date.now() - new Date(result.completed_at).getTime() < 10 * 60 * 1000) {
     if (!result.success) return result.message?.toLowerCase().includes("rollback") ? "rolled_back" : "failed";
-    if (updateAvailable) return "reconnecting";
+    if (updateAvailable) return "update_available";
     return "success";
   }
   return updateAvailable ? "update_available" : "idle";
@@ -4062,7 +4079,10 @@ function coreModeBadgeState(server: RemoteServer, coreMode?: CoreModeSummary): C
       : { tone: "warning", label: `${name} · 未接管`, detail: "未安装 Helper：无法确认是否运行 Fork Core，连接数等管控可能不生效。", switchable: false };
   }
   if (!coreMode.fresh) return { tone: "warning", label: `${name} · Helper 离线`, detail: "Helper 暂无最新上报，无法检测或切换 Core。", switchable: false };
-  if (coreMode.repair_status === "waiting_official") return { tone: "muted", label: `${name} · 等待官方连接`, detail: "Helper 上报的本机模式与所有权正常，等待官方连接恢复。", switchable: true };
+  if (coreMode.repair_status === "waiting_official") {
+    const detail = officialReconnectText(coreMode.waiting_official_since, server.last_heartbeat);
+    return { tone: "success", label: `${name} · ${detail.split(" · ")[0]}`, detail, switchable: true };
+  }
   if (coreMode.pending_change) return { tone: "warning", label: `切换到 ${name}…`, detail: "切换任务已下发，等待 Helper 完成。", switchable: false };
   if (coreMode.formal_change_unconfirmed) {
     return { tone: "warning", label: "Embedded · 待确认", detail: `主控记录在 ${formatDateTime(coreMode.formal_changed_at)} 被改为 Embedded，且不是魔改页面操作。如果不是你手动修改的，请切回 External。`, switchable: true };

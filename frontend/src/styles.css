@@ -2395,13 +2395,13 @@ button {
 .upgrade-steps li:not(:last-child)::after { content: ""; position: absolute; top: 10px; left: calc(50% + 12px); width: calc(100% - 24px); height: 1px; background: var(--line); }
 .upgrade-steps i { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--fill-strong); border: 1px solid var(--line); font-style: normal; }
 .upgrade-steps .is-done { color: #168061; }
-.upgrade-steps .is-current { color: var(--primary); font-weight: 700; }
-.upgrade-steps .is-current i { color: #fff; background: var(--primary); border-color: var(--primary); }
+.upgrade-steps .is-current { color: #168061; font-weight: 700; }
+.upgrade-steps .is-current i { color: #fff; background: #168061; border-color: #168061; }
 .upgrade-progress.is-failed .is-current { color: #dc4545; }
 .upgrade-progress.is-failed .is-current i { background: #dc4545; border-color: #dc4545; color: #fff; }
 .upgrade-meter { overflow: hidden; height: 5px; border-radius: 8px; background: var(--fill-strong); }
-.upgrade-meter > span { display: block; width: 0; height: 100%; background: var(--primary); border-radius: inherit; transition: width .25s; }
-.upgrade-meter.is-indeterminate > span { width: 100%; background: repeating-linear-gradient(110deg, var(--primary) 0 9px, color-mix(in srgb, var(--primary) 20%, var(--card)) 9px 18px); background-size: 40px 100%; animation: upgrade-stripe 1s linear infinite; }
+.upgrade-meter > span { display: block; width: 0; height: 100%; background: #168061; border-radius: inherit; transition: width .25s; }
+.upgrade-meter.is-indeterminate > span { width: 100%; background: repeating-linear-gradient(110deg, #168061 0 9px, color-mix(in srgb, #168061 20%, var(--card)) 9px 18px); background-size: 40px 100%; animation: upgrade-stripe 1s linear infinite; }
 .upgrade-progress.is-failed .upgrade-meter { background: color-mix(in srgb, #dc4545 16%, var(--card)); }
 .upgrade-download { font-variant-numeric: tabular-nums; }
 .upgrade-timing { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
@@ -2416,6 +2416,26 @@ button {
 .upgrade-log-lines span { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 @keyframes upgrade-stripe { to { background-position: 40px 0; } }
 @media (prefers-reduced-motion: reduce) { .upgrade-meter.is-indeterminate > span { animation: none; } }
+
+.upgrade-finished { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; line-height: 1.7; }
+.upgrade-finished p { overflow-wrap: anywhere; }
+.upgrade-finished button { flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); font-size: 20px; cursor: pointer; padding: 0 5px; }
+.upgrade-progress.is-failed .upgrade-meter > span { background: #dc4545; }
+.helper-batch { display: grid; gap: 12px; margin: 0 0 16px; }
+.helper-batch > button { justify-self: end; background: #168061; color: #fff; }
+.helper-batch button:disabled { opacity: .55; cursor: not-allowed; }
+.helper-batch-panel { padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.helper-batch-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
+.helper-batch-rows { display: grid; gap: 0; }
+.helper-batch-row { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.helper-batch-row > div { min-width: 0; display: grid; gap: 4px; }
+.helper-batch-row strong, .helper-batch-row small { overflow-wrap: anywhere; }
+.helper-batch-row small { color: var(--muted); }
+.helper-batch-row > span { flex-shrink: 0; color: #168061; }
+.helper-batch-row.is-failed > span { color: #dc4545; }
+.helper-batch-dialog { width: min(640px, calc(100vw - 24px)); max-height: 90vh; overflow: auto; }
+.helper-batch-dialog h3 { margin: 16px 0 4px; font-size: 13px; }
+.helper-batch-dialog .helper-batch-confirm { margin-top: 16px; background: #168061; color: #fff; }
 
 .update-dot {
   width: 9px;

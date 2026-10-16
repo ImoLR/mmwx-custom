@@ -21,8 +21,9 @@ export function deriveUpgradeProgress(progress: UpgradeProgress | undefined, rep
   const age = (at?: string) => at && Number.isFinite(Date.parse(at)) ? Math.max(0, Math.floor((now - Date.parse(at)) / 1000)) : null;
   const running = upgradeRunning(progress?.phase);
   const failed = progress?.phase === "failed" || progress?.phase === "rolled_back";
-  const lastAge = age(progress?.updated_at);
-  const helperAge = age(reportedAt);
+  const finishedAge = age(progress?.updated_at);
+  const lastAge = running ? finishedAge : null;
+  const helperAge = running ? age(reportedAt) : null;
   const threshold = progress?.phase === "downloading" || progress?.phase === "reconnecting" ? 180 : 90;
   const lastStep = [...(progress?.log || [])].reverse().find((line) => upgradeRunning(line.phase));
   const step = failed ? phases.indexOf(lastStep?.phase || "dispatching") : phases.indexOf(progress?.phase || "");
@@ -31,7 +32,7 @@ export function deriveUpgradeProgress(progress: UpgradeProgress | undefined, rep
   const elapsed = startedAt && Number.isFinite(Date.parse(startedAt)) && Number.isFinite(end) ? Math.max(0, Math.floor((end - Date.parse(startedAt)) / 1000)) : 0;
   const percent = progress?.phase === "downloading" && typeof progress.percent === "number" && Number.isFinite(progress.percent) ? Math.max(0, Math.min(100, progress.percent)) : null;
   const log = progress?.log?.length ? progress.log : progress ? [{ at: progress.updated_at, phase: progress.phase, text: progress.message || componentUpgradeLabel(progress.phase) }] : [];
-  return { visible: !!progress && (running || (lastAge !== null && lastAge < 600)), running, failed, step, elapsed, lastAge, helperAge, offline: helperAge === null || helperAge > 30, threshold, stalled: running && lastAge !== null && lastAge > threshold, percent, log, approximateStart: !progress?.started_at };
+  return { visible: !!progress, collapsed: progress?.phase === "success" && finishedAge !== null && finishedAge >= 60, running, failed, step, elapsed, lastAge, helperAge, offline: helperAge === null || helperAge > 30, threshold, stalled: running && lastAge !== null && lastAge > threshold, percent, log, approximateStart: !progress?.started_at };
 }
 
 export function upgradeDuration(seconds: number) {
@@ -45,5 +46,24 @@ export function progressForComponent(agent: CustomAgentStatusResponse | null, co
   if (pending) return { component, phase: "dispatching", started_at: pending.created_at, updated_at: pending.created_at };
   const result = [...(agent?.results || [])].reverse().find((item) => item.action === `${component}.update`);
   if (!result || now - Date.parse(result.completed_at) >= 600_000) return undefined;
-  return { component, phase: !result.success ? (/rollback|restored/i.test(result.message || "") ? "rolled_back" : "failed") : updateAvailable ? "reconnecting" : "success", updated_at: result.completed_at, message: result.message };
+  if (result.success && updateAvailable && now - Date.parse(result.completed_at) >= 180_000) {
+    return { component, phase: "failed", started_at: result.completed_at, updated_at: new Date(Date.parse(result.completed_at) + 180_000).toISOString(), message: "命令已完成，但 3 分钟内未确认新版本，请刷新核对 Helper 上报" };
+  }
+  return { component, started_at: result.completed_at, phase: !result.success ? (/rollback|restored/i.test(result.message || "") ? "rolled_back" : "failed") : updateAvailable ? "reconnecting" : "success", updated_at: result.completed_at, message: result.message };
+}
+
+export function upgradeBlocked(agent: CustomAgentStatusResponse | null, progress?: UpgradeProgress, submitting = false) {
+  return submitting || Boolean(agent?.batch_pending) || Boolean(agent?.pending?.some((command) => ["helper.update", "core.update", "core.install"].includes(command.action))) || upgradeRunning(progress?.phase) || upgradeRunning(agent?.status?.update?.phase);
+}
+
+export function upgradeDismissKey(serverID: number | string, component: string, startedAt?: string) {
+  return `mmwxc-upgrade-dismissed:${serverID}:${component}:${startedAt || "unknown"}`;
+}
+
+export function officialReconnectText(since?: string, heartbeat?: string, now = Date.now()) {
+  const started = since ? Date.parse(since) : NaN;
+  if (!Number.isFinite(started) || started <= 0 || now - started < 90_000) return "正常（官方 Agent 正在重连）";
+  const minutes = Math.max(1, Math.floor((now - started) / 60_000));
+  const last = heartbeat && Number.isFinite(Date.parse(heartbeat)) ? new Date(heartbeat).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false }) : "未知";
+  return `官方 Agent 连接中断 ${minutes} 分钟，正在自动重连；本机 Core 正常，节点流量不受影响 · 最后官方心跳：${last}`;
 }

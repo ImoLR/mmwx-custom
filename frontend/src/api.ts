@@ -1737,3 +1737,13 @@ export function executeServerDeletion(token: string, serverId: number, body: { c
 export function fetchServerDeletions(token: string) {
   return requestCustomOperator<{ plans: import("./server-delete-state").ServerDeletionPlan[] }>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/server-deletions"), token, { cache: "no-store" });
 }
+
+export function fetchHelperBatch(token: string) {
+  return requestCustomOperator<import("./types").HelperBatchResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/helper-batch"), token);
+}
+
+export function changeHelperBatch(token: string, body: { action: "start" | "stop"; job_id?: string; version?: string; server_ids?: string[] }) {
+  return requestCustomOperator<import("./types").HelperBatchResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, "/api/custom/helper-batch"), token, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+}
