@@ -14,6 +14,7 @@ type officialCoreModeFixture struct {
 	agent            *lifecycleAgentFixture
 	current, pending string
 	writes, accepts  int
+	modeWrites       int
 	settings         map[string]any
 }
 
@@ -56,11 +57,15 @@ func newOfficialCoreModeFixture(t *testing.T, store *fakeAdminSessionStore, stat
 		_ = json.NewDecoder(r.Body).Decode(&request)
 		switch request.Op {
 		case "034e094d05aa3f83":
-			writeJSON(w, 200, map[string]any{"servers": []any{map[string]any{"id": 12, "name": "test-server", "xray_mode": store.runtime.XrayMode, "traffic_limit": 123, "traffic_reset_day": 19, "domain": "keep.example", "expires_at": "2027-03-18T00:00:00Z", "notify_muted": true}}})
+			writeJSON(w, 200, map[string]any{"servers": []any{map[string]any{"id": 12, "name": "test-server", "xray_mode": store.runtime.XrayMode, "traffic_limit": 123, "traffic_reset_day": 19, "domain": "keep.example", "expires_at": "2027-03-18T00:00:00Z", "notify_muted": true, "ddns_enabled": true, "ddns_provider_id": 1, "ipv6_enabled": false, "lock_entry_ip": true}}})
 		case "2146f0b13a7196cb":
-			if len(request.Payload) != 5 || request.Payload["id"] != float64(12) || request.Payload["name"] != "test-server" || request.Payload["traffic_limit"] != float64(123) || request.Payload["traffic_reset_day"] != float64(19) {
+			if len(request.Payload) != 9 || request.Payload["id"] != float64(12) || request.Payload["name"] != "test-server" || request.Payload["traffic_limit"] != float64(123) || request.Payload["traffic_reset_day"] != float64(19) {
 				t.Fatalf("lost server fields: %v", request.Payload)
 			}
+			if request.Payload["ddns_enabled"] != true || request.Payload["ddns_provider_id"] != float64(1) || request.Payload["ipv6_enabled"] != false || request.Payload["lock_entry_ip"] != true {
+				t.Fatalf("mode switch would reset DDNS/entry switches: %v", request.Payload)
+			}
+			f.modeWrites++
 			store.mode = request.Payload["xray_mode"].(string)
 			store.runtime.XrayMode = store.mode
 			writeJSON(w, 200, map[string]any{"success": true})
@@ -115,6 +120,18 @@ func TestOfficialExternalRepairWaitsForExactAgentReport(t *testing.T) {
 	}
 	if f.writes != 1 {
 		t.Fatal("healthy config rewritten")
+	}
+}
+
+func TestOfficialCoreModeSwitchKeepsDDNS(t *testing.T) {
+	state := newCoreModeTestState(t)
+	store := &fakeAdminSessionStore{runtime: remoteServerRuntime{XrayMode: "external"}}
+	a, f := newOfficialCoreModeFixture(t, store, state)
+	if err := a.setOfficialCoreMode(context.Background(), "12", "embedded"); err != nil {
+		t.Fatal(err)
+	}
+	if f.modeWrites != 1 || store.mode != "embedded" {
+		t.Fatal("mode switch not written")
 	}
 }
 

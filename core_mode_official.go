@@ -60,9 +60,16 @@ func (a *app) setOfficialCoreMode(ctx context.Context, serverID, mode string) er
 			}
 			return nil
 		}
-		// Official requires name/traffic fields but preserves omitted optional
-		// fields. Sending its full readback would reject RFC3339 expiry dates.
+		// Official requires name/traffic fields and preserves most omitted
+		// fields, but an omitted ddns_enabled/ddns_provider_id is saved as off,
+		// which silently stops DDNS for dynamic-IP servers. Echo the switches
+		// back; sending the full readback would reject RFC3339 expiry dates.
 		payload := map[string]any{"id": id, "name": server["name"], "traffic_limit": server["traffic_limit"], "traffic_reset_day": server["traffic_reset_day"], "xray_mode": mode}
+		for _, key := range []string{"ddns_enabled", "ddns_provider_id", "ipv6_enabled", "lock_entry_ip"} {
+			if value, ok := server[key]; ok {
+				payload[key] = value
+			}
+		}
 		if err := a.officialLifecycleJSON(ctx, token, http.MethodPost, "/api/v3", map[string]any{"op": "2146f0b13a7196cb", "payload": payload}, nil); err != nil {
 			return err
 		}
