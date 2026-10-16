@@ -244,7 +244,7 @@ func (manager *lifecycleManager) activateExternalOwnership(ctx context.Context, 
 		return nil
 	}()
 	if activationErr != nil {
-		if rollbackErr := restoreOwnershipBackup(ctx, state.BackupDir); rollbackErr != nil {
+		if rollbackErr := restoreOwnershipBackup(ctx, state.BackupDir, true); rollbackErr != nil {
 			return fmt.Errorf("external ownership activation failed (%v); local rollback failed: %w", activationErr, rollbackErr)
 		}
 		*state = externalOwnershipState{}
@@ -257,11 +257,11 @@ func (manager *lifecycleManager) activateExternalOwnership(ctx context.Context, 
 	return nil
 }
 
-func (manager *lifecycleManager) rollbackExternalOwnership(ctx context.Context, state *externalOwnershipState) error {
+func (manager *lifecycleManager) rollbackExternalOwnership(ctx context.Context, state *externalOwnershipState, restoreRuntime bool) error {
 	if state.BackupDir == "" {
 		return errors.New("no external ownership rollback snapshot is available")
 	}
-	if err := restoreOwnershipBackup(ctx, state.BackupDir); err != nil {
+	if err := restoreOwnershipBackup(ctx, state.BackupDir, restoreRuntime); err != nil {
 		return err
 	}
 	if state.CompatibilityLinkOwned {
@@ -754,16 +754,58 @@ func backupOwnershipPath(path, directory, name string) (ownershipPathBackup, err
 	return backup, copyFile(path, filepath.Join(directory, name), info.Mode().Perm())
 }
 
-func restoreOwnershipBackup(ctx context.Context, directory string) error {
+func readOwnershipBackup(directory string) (ownershipBackupManifest, error) {
+	var manifest ownershipBackupManifest
 	data, err := os.ReadFile(filepath.Join(directory, "manifest.json"))
+	if err != nil {
+		return manifest, err
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return manifest, err
+	}
+	backups := []ownershipPathBackup{manifest.OfficialUnit, manifest.OwnershipDropIn}
+	if manifest.AgentConfig != nil {
+		backups = append(backups, *manifest.AgentConfig)
+	}
+	for _, backup := range backups {
+		if backup.Exists && !backup.Symlink {
+			if _, err := os.ReadFile(filepath.Join(directory, backup.BackupName)); err != nil {
+				return manifest, err
+			}
+		}
+	}
+	if manifest.AgentConfig != nil && manifest.AgentConfig.Exists {
+		if manifest.AgentConfig.Symlink {
+			return manifest, errors.New("cannot restore Agent mode from a symlink snapshot")
+		}
+		if _, err := readAgentXrayMode(filepath.Join(directory, manifest.AgentConfig.BackupName)); err != nil {
+			return manifest, err
+		}
+	}
+	return manifest, nil
+}
+
+func restoreAgentModeFromBackup(path, directory string, backup ownershipPathBackup) error {
+	if !backup.Exists {
+		return nil
+	}
+	mode, err := readAgentXrayMode(filepath.Join(directory, backup.BackupName))
 	if err != nil {
 		return err
 	}
-	var manifest ownershipBackupManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
+	// Tokens, endpoints and ports may have changed since ownership began.
+	// A mode rollback must never restore that historical Agent configuration.
+	return writeAgentXrayMode(path, mode)
+}
+
+func restoreOwnershipBackup(ctx context.Context, directory string, restoreRuntime bool) error {
+	manifest, err := readOwnershipBackup(directory)
+	if err != nil {
 		return err
 	}
-	_ = systemctl(ctx, "stop", "xray.service")
+	if err := systemctl(ctx, "stop", "xray.service"); err != nil && serviceActive(ctx, "xray.service") {
+		return err
+	}
 	if err := restoreOwnershipPath(officialXrayPath, directory, manifest.OfficialUnit); err != nil {
 		return err
 	}
@@ -771,7 +813,7 @@ func restoreOwnershipBackup(ctx context.Context, directory string) error {
 		return err
 	}
 	if manifest.AgentConfig != nil {
-		if err := restoreOwnershipPath(officialAgentConfigPath, directory, *manifest.AgentConfig); err != nil {
+		if err := restoreAgentModeFromBackup(officialAgentConfigPath, directory, *manifest.AgentConfig); err != nil {
 			return err
 		}
 	}
@@ -783,15 +825,17 @@ func restoreOwnershipBackup(ctx context.Context, directory string) error {
 	} else {
 		_ = systemctl(ctx, "disable", "xray.service")
 	}
-	if manifest.OfficialActive {
-		_ = systemctl(ctx, "start", "xray.service")
+	if restoreRuntime && manifest.OfficialActive {
+		if err := systemctl(ctx, "start", "xray.service"); err != nil {
+			return err
+		}
 	}
 	if manifest.CustomEnabled {
 		_ = systemctl(ctx, "enable", coreServiceName)
 	} else {
 		_ = systemctl(ctx, "disable", coreServiceName)
 	}
-	if manifest.CustomActive {
+	if restoreRuntime && manifest.CustomActive {
 		if err := systemctl(ctx, "start", coreServiceName); err != nil {
 			return err
 		}

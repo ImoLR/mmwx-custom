@@ -292,7 +292,7 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 	case "external.ownership.activate":
 		err = executor.lifecycle.activateExternalOwnership(ctx, &executor.state.ExternalOwnership)
 	case "external.ownership.rollback":
-		err = executor.lifecycle.rollbackExternalOwnership(ctx, &executor.state.ExternalOwnership)
+		err = executor.lifecycle.rollbackExternalOwnership(ctx, &executor.state.ExternalOwnership, true)
 	case "external.takeover":
 		executor.state.Takeover = takeoverState{Mode: "takeover", Status: "in_progress"}
 		err = performExternalTakeover(ctx, executor.client, executor.config, executor.lifecycle, executor.state)

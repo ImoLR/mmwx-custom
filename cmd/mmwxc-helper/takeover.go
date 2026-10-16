@@ -120,7 +120,7 @@ func ensureExternalDesiredState(ctx context.Context, client *http.Client, cfg co
 			return err
 		}
 		if err := armExternalOwnershipServices(ctx, systemctl, serviceActive); err != nil {
-			return fmt.Errorf("re-arm ownership: %w", err)
+			return rollbackTakeover(ctx, client, cfg, lifecycle, state, fmt.Errorf("re-arm ownership: %w", err))
 		}
 		state.ExternalOwnership.Armed = true
 		state.ExternalOwnership.LastRepairAt = time.Now().UTC()
@@ -244,25 +244,66 @@ func rollbackTakeover(_ context.Context, client *http.Client, cfg config, lifecy
 }
 
 func restoreEmbeddedTakeover(ctx context.Context, client *http.Client, cfg config, lifecycle *lifecycleManager, state *localState) error {
+	if state.ExternalOwnership.BackupDir != "" {
+		if _, err := readOwnershipBackup(state.ExternalOwnership.BackupDir); err != nil {
+			return fmt.Errorf("ownership rollback snapshot unavailable; current Core retained: %w", err)
+		}
+	}
 	if _, err := requestTakeoverRuntime(ctx, client, cfg, "embedded"); err != nil {
 		return fmt.Errorf("controller mode rollback refused; current Core retained: %w", err)
 	}
-	var failures []string
-	if state.ExternalOwnership.BackupDir != "" {
-		if err := lifecycle.rollbackExternalOwnership(ctx, &state.ExternalOwnership); err != nil {
-			failures = append(failures, "ownership rollback: "+err.Error())
+	previous := state.ExternalOwnership
+	applyErr := func() error {
+		if state.ExternalOwnership.BackupDir != "" {
+			if err := lifecycle.rollbackExternalOwnership(ctx, &state.ExternalOwnership, false); err != nil {
+				return fmt.Errorf("ownership rollback: %w", err)
+			}
 		}
+		if err := writeAgentXrayMode(officialAgentConfigPath, "embedded"); err != nil {
+			return err
+		}
+		for _, service := range []string{"xray.service", coreServiceName} {
+			if err := systemctl(ctx, "disable", "--now", service); err != nil && serviceActive(ctx, service) {
+				return err
+			}
+		}
+		if err := systemctl(ctx, "restart", "mmw-agent.service"); err != nil {
+			return fmt.Errorf("Agent restart rollback: %w", err)
+		}
+		return waitEmbeddedTakeoverHealthy(ctx, client, cfg)
+	}()
+	if applyErr != nil && previous.Enabled {
+		// The working External runtime is the fallback if Embedded cannot start.
+		// Use a fresh deadline even if the handoff itself timed out.
+		state.ExternalOwnership = previous
+		resumeCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		var modeErr error
+		resumeErr := func() error {
+			if _, _, err := ensureOwnershipFiles(); err != nil {
+				return err
+			}
+			if _, _, err := ensureAgentXrayCompatibilityLinkAt(officialXrayBinaryPath, coreBinaryPath); err != nil {
+				return err
+			}
+			if err := systemctl(resumeCtx, "daemon-reload"); err != nil {
+				return err
+			}
+			_, modeErr = requestTakeoverRuntime(resumeCtx, client, cfg, "external")
+			if err := writeAgentXrayMode(officialAgentConfigPath, "external"); err != nil {
+				return err
+			}
+			return resumeExternalServices(resumeCtx, systemctl)
+		}()
+		return fmt.Errorf("embedded handoff failed; External restoration attempted: %w", errors.Join(applyErr, modeErr, resumeErr))
 	}
-	if err := systemctl(ctx, "restart", "mmw-agent.service"); err != nil {
-		failures = append(failures, "Agent restart rollback: "+err.Error())
-	}
-	if err := waitEmbeddedTakeoverHealthy(ctx, client, cfg); err != nil {
-		failures = append(failures, "embedded health rollback: "+err.Error())
-	}
-	if len(failures) > 0 {
-		return errors.New(strings.Join(failures, "; "))
-	}
-	return nil
+	return applyErr
+}
+
+func resumeExternalServices(ctx context.Context, run systemctlRunner) error {
+	// External Core can keep serving even if the Agent cannot restart.
+	agentErr := run(ctx, "restart", "mmw-agent.service")
+	return errors.Join(agentErr, bootstrapExternalOwnershipService(ctx, run))
 }
 
 func waitExternalTakeoverHealthy(ctx context.Context, client *http.Client, cfg config, lifecycle *lifecycleManager, state *localState) error {

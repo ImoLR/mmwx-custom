@@ -6,6 +6,7 @@ import (
 
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,10 +76,7 @@ func TestReplaceAgentXrayModeFailsClosedOnDuplicate(t *testing.T) {
 	}
 }
 
-func TestOwnershipBackupIncludesAndRestoresAgentConfig(t *testing.T) {
-	// The path-level primitives used by the ownership manifest must preserve
-	// exact Agent config bytes and mode. This avoids exercising systemd in a
-	// unit test while covering the rollback artifact itself.
+func TestOwnershipRollbackOnlyRestoresAgentMode(t *testing.T) {
 	directory := t.TempDir()
 	source := filepath.Join(directory, "config.yaml")
 	backupDirectory := filepath.Join(directory, "backup")
@@ -93,15 +91,15 @@ func TestOwnershipBackupIncludesAndRestoresAgentConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(source, []byte("xray_mode: external\n"), 0600); err != nil {
+	if err := os.WriteFile(source, []byte("token: rotated-token\nlisten_port: 12345\nmaster_url: https://new.example\nxray_mode: external\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := restoreOwnershipPath(source, backupDirectory, backup); err != nil {
+	if err := restoreAgentModeFromBackup(source, backupDirectory, backup); err != nil {
 		t.Fatal(err)
 	}
 	restored, err := os.ReadFile(source)
-	if err != nil || string(restored) != string(original) {
-		t.Fatalf("Agent config was not restored byte-for-byte: %q err=%v", restored, err)
+	if err != nil || string(restored) != "token: rotated-token\nlisten_port: 12345\nmaster_url: https://new.example\nxray_mode: embedded\n" {
+		t.Fatalf("rollback lost current Agent settings: %q err=%v", restored, err)
 	}
 }
 
@@ -125,12 +123,15 @@ func TestTakeoverWithoutAdminSessionPreservesRuntime(t *testing.T) {
 			defer controller.Close()
 			cfg := config{CustomAPIURL: controller.URL, ServerID: "2", Token: "helper-test"}
 			state := localState{ExternalOwnership: externalOwnershipState{Enabled: true, BackupDir: t.TempDir()}}
+			if err := os.WriteFile(filepath.Join(state.ExternalOwnership.BackupDir, "manifest.json"), []byte(`{}`), 0600); err != nil {
+				t.Fatal(err)
+			}
 			before := state.ExternalOwnership
 			err := ensureExternalDesiredState(context.Background(), controller.Client(), cfg, nil, &state)
 			if err == nil || !strings.Contains(err.Error(), "administrator session") || requests != 2 {
 				t.Fatalf("preflight requests=%d err=%v", requests, err)
 			}
-			// The refused rollback must return before touching its backup or
+			// The refused rollback must return before restoring its backup or
 			// stopping the working Core/restarting Agent, without waiting 60s.
 			err = restoreEmbeddedTakeover(context.Background(), controller.Client(), cfg, nil, &state)
 			if err == nil || !strings.Contains(err.Error(), "current Core retained") || requests != 3 {
@@ -143,5 +144,41 @@ func TestTakeoverWithoutAdminSessionPreservesRuntime(t *testing.T) {
 				t.Fatalf("services changed without an admin session: %s", data)
 			}
 		})
+	}
+}
+
+func TestMissingRollbackFileDoesNotStopServingCore(t *testing.T) {
+	calls, active := countingSystemctl(t)
+	_ = os.WriteFile(active, nil, 0600)
+	directory := t.TempDir()
+	manifest := ownershipBackupManifest{OfficialUnit: ownershipPathBackup{Exists: true, BackupName: "missing.service"}}
+	raw, _ := json.Marshal(manifest)
+	_ = os.WriteFile(filepath.Join(directory, "manifest.json"), raw, 0600)
+	if err := restoreOwnershipBackup(context.Background(), directory, true); err == nil {
+		t.Fatal("missing snapshot accepted")
+	}
+	state := localState{ExternalOwnership: externalOwnershipState{Enabled: true, BackupDir: directory}}
+	if err := restoreEmbeddedTakeover(context.Background(), nil, config{}, nil, &state); err == nil {
+		t.Fatal("handoff ignored missing snapshot")
+	}
+	if data, _ := os.ReadFile(calls); len(data) != 0 {
+		t.Fatalf("Core stopped before rollback files were verified: %s", data)
+	}
+	if _, err := os.Stat(active); err != nil || !state.ExternalOwnership.Enabled {
+		t.Fatal("working runtime was lost")
+	}
+}
+
+func TestFailedAgentRestartStillResumesExternalCore(t *testing.T) {
+	var calls []string
+	err := resumeExternalServices(context.Background(), func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		if args[0] == "restart" {
+			return errors.New("Agent restart failed")
+		}
+		return nil
+	})
+	if err == nil || strings.Join(calls, "|") != "restart mmw-agent.service|unmask xray.service|enable xray.service|start xray.service" {
+		t.Fatalf("Agent failure prevented Core recovery: %v %v", calls, err)
 	}
 }
