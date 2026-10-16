@@ -30,6 +30,10 @@ func newOfficialCoreModeFixture(t *testing.T, store *fakeAdminSessionStore, stat
 		if r.Header.Get("MM-Authorization") != "admin-session" {
 			t.Error("missing admin session")
 		}
+		if r.URL.Path == "/api/admin/remote-servers/reveal-token" {
+			writeJSON(w, 200, map[string]any{"pull_token": "keep-pull-token"})
+			return true
+		}
 		if r.URL.Path == "/api/admin/remote/xray/system-config" {
 			if r.URL.Query().Get("server_id") != "12" {
 				t.Fatal("wrong server")
@@ -57,13 +61,22 @@ func newOfficialCoreModeFixture(t *testing.T, store *fakeAdminSessionStore, stat
 		_ = json.NewDecoder(r.Body).Decode(&request)
 		switch request.Op {
 		case "034e094d05aa3f83":
-			writeJSON(w, 200, map[string]any{"servers": []any{map[string]any{"id": 12, "name": "test-server", "xray_mode": store.runtime.XrayMode, "traffic_limit": 123, "traffic_reset_day": 19, "domain": "keep.example", "expires_at": "2027-03-18T00:00:00Z", "notify_muted": true, "ddns_enabled": true, "ddns_provider_id": 1, "ipv6_enabled": false, "lock_entry_ip": true}}})
+			writeJSON(w, 200, map[string]any{"servers": []any{map[string]any{"id": 12, "name": "test-server", "xray_mode": store.runtime.XrayMode, "traffic_limit": 123, "traffic_reset_day": 19, "domain": "keep.example", "expires_at": "2027-03-18T00:00:00Z", "notify_muted": true, "ddns_enabled": true, "ddns_provider_id": 1, "ipv6_enabled": false, "lock_entry_ip": true, "pull_address_v6": "2001:db8::7", "listen_port": 12345, "future_field": "keep", "traffic_used": 456, "token": ""}}})
 		case "2146f0b13a7196cb":
-			if len(request.Payload) != 9 || request.Payload["id"] != float64(12) || request.Payload["name"] != "test-server" || request.Payload["traffic_limit"] != float64(123) || request.Payload["traffic_reset_day"] != float64(19) {
+			if request.Payload["id"] != float64(12) || request.Payload["name"] != "test-server" || request.Payload["traffic_limit"] != float64(123) || request.Payload["traffic_reset_day"] != float64(19) {
 				t.Fatalf("lost server fields: %v", request.Payload)
 			}
 			if request.Payload["ddns_enabled"] != true || request.Payload["ddns_provider_id"] != float64(1) || request.Payload["ipv6_enabled"] != false || request.Payload["lock_entry_ip"] != true {
 				t.Fatalf("mode switch would reset DDNS/entry switches: %v", request.Payload)
+			}
+			if request.Payload["pull_address_v6"] != "2001:db8::7" || request.Payload["listen_port"] != float64(12345) || request.Payload["pull_token"] != "keep-pull-token" || request.Payload["expires_at"] != "2027-03-18" || request.Payload["future_field"] != "keep" || request.Payload["notify_muted"] != true {
+				t.Fatalf("mode switch would reset unrelated server fields: %v", request.Payload)
+			}
+			if _, ok := request.Payload["traffic_used"]; ok {
+				t.Fatal("computed traffic became an explicit counter edit")
+			}
+			if _, ok := request.Payload["token"]; ok {
+				t.Fatal("redacted token was sent")
 			}
 			f.modeWrites++
 			store.mode = request.Payload["xray_mode"].(string)

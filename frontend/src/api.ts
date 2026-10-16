@@ -1,3 +1,4 @@
+import { remoteServerUpdatePayload } from "./server-update";
 import type {
   AdminTrafficResponse,
   AgentSyncNodesResponse,
@@ -619,8 +620,12 @@ export function createRemoteServer(token: string, body: RemoteServerCreateReques
   });
 }
 
-export function updateRemoteServer(token: string, body: RemoteServerUpdateRequest) {
-  return requestOperation<RemoteServerMutationResponse>(token, "2146f0b13a7196cb", body);
+export async function updateRemoteServer(token: string, body: Partial<RemoteServerUpdateRequest> & { id: number }) {
+  const current = (await fetchRemoteServers(token)).servers?.find((server) => server.id === body.id);
+  if (!current) throw new Error("找不到服务器，未保存");
+  const secrets = await revealRemoteServerToken(token, body.id);
+  if (typeof secrets.pull_token !== "string") throw new Error("无法读取拉取令牌，未保存服务器");
+  return requestOperation<RemoteServerMutationResponse>(token, "2146f0b13a7196cb", remoteServerUpdatePayload(current, body, secrets.pull_token));
 }
 
 export function switchRemoteServerDeployMode(token: string, serverId: number, stealMode: "tunnel" | "fallback" | "default") {
@@ -637,7 +642,7 @@ export function addSharedRemoteServer(token: string, body: SharedServerAddReques
 }
 
 export function revealRemoteServerToken(token: string, serverId: number) {
-  return request<{ token?: string; agent_token?: string }>(
+  return request<{ token?: string; agent_token?: string; pull_token?: string }>(
     joinUrl(MMWX_API_BASE_URL, `/api/admin/remote-servers/reveal-token?server_id=${encodeURIComponent(String(serverId))}`),
     token,
   );

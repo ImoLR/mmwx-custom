@@ -1,3 +1,4 @@
+import { remoteServerEditChanges } from "./server-update";
 import { ServerDeleteDialog, ServerDeletionHistory } from "./server-delete";
 import type { ServerDeletionPlan } from "./server-delete-state";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -2820,6 +2821,35 @@ function editRemoteServerState(server: RemoteServer): EditRemoteServerFormState 
   };
 }
 
+function editRemoteServerPayload(serverID: number, form: EditRemoteServerFormState): RemoteServerUpdateRequest {
+  return {
+    id: serverID,
+    name: form.name.trim(),
+    pull_address: form.pullAddress.trim() || "",
+    pull_address_v6: form.pullAddressV6.trim() || "",
+    domain: form.domain.trim(),
+    domain_v6: form.domainV6.trim(),
+    traffic_limit: form.trafficLimitGb.trim() ? Math.floor(Number(form.trafficLimitGb) * 1024 * 1024 * 1024) : 0,
+    traffic_used: form.trafficUsedGb.trim() ? gbToBytes(form.trafficUsedGb) ?? undefined : undefined,
+    traffic_reset_day: parseOptionalInt(form.resetDay) ?? 0,
+    region: form.region,
+    renewal_price: Number(form.renewalPrice) || 0,
+    renewal_cycle: form.renewalCycle,
+    renewal_currency: form.renewalCurrency,
+    expires_at: form.renewalCycle === "permanent" ? "" : form.expiresAt,
+    xray_mode: form.xrayMode,
+    listen_port: parseOptionalInt(form.agentPort) ?? 0,
+    traffic_stats_mode: form.trafficStatsMode,
+    traffic_source: form.trafficSource,
+    ddns_enabled: form.ddnsEnabled,
+    ddns_provider_id: form.ddnsProviderId,
+    ipv6_enabled: form.ipv6Enabled,
+    lock_entry_ip: form.lockEntryIP,
+    port_range_min: parseOptionalInt(form.portRangeMin) ?? 0,
+    port_range_max: parseOptionalInt(form.portRangeMax) ?? 0,
+  };
+}
+
 function EditRemoteServerDialog({
   server,
   sessionToken,
@@ -2906,32 +2936,7 @@ function EditRemoteServerDialog({
     if (listenPort !== parsePort(baseline.agentPort) && !window.confirm(listenPort === 0
       ? "确认清空 Agent 端口并恢复默认 23889？Agent 会重启并短暂掉线。"
       : `确认把 Agent 监听端口改为 ${listenPort}？Agent 会重启并短暂掉线。`)) return;
-    const payload: RemoteServerUpdateRequest = {
-      id: server.id,
-      name: form.name.trim(),
-      pull_address: form.pullAddress.trim() || undefined,
-      pull_address_v6: form.pullAddressV6.trim() || undefined,
-      domain: form.domain.trim(),
-      domain_v6: form.domainV6.trim(),
-      traffic_limit: trafficLimit,
-      traffic_used: trafficUsed,
-      traffic_reset_day: resetDay,
-      region: form.region,
-      renewal_price: renewalPrice,
-      renewal_cycle: form.renewalCycle,
-      renewal_currency: form.renewalCurrency,
-      expires_at: form.renewalCycle === "permanent" ? "" : form.expiresAt,
-      xray_mode: form.xrayMode,
-      listen_port: listenPort,
-      traffic_stats_mode: form.trafficStatsMode,
-      traffic_source: form.trafficSource,
-      ddns_enabled: form.ddnsEnabled,
-      ddns_provider_id: form.ddnsProviderId,
-      ipv6_enabled: form.ipv6Enabled,
-      lock_entry_ip: form.lockEntryIP,
-      port_range_min: portRangeMin,
-      port_range_max: portRangeMax,
-    };
+    const payload = remoteServerEditChanges(editRemoteServerPayload(server.id, form), editRemoteServerPayload(server.id, baseline));
 
     setSaving(true);
     setNotice(null);

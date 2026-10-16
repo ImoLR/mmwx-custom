@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/ImoLR/mmwx-custom/internal/externalconfig"
 )
@@ -60,16 +61,20 @@ func (a *app) setOfficialCoreMode(ctx context.Context, serverID, mode string) er
 			}
 			return nil
 		}
-		// Official requires name/traffic fields and preserves most omitted
-		// fields, but an omitted ddns_enabled/ddns_provider_id is saved as off,
-		// which silently stops DDNS for dynamic-IP servers. Echo the switches
-		// back; sending the full readback would reject RFC3339 expiry dates.
-		payload := map[string]any{"id": id, "name": server["name"], "traffic_limit": server["traffic_limit"], "traffic_reset_day": server["traffic_reset_day"], "xray_mode": mode}
-		for _, key := range []string{"ddns_enabled", "ddns_provider_id", "ipv6_enabled", "lock_entry_ip"} {
-			if value, ok := server[key]; ok {
-				payload[key] = value
-			}
+		payload := officialServerUpdatePayload(server)
+		// The list redacts credentials. Updating the pull address/port also
+		// replaces its token, even when the address and port are unchanged.
+		var secrets struct {
+			PullToken *string `json:"pull_token"`
 		}
+		if err := a.officialLifecycleJSON(ctx, token, http.MethodGet, "/api/admin/remote-servers/reveal-token?server_id="+url.QueryEscape(serverID), nil, &secrets); err != nil {
+			return err
+		}
+		if secrets.PullToken == nil {
+			return errors.New("official pull token is unavailable; server was not updated")
+		}
+		payload["pull_token"] = *secrets.PullToken
+		payload["xray_mode"] = mode
 		if err := a.officialLifecycleJSON(ctx, token, http.MethodPost, "/api/v3", map[string]any{"op": "2146f0b13a7196cb", "payload": payload}, nil); err != nil {
 			return err
 		}
@@ -79,6 +84,24 @@ func (a *app) setOfficialCoreMode(ctx context.Context, serverID, mode string) er
 		return nil
 	}
 	return errOperatorServerNotFound
+}
+
+// Keep this rule in sync with frontend/src/server-update.ts. Echo the latest
+// readback, excluding redacted secrets and the computed traffic total; official
+// treats traffic_used as an explicit counter adjustment, not a read-only field.
+func officialServerUpdatePayload(server map[string]any) map[string]any {
+	payload := make(map[string]any, len(server))
+	for key, value := range server {
+		switch key {
+		case "token", "agent_token", "traffic_used":
+			continue
+		}
+		payload[key] = value
+	}
+	if expiry, ok := payload["expires_at"].(string); ok {
+		payload["expires_at"] = strings.SplitN(expiry, "T", 2)[0]
+	}
+	return payload
 }
 
 func (a *app) ensureOfficialExternalConfig(ctx context.Context, serverID, phase string) error {
