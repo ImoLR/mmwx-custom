@@ -61,3 +61,46 @@ func TestExternalSystemSettingsKeepExplicitPorts(t *testing.T) {
 		t.Fatalf("defaults=%v", defaults)
 	}
 }
+
+func TestRepairPreservesUserPolicyAndRawUserSubtrees(t *testing.T) {
+	original := []byte(`{"log":{"loglevel":"warning","access":"none"},"dns":{"servers":["1.1.1.1"]},"inbounds":[{"tag":"user","port":10001,"settings":{"clients":[{"id":"keep-credential","email":"keep"}]}}],"outbounds":[{"tag":"direct","protocol":"freedom"}],"routing":{"domainStrategy":"AsIs","rules":[{"type":"field","network":"tcp","outboundTag":"direct"}]},"policy":{"levels":{"0":{"handshake":17,"connIdle":711,"bufferSize":64,"statsUserUplink":false},"3":{"handshake":13,"connIdle":701}},"system":{"statsInboundUplink":false}}}`)
+	repaired, err := Repair(original, map[string]any{"grpc_port": float64(47892), "metrics_listen": "127.0.0.1:39891"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete, err := Complete(repaired); err != nil || !complete {
+		t.Fatalf("repair incomplete: %t %v", complete, err)
+	}
+	beforeHash, _ := UserConfigHash(original)
+	afterHash, _ := UserConfigHash(repaired)
+	if beforeHash != afterHash {
+		t.Fatalf("user settings changed: %s", repaired)
+	}
+	var before, after map[string]json.RawMessage
+	_ = json.Unmarshal(original, &before)
+	_ = json.Unmarshal(repaired, &after)
+	for _, key := range []string{"log", "dns", "outbounds"} {
+		if string(before[key]) != string(after[key]) {
+			t.Fatalf("%s bytes changed", key)
+		}
+	}
+	var inbounds []json.RawMessage
+	_ = json.Unmarshal(after["inbounds"], &inbounds)
+	if string(before["inbounds"]) != "["+string(inbounds[0])+"]" {
+		t.Fatal("user inbound bytes changed")
+	}
+	var oldRouting, newRouting struct{ Rules []json.RawMessage }
+	_ = json.Unmarshal(before["routing"], &oldRouting)
+	_ = json.Unmarshal(after["routing"], &newRouting)
+	if string(oldRouting.Rules[0]) != string(newRouting.Rules[1]) {
+		t.Fatal("user route bytes changed")
+	}
+	var policy map[string]any
+	_ = json.Unmarshal(after["policy"], &policy)
+	policy["levels"].(map[string]any)["0"].(map[string]any)["connIdle"] = float64(300)
+	after["policy"], _ = json.Marshal(policy)
+	changed, _ := json.Marshal(after)
+	if changedHash, _ := UserConfigHash(changed); changedHash == beforeHash {
+		t.Fatal("policy timeout loss escaped the safety fingerprint")
+	}
+}

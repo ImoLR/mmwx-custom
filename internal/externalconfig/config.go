@@ -37,7 +37,7 @@ func Complete(data []byte) (bool, error) {
 			continue
 		}
 		port, _ := inbound.Port.(float64)
-		if apiInbound || inbound.Protocol != "dokodemo-door" || inbound.Listen != "127.0.0.1" || port < 1 || port > 65535 {
+		if apiInbound || (inbound.Protocol != "dokodemo-door" && inbound.Protocol != "tunnel") || inbound.Listen != "127.0.0.1" || port < 1 || port > 65535 {
 			return false, errors.New("api inbound conflicts with official External control configuration")
 		}
 		apiInbound = true
@@ -62,8 +62,35 @@ func UserConfigHash(data []byte) (string, error) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return "", err
 	}
-	for _, key := range []string{"api", "metrics", "policy", "stats"} {
+	for _, key := range []string{"api", "metrics", "stats"} {
 		delete(config, key)
+	}
+	if policy, ok := config["policy"].(map[string]any); ok {
+		if levels, ok := policy["levels"].(map[string]any); ok {
+			for level, value := range levels {
+				if settings, ok := value.(map[string]any); ok {
+					delete(settings, "statsUserUplink")
+					delete(settings, "statsUserDownlink")
+					if len(settings) == 0 {
+						delete(levels, level)
+					}
+				}
+			}
+			if len(levels) == 0 {
+				delete(policy, "levels")
+			}
+		}
+		if system, ok := policy["system"].(map[string]any); ok {
+			for _, key := range []string{"statsInboundUplink", "statsInboundDownlink", "statsOutboundUplink", "statsOutboundDownlink"} {
+				delete(system, key)
+			}
+			if len(system) == 0 {
+				delete(policy, "system")
+			}
+		}
+		if len(policy) == 0 {
+			delete(config, "policy")
+		}
 	}
 	if inbounds, ok := config["inbounds"].([]any); ok {
 		kept := []any{}
@@ -101,6 +128,107 @@ func UserConfigHash(data []byte) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", sha256.Sum256(encoded)), nil
+}
+
+// Repair avoids official system-config POST, which replaces the entire policy
+// (including user timeouts and nonzero levels). User subtrees remain untouched;
+// only the API, metrics and traffic-statistics control fields are merged.
+func Repair(data []byte, settings map[string]any) ([]byte, error) {
+	if _, err := Complete(data); err != nil {
+		return nil, err
+	}
+	var config map[string]json.RawMessage
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+	if config == nil {
+		return nil, errors.New("Core configuration must be an object")
+	}
+	encode := func(value any) json.RawMessage { raw, _ := json.Marshal(value); return raw }
+	settings = Settings(settings)
+	config["api"] = encode(map[string]any{"tag": "api", "services": []string{"HandlerService", "LoggerService", "StatsService", "RoutingService"}})
+	config["metrics"] = encode(map[string]any{"tag": "Metrics", "listen": settings["metrics_listen"]})
+	if _, ok := config["stats"]; !ok {
+		config["stats"] = json.RawMessage(`{}`)
+	}
+	var inbounds []json.RawMessage
+	if raw := config["inbounds"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &inbounds); err != nil {
+			return nil, err
+		}
+	}
+	found := false
+	for _, raw := range inbounds {
+		var inbound struct{ Tag string }
+		_ = json.Unmarshal(raw, &inbound)
+		found = found || inbound.Tag == "api"
+	}
+	if !found {
+		inbounds = append(inbounds, encode(map[string]any{"tag": "api", "listen": "127.0.0.1", "port": settings["grpc_port"], "protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1"}}))
+	}
+	config["inbounds"] = encode(inbounds)
+	routing := map[string]json.RawMessage{}
+	if raw := config["routing"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &routing); err != nil {
+			return nil, err
+		}
+	}
+	if routing == nil {
+		routing = map[string]json.RawMessage{}
+	}
+	var rules []json.RawMessage
+	if raw := routing["rules"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &rules); err != nil {
+			return nil, err
+		}
+	}
+	found = false
+	for _, raw := range rules {
+		var rule struct {
+			Type, OutboundTag string
+			InboundTag        []string
+		}
+		_ = json.Unmarshal(raw, &rule)
+		if rule.Type == "field" && rule.OutboundTag == "api" && len(rule.InboundTag) == 1 && rule.InboundTag[0] == "api" {
+			found = true
+		}
+	}
+	if !found {
+		// Control traffic must be matched before any user catch-all route.
+		rules = append([]json.RawMessage{encode(map[string]any{"type": "field", "inboundTag": []string{"api"}, "outboundTag": "api"})}, rules...)
+	}
+	routing["rules"] = encode(rules)
+	config["routing"] = encode(routing)
+	policy := map[string]any{}
+	if raw := config["policy"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &policy); err != nil {
+			return nil, err
+		}
+	}
+	if policy == nil {
+		policy = map[string]any{}
+	}
+	object := func(parent map[string]any, key string) map[string]any {
+		value, ok := parent[key].(map[string]any)
+		if !ok {
+			value = map[string]any{}
+			parent[key] = value
+		}
+		return value
+	}
+	levels := object(policy, "levels")
+	object(levels, "0")
+	for _, value := range levels {
+		if level, ok := value.(map[string]any); ok {
+			level["statsUserUplink"], level["statsUserDownlink"] = true, true
+		}
+	}
+	system := object(policy, "system")
+	for _, key := range []string{"statsInboundUplink", "statsInboundDownlink", "statsOutboundUplink", "statsOutboundDownlink"} {
+		system[key] = true
+	}
+	config["policy"] = encode(policy)
+	return json.Marshal(config)
 }
 
 // Settings uses the official system-config readback to preserve explicit ports.

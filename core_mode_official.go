@@ -176,10 +176,24 @@ func (a *app) ensureOfficialExternalConfig(ctx context.Context, serverID, phase 
 		return err
 	}
 	a.helperState.mu.Lock()
-	expected := a.helperState.data.ExternalConfigRepairs[serverID]
+	marker := a.helperState.data.ExternalConfigRepairs[serverID]
 	a.helperState.mu.Unlock()
+	expected := strings.TrimPrefix(marker, "restart:")
 	if expected != "" && expected != fingerprint {
 		return errors.New("user configuration changed during External control repair")
+	}
+	restart := func() error {
+		if err := a.officialLifecycleJSON(ctx, token, http.MethodPost, "/api/admin/remote/services/control"+query, map[string]any{"service": "xray", "action": "restart"}, nil); err != nil {
+			return err
+		}
+		return a.helperState.markExternalConfigRepair(serverID, fingerprint)
+	}
+	// A lost save/restart response must not skip activation on the next
+	// prepare or confirm. The marker is cleared only after official confirms it.
+	if complete && strings.HasPrefix(marker, "restart:") {
+		if err := restart(); err != nil {
+			return err
+		}
 	}
 	if phase == "prepare" {
 		if complete {
@@ -200,18 +214,22 @@ func (a *app) ensureOfficialExternalConfig(ctx context.Context, serverID, phase 
 				return errors.New("unrelated pending recovery requires an administrator decision")
 			}
 		}
-		// The marker is saved before calling official, so a lost HTTP response is
-		// retryable. Only API/metrics/stats/policy differences can later be accepted.
-		if err := a.helperState.markExternalConfigRepair(serverID, fingerprint); err != nil {
-			return err
-		}
 		var current struct {
 			Config map[string]any `json:"config"`
 		}
 		if err := a.officialLifecycleJSON(ctx, token, http.MethodGet, "/api/admin/remote/xray/system-config"+query, nil, &current); err != nil {
 			return err
 		}
-		if err := a.officialLifecycleJSON(ctx, token, http.MethodPost, "/api/admin/remote/xray/system-config"+query, externalconfig.Settings(current.Config), nil); err != nil {
+		repaired, err := externalconfig.Repair([]byte(raw), current.Config)
+		if err != nil {
+			return err
+		}
+		// The official system-config writer replaces user policy. Save a merge
+		// through its existing config API instead, retaining all user subtrees.
+		if err := a.helperState.markExternalConfigRepair(serverID, "restart:"+fingerprint); err != nil {
+			return err
+		}
+		if err := a.officialLifecycleJSON(ctx, token, http.MethodPost, "/api/admin/remote/xray/config"+query, map[string]any{"config": string(repaired)}, nil); err != nil {
 			return err
 		}
 		raw, err = readConfig()
@@ -223,7 +241,7 @@ func (a *app) ensureOfficialExternalConfig(ctx context.Context, serverID, phase 
 		if err != nil || !complete || hashErr != nil || after != fingerprint {
 			return errors.New("official regeneration did not safely restore External API/metrics")
 		}
-		return nil
+		return restart()
 	}
 	if !complete {
 		return errors.New("External configuration is incomplete")

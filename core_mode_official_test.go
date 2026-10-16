@@ -20,6 +20,8 @@ type officialCoreModeFixture struct {
 	modeError        int
 	rejectMode       bool
 	afterModeWrite   func()
+	restarts         int
+	restartError     bool
 }
 
 func newOfficialCoreModeFixture(t *testing.T, store *fakeAdminSessionStore, state *helperState) (*app, *officialCoreModeFixture) {
@@ -45,14 +47,24 @@ func newOfficialCoreModeFixture(t *testing.T, store *fakeAdminSessionStore, stat
 			if r.Method == http.MethodGet {
 				writeJSON(w, 200, map[string]any{"success": true, "config": map[string]any{"grpc_port": 46736, "metrics_listen": "127.0.0.1:38889"}})
 			} else {
-				_ = json.NewDecoder(r.Body).Decode(&f.settings)
-				f.writes++
-				config["api"] = map[string]any{"tag": "api", "services": []any{"HandlerService", "LoggerService", "StatsService", "RoutingService"}}
-				config["metrics"] = map[string]any{"tag": "Metrics", "listen": f.settings["metrics_listen"]}
-				config["inbounds"] = append(config["inbounds"].([]any), map[string]any{"tag": "api", "listen": "127.0.0.1", "protocol": "dokodemo-door", "port": f.settings["grpc_port"]})
-				config["routing"] = map[string]any{"rules": []any{map[string]any{"type": "field", "inboundTag": []any{"api"}, "outboundTag": "api"}}}
-				writeJSON(w, 200, map[string]any{"success": true})
+				t.Fatal("destructive official system-config POST was used")
 			}
+			return true
+		}
+		if r.URL.Path == "/api/admin/remote/xray/config" && r.Method == http.MethodPost {
+			var body struct{ Config string }
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if err := json.Unmarshal([]byte(body.Config), &config); err != nil {
+				t.Fatal(err)
+			}
+			f.agent.configs[12] = config
+			f.writes++
+			writeJSON(w, 200, map[string]any{"success": true})
+			return true
+		}
+		if r.URL.Path == "/api/admin/remote/services/control" {
+			f.restarts++
+			writeJSON(w, 200, map[string]any{"success": !f.restartError})
 			return true
 		}
 		if r.URL.Path != "/api/v3" {
@@ -268,5 +280,24 @@ func TestOfficialExternalRepairDoesNotAcceptPreexistingUserDrift(t *testing.T) {
 	f.agent.configs[12]["log"] = map[string]any{"access": "/tmp/manual-change"}
 	if err := a.ensureOfficialExternalConfig(context.Background(), "12", "prepare"); err == nil || f.writes != 0 || f.accepts != 0 {
 		t.Fatal("unrelated existing recovery was modified")
+	}
+}
+
+func TestExternalRepairLostRestartResponseRetriesActivationOnly(t *testing.T) {
+	state := newCoreModeTestState(t)
+	a, f := newOfficialCoreModeFixture(t, &fakeAdminSessionStore{}, state)
+	f.restartError = true
+	if err := a.ensureOfficialExternalConfig(context.Background(), "12", "prepare"); err == nil {
+		t.Fatal("restart failure hidden")
+	}
+	f.restartError = false
+	if err := a.ensureOfficialExternalConfig(context.Background(), "12", "prepare"); err != nil {
+		t.Fatal(err)
+	}
+	if f.writes != 1 || f.restarts != 2 {
+		t.Fatalf("retry rewrote config or skipped activation: writes=%d restarts=%d", f.writes, f.restarts)
+	}
+	if err := a.ensureOfficialExternalConfig(context.Background(), "12", "prepare"); err != nil || f.restarts != 2 {
+		t.Fatal("settled activation repeated")
 	}
 }
