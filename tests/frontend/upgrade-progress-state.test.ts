@@ -66,6 +66,8 @@ test("all running phases, another component, batch reservation and immediate cli
   assert.equal(upgradeBlocked({ success: true, batch_pending: true }), true);
   assert.equal(upgradeBlocked(null, undefined, true), true);
   assert.equal(upgradeBlocked({ success: true }, { ...base, phase: "success" }), false);
+  // A stalled attempt the backend has failed, with its expired command dropped.
+  assert.equal(upgradeBlocked({ success: true, pending: [], status: { update: { ...base, phase: "failed" } } }, { ...base, phase: "failed" }), false);
 });
 
 test("finished state stays static and dismissal identity changes only for a new attempt", () => {

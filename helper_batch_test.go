@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -242,5 +245,167 @@ func TestHelperBatchPersistenceFailureDoesNotDispatch(t *testing.T) {
 	}
 	if len(s.data.ManagementCommands["1"]) != 0 || s.data.HelperBatch.Rows[0].Phase != "queued" {
 		t.Fatal("uncommitted dispatch escaped")
+	}
+}
+
+// tickWrites runs one scheduler step and reports whether it replaced the state file.
+func tickWrites(t *testing.T, a *app, now time.Time) bool {
+	t.Helper()
+	before, err := os.Stat(a.helperState.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	a.helperBatchTick(context.Background(), now)
+	log.SetOutput(previous)
+	if logs.Len() != 0 {
+		t.Fatalf("scheduler step logged: %q", logs.String())
+	}
+	after, err := os.Stat(a.helperState.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return !os.SameFile(before, after)
+}
+
+func staleFixture(t *testing.T, count int) (*app, *helperState, []byte, time.Time) {
+	t.Helper()
+	s, _, release, _ := batchFixture(t, count)
+	payload, _ := json.Marshal(managementArtifact{URL: release.HelperArtifacts["amd64"].URL, SHA256: strings.Repeat("a", 64), Version: release.HelperVersion})
+	return &app{helperState: s, apiToken: "test", adminStore: &fakeAdminSessionStore{server: true}}, s, payload, time.Now().UTC()
+}
+
+func dispatchHelperUpdate(t *testing.T, a *app, serverID string, payload []byte) int {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/custom/servers/"+serverID+"/agent", strings.NewReader(`{"action":"helper.update","payload":`+string(payload)+`}`))
+	request.Header.Set("Authorization", "Bearer test")
+	recorder := httptest.NewRecorder()
+	a.agentManagementHandler(recorder, request, serverID)
+	return recorder.Code
+}
+
+// pendingUpdates counts the update commands the UI sees as pending.
+func pendingUpdates(t *testing.T, a *app, serverID string) int {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/api/custom/servers/"+serverID+"/agent", nil)
+	request.Header.Set("Authorization", "Bearer test")
+	recorder := httptest.NewRecorder()
+	a.agentManagementHandler(recorder, request, serverID)
+	var body struct {
+		Pending []managementCommand `json:"pending"`
+	}
+	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &body) != nil {
+		t.Fatalf("GET agent: HTTP %d %s", recorder.Code, recorder.Body.String())
+	}
+	count := 0
+	for _, command := range body.Pending {
+		if updateAction(command.Action) {
+			count++
+		}
+	}
+	return count
+}
+
+func TestStalledSingleServerUpgradeStopsBlocking(t *testing.T) {
+	a, s, payload, now := staleFixture(t, 2)
+	// 1 took its command, then went silent mid-download.
+	status := s.data.AgentStatuses["1"]
+	status.Update = dispatchedUpdate("helper", "v0.7.4", now.Add(-20*time.Minute))
+	status.Update.Phase, status.Update.UpdatedAt = "downloading", now.Add(-managementCommandTTL)
+	s.data.AgentStatuses["1"] = status
+	// 2 never picked its command up; the command expired while dispatching.
+	if _, err := s.enqueueManagementCommandLocked("2", "helper.update", payload, now.Add(-managementCommandTTL-time.Second), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"1", "2"} {
+		if s.upgradeInProgressLocked(id, now) {
+			t.Fatalf("server %s: silent upgrade still reserved before the sweep", id)
+		}
+	}
+	if !tickWrites(t, a, now) {
+		t.Fatal("stale transition was not persisted")
+	}
+	reloaded, err := openHelperState(s.path, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"1", "2"} {
+		progress := reloaded.data.AgentStatuses[id].Update
+		if progress.Phase != "failed" || !progress.UpdatedAt.Equal(now) || !strings.HasPrefix(progress.Message, "超过 15 分钟没有升级进度") || progress.Log[len(progress.Log)-1].Text != progress.Message {
+			t.Fatalf("server %s: %#v", id, progress)
+		}
+		if pendingUpdates(t, a, id) != 0 {
+			t.Fatalf("server %s: expired command still listed as pending", id)
+		}
+	}
+	if tickWrites(t, a, now.Add(5*time.Second)) {
+		t.Fatal("a resolved upgrade rewrote state")
+	}
+	for _, id := range []string{"1", "2"} {
+		if code := dispatchHelperUpdate(t, a, id, payload); code != http.StatusAccepted {
+			t.Fatalf("server %s: retry HTTP %d", id, code)
+		}
+	}
+}
+
+func TestLiveOrFinishedUpgradeIsNotSwept(t *testing.T) {
+	a, s, payload, now := staleFixture(t, 6)
+	// 1 posted progress 14 minutes ago.
+	status := s.data.AgentStatuses["1"]
+	status.Update = dispatchedUpdate("helper", "v0.7.4", now.Add(-20*time.Minute))
+	status.Update.Phase, status.Update.UpdatedAt = "downloading", now.Add(-managementCommandTTL+time.Minute)
+	s.data.AgentStatuses["1"] = status
+	// 2 has old progress, but an unexpired update command can still start it.
+	status = s.data.AgentStatuses["2"]
+	status.Update = dispatchedUpdate("core", "8f5b614", now.Add(-time.Hour))
+	s.data.AgentStatuses["2"] = status
+	s.data.ManagementCommands["2"] = []managementCommand{{ID: "live", Action: "core.update", CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Minute)}}
+	// 3-5 finished long ago; 6 never upgraded.
+	for i, phase := range []string{"success", "failed", "rolled_back"} {
+		id := fmt.Sprint(i + 3)
+		status = s.data.AgentStatuses[id]
+		status.Update = &componentUpdateProgress{Component: "helper", Phase: phase, StartedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-time.Hour), Message: "kept"}
+		s.data.AgentStatuses[id] = status
+	}
+	if err := s.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := json.Marshal(s.data)
+	for i := 0; i < 3; i++ {
+		if tickWrites(t, a, now.Add(time.Duration(i)*5*time.Second)) {
+			t.Fatal("unchanged sweep wrote state")
+		}
+	}
+	if after, _ := json.Marshal(s.data); !bytes.Equal(before, after) {
+		t.Fatal("sweep changed live or finished upgrades")
+	}
+	for _, id := range []string{"1", "2"} {
+		if code := dispatchHelperUpdate(t, a, id, payload); code != http.StatusConflict {
+			t.Fatalf("server %s: HTTP %d, want 409", id, code)
+		}
+	}
+}
+
+func TestStaleSweepLeavesBatchRowsToTheirTimeout(t *testing.T) {
+	s, servers, release, now := batchFixture(t, 1)
+	startBatchFixture(t, s, servers, release, now)
+	if err := s.advanceHelperBatch(servers, now); err != nil {
+		t.Fatal(err)
+	}
+	later := now.Add(managementCommandTTL)
+	s.expireStaleUpdatesLocked(later)
+	if s.data.AgentStatuses["1"].Update.Phase != "dispatching" || s.updateProgressDirty {
+		t.Fatal("stale sweep took over a running batch row")
+	}
+	if err := s.advanceHelperBatch(servers, later); err != nil {
+		t.Fatal(err)
+	}
+	if progress := s.data.AgentStatuses["1"].Update; progress.Phase != "failed" || !strings.HasPrefix(progress.Message, "升级超过 5 分钟") {
+		t.Fatalf("batch timeout replaced: %#v", progress)
 	}
 }

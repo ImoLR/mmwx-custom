@@ -152,8 +152,11 @@ Single-server updates share the batch reservation and upgrade lock; overlapping
 Helper/Core updates return HTTP 409. Batch transitions are saved together on the
 five-second scheduler; unchanged jobs do not write. Progress posts across servers
 share a five-second persistence limit, with a trailing flush for terminal posts.
-The existing ordinary heartbeat persistence is unchanged. Helper and Core versions
-remain independent; the batch path never dispatches a Core update.
+A single-server update silent for 15 minutes with no unexpired update command is
+marked failed by the same scheduler, which releases its lock; batch rows keep
+their own five-minute timeout. The existing ordinary heartbeat persistence is
+unchanged. Helper and Core versions remain independent; the batch path never
+dispatches a Core update.
 
 An official reconnect with a healthy local Core retains the existing repair
 logic and grace period. `waiting_official_since` records that presentation window

@@ -310,25 +310,27 @@ func (a *app) runHelperBatch(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			a.helperState.mu.Lock()
-			active := a.helperState.data.HelperBatch != nil && a.helperState.data.HelperBatch.Phase == "running"
-			a.helperState.mu.Unlock()
-			if !active {
-				a.helperState.mu.Lock()
-				_ = a.helperState.flushUpdateProgressLocked(now.UTC())
-				a.helperState.mu.Unlock()
-				continue
-			}
-			store, ok := a.adminStore.(helperBatchServerStore)
-			if !ok {
-				continue
-			}
-			servers, err := store.HelperBatchServers(ctx)
-			if err == nil {
-				_ = a.helperState.advanceHelperBatch(servers, now.UTC())
-			}
+			a.helperBatchTick(ctx, now.UTC())
 		}
 	}
+}
+
+// One scheduler step, also without a batch: end stalled single-server upgrades,
+// then advance a running batch. A step writes the state file at most once.
+func (a *app) helperBatchTick(ctx context.Context, now time.Time) {
+	a.helperState.mu.Lock()
+	a.helperState.expireStaleUpdatesLocked(now)
+	active := a.helperState.data.HelperBatch != nil && a.helperState.data.HelperBatch.Phase == "running"
+	a.helperState.mu.Unlock()
+	if store, ok := a.adminStore.(helperBatchServerStore); active && ok {
+		if servers, err := store.HelperBatchServers(ctx); err == nil {
+			_ = a.helperState.advanceHelperBatch(servers, now)
+			return
+		}
+	}
+	a.helperState.mu.Lock()
+	_ = a.helperState.flushUpdateProgressLocked(now)
+	a.helperState.mu.Unlock()
 }
 
 func (a *app) helperBatchHandler(w http.ResponseWriter, r *http.Request) {

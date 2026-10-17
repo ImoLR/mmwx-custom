@@ -213,14 +213,22 @@ func updateAction(action string) bool {
 	return action == "helper.update" || action == "core.update" || action == "core.install"
 }
 
-func (s *helperState) upgradeInProgressLocked(serverID string, now time.Time) bool {
+func (s *helperState) updateQueuedLocked(serverID string, now time.Time) bool {
 	for _, command := range s.data.ManagementCommands[serverID] {
 		if updateAction(command.Action) && now.Before(command.ExpiresAt) {
 			return true
 		}
 	}
+	return false
+}
+
+// Progress silent for managementCommandTTL no longer blocks; see expireStaleUpdatesLocked.
+func (s *helperState) upgradeInProgressLocked(serverID string, now time.Time) bool {
+	if s.updateQueuedLocked(serverID, now) {
+		return true
+	}
 	progress := s.data.AgentStatuses[serverID].Update
-	return progress != nil && !terminalUpdatePhase(progress.Phase) && progress.Phase != ""
+	return updateRunning(progress) && now.Sub(progress.UpdatedAt) < managementCommandTTL
 }
 
 // Caller holds the state lock and persists command plus any batch transition together.

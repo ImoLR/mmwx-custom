@@ -71,6 +71,10 @@ func terminalUpdatePhase(phase string) bool {
 	return phase == "success" || phase == "failed" || phase == "rolled_back"
 }
 
+func updateRunning(progress *componentUpdateProgress) bool {
+	return progress != nil && progress.Phase != "" && !terminalUpdatePhase(progress.Phase)
+}
+
 func (progress *componentUpdateProgress) appendLine(now time.Time, text string) {
 	text = sanitizeUpdateText(text)
 	if text == "" {
@@ -200,6 +204,42 @@ func (a *app) helperUpdateProgressHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// A single-server upgrade only ends on a Helper post, an observed version or a
+// failed result. If the Helper crashed, went offline or never picked the command
+// up, none of those arrive, so the 5 s scheduler fails the attempt once it has
+// been silent for the command TTL and no update command can still run. Batch
+// rows keep their own timeout. The next flush persists the change.
+func (s *helperState) expireStaleUpdatesLocked(now time.Time) {
+	for serverID, status := range s.data.AgentStatuses {
+		progress := status.Update
+		if !updateRunning(progress) || now.Sub(progress.UpdatedAt) < managementCommandTTL || s.updateQueuedLocked(serverID, now) || s.batchServerBusyLocked(serverID) {
+			continue
+		}
+		component := "Helper"
+		if progress.Component == "core" {
+			component = "Core"
+		}
+		failed := *progress
+		failed.Phase, failed.UpdatedAt = "failed", now
+		failed.Message = "超过 15 分钟没有升级进度，已停止等待；请核对 " + component + " 实际版本后重试"
+		failed.appendLine(now, failed.Message)
+		status.Update = &failed
+		s.data.AgentStatuses[serverID] = status
+		// An expired command never runs but would still be listed as pending.
+		commands := s.data.ManagementCommands[serverID]
+		kept := make([]managementCommand, 0, len(commands))
+		for _, command := range commands {
+			if !updateAction(command.Action) {
+				kept = append(kept, command)
+			}
+		}
+		if len(kept) != len(commands) {
+			s.data.ManagementCommands[serverID] = kept
+		}
+		s.updateProgressDirty = true
+	}
 }
 
 // The batch scheduler also flushes a final progress post when no further reports arrive.
