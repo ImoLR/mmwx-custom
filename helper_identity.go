@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	_ "embed"
@@ -11,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,6 +27,17 @@ const (
 	defaultHelperStatePath       = "/etc/mmwx-custom/helper-state.json"
 	defaultHelperInstallTokenTTL = 30 * time.Minute
 	maxInstallTokenRequestBytes  = 4096
+	// Heartbeat-only changes (last seen, report times, log samples, UpdatedAt
+	// refreshes) reach disk at most this often. Everything else is saved at once.
+	helperStateFlushInterval = 30 * time.Second
+	// A running batch judges queued servers online by their report time, so a
+	// restart after a crash must not read one older than its five-second cadence.
+	helperStateBatchFlushInterval = 5 * time.Second
+	// The flusher ticks once a second. Half a tick of slack absorbs timer
+	// jitter, so steady flushes stay exactly one interval apart.
+	helperStateFlushTick  = time.Second
+	helperStateFlushSlack = helperStateFlushTick / 2
+	maxLoggedFlushErrors  = 16
 )
 
 type helperState struct {
@@ -35,6 +48,13 @@ type helperState struct {
 	data                  helperStateData
 	updateProgressSavedAt time.Time
 	updateProgressDirty   bool
+	// Heartbeat-only changes not yet on disk. Every write carries them, so a
+	// durable save clears this too.
+	volatileDirty bool
+	savedAt       time.Time
+	flushFailedAt time.Time
+	writes        uint64
+	flushErrors   map[string]bool
 }
 
 type helperStateData struct {
@@ -112,7 +132,8 @@ func openHelperState(statePath string, ttl time.Duration) (*helperState, error) 
 	if ttl <= 0 {
 		ttl = defaultHelperInstallTokenTTL
 	}
-	store := &helperState{path: statePath, ttl: ttl}
+	// The file just read is current, so the first lazy flush is due one interval later.
+	store := &helperState{path: statePath, ttl: ttl, savedAt: time.Now()}
 	store.data.Servers = make(map[string]helperServerIdentity)
 	store.data.InstallTokens = make(map[string]helperInstallToken)
 	store.data.ConnectionSettings = make(map[string]serverConnectionSettings)
@@ -168,6 +189,8 @@ func (s *helperState) load() error {
 	return nil
 }
 
+// saveLocked durably writes the whole state now. Pending heartbeat data and
+// throttled progress ride along in the same write.
 func (s *helperState) saveLocked() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
 		return err
@@ -180,7 +203,85 @@ func (s *helperState) saveLocked() error {
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+	s.savedAt, s.writes = time.Now(), s.writes+1
+	s.volatileDirty, s.updateProgressDirty = false, false
+	return nil
+}
+
+// markVolatileLocked records a change to heartbeat-only fields. Losing it in a
+// crash costs at most one flush interval of timestamps; the next report restores them.
+func (s *helperState) markVolatileLocked() {
+	s.volatileDirty = true
+}
+
+// flushVolatileLocked writes pending heartbeat-only changes once the interval
+// since the last write has passed, and reports whether it wrote.
+func (s *helperState) flushVolatileLocked(now time.Time) (bool, error) {
+	if !s.volatileDirty {
+		return false, nil
+	}
+	interval := helperStateFlushInterval
+	if s.data.HelperBatch != nil && s.data.HelperBatch.Phase == "running" {
+		interval = helperStateBatchFlushInterval
+	}
+	// A failed flush waits a full interval too instead of retrying every tick.
+	if now.Sub(s.savedAt) < interval-helperStateFlushSlack || now.Sub(s.flushFailedAt) < interval {
+		return false, nil
+	}
+	if err := s.saveLocked(); err != nil {
+		s.flushFailedAt = now
+		s.logFlushErrorLocked(err)
+		return false, err
+	}
+	// Anchor the schedule to this tick, so steady flushes are exactly one
+	// interval apart and no heartbeat waits longer than that for the disk.
+	s.savedAt = now
+	return true, nil
+}
+
+// flushPending writes everything not yet on disk; graceful shutdown calls it
+// after the HTTP server has stopped.
+func (s *helperState) flushPending() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.volatileDirty && !s.updateProgressDirty {
+		return nil
+	}
+	err := s.saveLocked()
+	s.logFlushErrorLocked(err)
+	return err
+}
+
+// runFlusher is the single background writer for heartbeat-only changes.
+func (s *helperState) runFlusher(ctx context.Context) {
+	ticker := time.NewTicker(helperStateFlushTick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			s.mu.Lock()
+			_, _ = s.flushVolatileLocked(now)
+			s.mu.Unlock()
+		}
+	}
+}
+
+// Each distinct flush error is logged once per process, so a full or
+// read-only disk cannot turn the one-second flusher into a log flood.
+func (s *helperState) logFlushErrorLocked(err error) {
+	if err == nil || s.flushErrors[err.Error()] || len(s.flushErrors) >= maxLoggedFlushErrors {
+		return
+	}
+	if s.flushErrors == nil {
+		s.flushErrors = make(map[string]bool)
+	}
+	s.flushErrors[err.Error()] = true
+	log.Printf("[mmwx-custom] helper state flush failed: %v", err)
 }
 
 func (s *helperState) createInstallToken(officialServerID string) (helperInstallToken, string, error) {
@@ -298,7 +399,7 @@ func (s *helperState) consumeInstallToken(rawToken string) (helperInstallToken, 
 	return record, true, nil
 }
 
-func (s *helperState) authorizeReporter(reportedID, token, version string, persist ...bool) (string, string, bool) {
+func (s *helperState) authorizeReporter(reportedID, token, version string) (string, string, bool) {
 	if reportedID == "" || token == "" {
 		return "", "", false
 	}
@@ -312,9 +413,9 @@ func (s *helperState) authorizeReporter(reportedID, token, version string, persi
 			identity.LastHelperVersion = strings.TrimSpace(version)
 			identity.UpdatedAt = now
 			s.data.Servers[officialID] = identity
-			if len(persist) == 0 || persist[0] {
-				_ = s.saveLocked()
-			}
+			// Authentication changes no credential; a pending one is promoted
+			// only by a validated report, which saves at once.
+			s.markVolatileLocked()
 			return officialID, identity.CustomServerUUID, true
 		}
 	}
@@ -325,7 +426,7 @@ func (identity helperServerIdentity) acceptsPendingToken(tokenHash string, now t
 	return identity.PendingHelperTokenHash != "" && identity.PendingHelperTokenHash == tokenHash && now.Before(identity.PendingHelperTokenExpiresAt)
 }
 
-func (s *helperState) recordLegacyReporter(officialServerID, token, version string, persist ...bool) string {
+func (s *helperState) recordLegacyReporter(officialServerID, token, version string) string {
 	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -344,12 +445,16 @@ func (s *helperState) recordLegacyReporter(officialServerID, token, version stri
 			CreatedAt:        now,
 		}
 	}
+	bound := ok && identity.HelperTokenHash == hashSecret(token)
 	identity.LastSeenAt = now
 	identity.LastHelperVersion = strings.TrimSpace(version)
 	identity.HelperTokenHash = hashSecret(token)
 	identity.UpdatedAt = now
 	s.data.Servers[officialServerID] = identity
-	if !ok || len(persist) == 0 || persist[0] {
+	if bound {
+		s.markVolatileLocked()
+	} else {
+		// A new identity or credential binding is durable.
 		_ = s.saveLocked()
 	}
 	return identity.CustomServerUUID

@@ -244,6 +244,7 @@ func main() {
 	go api.releaseCache.run(ctx, defaultReleaseRefreshInterval)
 	go api.runTrafficGroups(ctx)
 	go api.runHelperBatch(ctx)
+	go api.helperState.runFlusher(ctx)
 
 	go func() {
 		log.Printf("[mmwx-custom] listening on %s", listenAddr)
@@ -253,10 +254,19 @@ func main() {
 	}()
 
 	<-ctx.Done()
+	api.shutdown(server)
+}
+
+// shutdown stops accepting requests, then writes the heartbeat data and
+// throttled progress that the lazy flushers have not persisted yet.
+func (a *app) shutdown(server *http.Server) {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("[mmwx-custom] graceful shutdown failed: %v", err)
+	}
+	if a.helperState != nil {
+		_ = a.helperState.flushPending()
 	}
 }
 

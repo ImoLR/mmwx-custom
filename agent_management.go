@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -388,9 +389,20 @@ func (s *helperState) acceptManagementReport(serverID, token string, report *man
 			}
 		}
 	}
+	// Results, acknowledged or expired commands, credential promotion, machine
+	// binding and real status changes are saved now. A plain heartbeat only
+	// refreshes report times and log samples, which the lazy flusher writes.
+	durable := promote || len(commands) != len(previousCommands) || identity.MachineID != previousIdentity.MachineID
+	if report != nil {
+		durable = durable || report.Result != nil || !heartbeatOnlyStatusChange(previousStatus, s.data.AgentStatuses[serverID])
+	}
 	s.data.Servers[serverID] = identity
 	s.data.ManagementCommands[serverID] = commands
-	if err := s.saveLocked(); err != nil {
+	if !durable {
+		if report != nil {
+			s.markVolatileLocked()
+		}
+	} else if err := s.saveLocked(); err != nil {
 		s.data.Servers[serverID] = previousIdentity
 		s.data.ManagementCommands[serverID] = previousCommands
 		s.data.AgentStatuses[serverID] = previousStatus
@@ -408,6 +420,23 @@ func (s *helperState) acceptManagementReport(serverID, token string, report *man
 	}
 	command := commands[0]
 	return &command, nil
+}
+
+// heartbeatOnlyStatusChange reports whether two snapshots differ only in what
+// every report refreshes: the report time and the log-housekeeping samples.
+// It compares the persisted JSON, so equal output means an identical file.
+func heartbeatOnlyStatusChange(previous, next agentStatus) bool {
+	stable := func(status agentStatus) []byte {
+		status.ReportedAt = time.Time{}
+		if status.Logs != nil {
+			logs := *status.Logs
+			logs.CheckedAt, logs.AgentLogBytes, logs.JournaldDiskUsage, logs.UnitLines, logs.SampleComplete = time.Time{}, 0, "", nil, false
+			status.Logs = &logs
+		}
+		encoded, _ := json.Marshal(status)
+		return encoded
+	}
+	return bytes.Equal(stable(previous), stable(next))
 }
 
 func completeObservedUpdate(progress *componentUpdateProgress, status agentStatus, now time.Time) *componentUpdateProgress {

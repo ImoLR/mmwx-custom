@@ -301,7 +301,7 @@ func normalizeHelperServerID(value any) (string, bool) {
 	}
 }
 
-func (a *app) authorizedHelper(r *http.Request, serverID, version string, persist ...bool) (string, string, bool) {
+func (a *app) authorizedHelper(r *http.Request, serverID, version string) (string, string, bool) {
 	const prefix = "Bearer "
 	value := r.Header.Get("Authorization")
 	if !strings.HasPrefix(value, prefix) {
@@ -309,7 +309,7 @@ func (a *app) authorizedHelper(r *http.Request, serverID, version string, persis
 	}
 	got := strings.TrimSpace(strings.TrimPrefix(value, prefix))
 	if a.helperState != nil {
-		if officialID, customUUID, ok := a.helperState.authorizeReporter(serverID, got, version, persist...); ok {
+		if officialID, customUUID, ok := a.helperState.authorizeReporter(serverID, got, version); ok {
 			if a.adminStore != nil {
 				exists, err := a.adminStore.RemoteServerExists(r.Context(), officialID)
 				if err != nil || !exists {
@@ -333,7 +333,7 @@ func (a *app) authorizedHelper(r *http.Request, serverID, version string, persis
 	if subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
 		customUUID := ""
 		if a.helperState != nil {
-			customUUID = a.helperState.recordLegacyReporter(serverID, got, version, persist...)
+			customUUID = a.helperState.recordLegacyReporter(serverID, got, version)
 			if customUUID == "" {
 				return "", "", false
 			}

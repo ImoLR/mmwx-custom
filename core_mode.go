@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -132,6 +133,7 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 	if !configured {
 		return nil, nil
 	}
+	previous := intent
 	now := time.Now().UTC()
 	if coreModeHealthy(intent, status, runtime) || runtime.XrayMode != intent.DesiredMode || !coreModeLocalHealthy(intent, status) {
 		intent.WaitingOfficialSince = time.Time{}
@@ -190,14 +192,14 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		intent.NextRepairAt = time.Time{}
 		intent.UpdatedAt = now
 		s.data.CoreModeIntents[serverID] = intent
-		return nil, s.saveLocked()
+		return nil, s.commitIntentLocked(previous, intent)
 	}
 	for _, command := range s.data.ManagementCommands[serverID] {
 		if command.Action == "core.mode.apply" && now.Before(command.ExpiresAt) {
 			intent.RepairStatus = "repairing"
 			intent.UpdatedAt = now
 			s.data.CoreModeIntents[serverID] = intent
-			return &command, s.saveLocked()
+			return &command, s.commitIntentLocked(previous, intent)
 		}
 	}
 	// A healthy local Core cannot repair an offline/stale official runtime.
@@ -217,7 +219,7 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		}
 		intent.UpdatedAt = now
 		s.data.CoreModeIntents[serverID] = intent
-		return nil, s.saveLocked()
+		return nil, s.commitIntentLocked(previous, intent)
 	}
 	// A reconnect can temporarily make the official runtime look unhealthy.
 	// Keep the last settled UI state and wait for sustained drift. Explicit
@@ -229,7 +231,7 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		if now.Sub(intent.DriftDetectedAt) <= coreDriftGrace {
 			intent.UpdatedAt = now
 			s.data.CoreModeIntents[serverID] = intent
-			return nil, s.saveLocked()
+			return nil, s.commitIntentLocked(previous, intent)
 		}
 	}
 	if !hasCapability(status, "core.mode.apply") {
@@ -237,7 +239,7 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		intent.LastRepairError = "Helper upgrade required for desired-state repair"
 		intent.UpdatedAt = now
 		s.data.CoreModeIntents[serverID] = intent
-		return nil, s.saveLocked()
+		return nil, s.commitIntentLocked(previous, intent)
 	}
 	if !intent.NextRepairAt.IsZero() && now.Before(intent.NextRepairAt) {
 		if intent.RepairAttempts >= len(coreRepairBackoff) || strings.Contains(intent.LastRepairError, coreModeAdminSessionRequired) {
@@ -247,7 +249,7 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		}
 		intent.UpdatedAt = now
 		s.data.CoreModeIntents[serverID] = intent
-		return nil, s.saveLocked()
+		return nil, s.commitIntentLocked(previous, intent)
 	}
 	payload, _ := json.Marshal(map[string]string{"desired_mode": intent.DesiredMode})
 	id, err := randomUUID()
@@ -269,6 +271,20 @@ func (s *helperState) reconcileCoreMode(serverID string, status agentStatus, run
 		return nil, err
 	}
 	return &command, nil
+}
+
+// commitIntentLocked saves a reconciled intent at once when anything but its
+// UpdatedAt changed. A pass that only refreshes UpdatedAt keeps it in memory
+// for the lazy flush instead of rewriting the file on every report.
+func (s *helperState) commitIntentLocked(previous, next coreModeIntent) error {
+	previous.UpdatedAt, next.UpdatedAt = time.Time{}, time.Time{}
+	before, _ := json.Marshal(previous)
+	after, _ := json.Marshal(next)
+	if bytes.Equal(before, after) {
+		s.markVolatileLocked()
+		return nil
+	}
+	return s.saveLocked()
 }
 
 // coreModeSummary is the per-server lifecycle state shown on service cards.

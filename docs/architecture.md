@@ -154,9 +154,17 @@ five-second scheduler; unchanged jobs do not write. Progress posts across server
 share a five-second persistence limit, with a trailing flush for terminal posts.
 A single-server update silent for 15 minutes with no unexpired update command is
 marked failed by the same scheduler, which releases its lock; batch rows keep
-their own five-minute timeout. The existing ordinary heartbeat persistence is
-unchanged. Helper and Core versions remain independent; the batch path never
-dispatches a Core update.
+their own five-minute timeout. Helper and Core versions remain independent; the
+batch path never dispatches a Core update.
+
+`helper-state.json` is written at once (temp file + rename) for tokens and
+machine binding, queued, acknowledged or expired commands, results, mode-intent
+and repair-state changes, observed status changes, batch steps, server deletion
+and settings. An ordinary report changes only heartbeat fields (last seen, report
+time, log samples, intent `updated_at`); these stay current in memory and one
+background flusher writes them at most every 30 seconds (every five seconds while
+a batch runs), on graceful shutdown, or with the next immediate write. A crash
+can lose up to 30 seconds of heartbeat timestamps, which the next report restores.
 
 An official reconnect with a healthy local Core retains the existing repair
 logic and grace period. `waiting_official_since` records that presentation window
