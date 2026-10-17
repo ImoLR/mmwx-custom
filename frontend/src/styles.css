@@ -2433,6 +2433,7 @@ button {
 .helper-batch-row small { color: var(--muted); }
 .helper-batch-row > span { flex-shrink: 0; color: #168061; }
 .helper-batch-row.is-failed > span { color: #dc4545; }
+.helper-batch-row.is-muted > span { color: var(--muted); }
 .helper-batch-dialog { width: min(640px, calc(100vw - 24px)); max-height: 90vh; overflow: auto; }
 .helper-batch-dialog h3 { margin: 16px 0 4px; font-size: 13px; }
 .helper-batch-dialog .helper-batch-confirm { margin-top: 16px; background: #168061; color: #fff; }

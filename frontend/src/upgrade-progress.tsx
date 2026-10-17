@@ -1,11 +1,11 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { componentUpgradeLabel, deriveUpgradeProgress, upgradeDuration, upgradeSteps, upgradeDismissKey, type UpgradeProgress } from "./upgrade-progress-state";
 
 export function useUpgradePresentation(key: string, running: boolean, finishedAt?: string, success = false) {
   const [now, setNow] = useState(Date.now);
-  const readDismissed = () => { try { return window.localStorage.getItem(key) === "1"; } catch { return false; } };
-  const [dismissed, setDismissed] = useState(readDismissed);
-  useEffect(() => { setDismissed(readDismissed()); }, [key]);
+  // Read in the render that brings the key, so a dismissed box never flashes after a remount.
+  const stored = useMemo(() => { try { return window.localStorage.getItem(key) === "1"; } catch { return false; } }, [key]);
+  const [dismissedKey, setDismissedKey] = useState("");
   useEffect(() => {
     setNow(Date.now());
     if (running) {
@@ -18,9 +18,9 @@ export function useUpgradePresentation(key: string, running: boolean, finishedAt
       return () => window.clearTimeout(timer);
     }
   }, [key, running, finishedAt, success]);
-  return { now, dismissed: !running && dismissed, dismiss: () => {
+  return { now, dismissed: !running && (stored || dismissedKey === key), dismiss: () => {
     try { window.localStorage.setItem(key, "1"); } catch { /* Still dismiss for this visit if storage is unavailable. */ }
-    setDismissed(true);
+    setDismissedKey(key);
   } };
 }
 

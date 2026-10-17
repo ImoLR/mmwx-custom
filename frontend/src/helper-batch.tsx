@@ -6,7 +6,7 @@ import { componentUpgradeLabel, upgradeDismissKey, upgradeDuration } from "./upg
 import { useUpgradePresentation } from "./upgrade-progress";
 
 function BatchRows({ rows }: { rows: HelperBatchRow[] }) {
-  return <div className="helper-batch-rows">{rows.map((row) => <div key={row.server_id} className={`helper-batch-row${["failed", "rolled_back"].includes(row.phase) ? " is-failed" : ""}`}>
+  return <div className="helper-batch-rows">{rows.map((row) => <div key={row.server_id} className={`helper-batch-row${["failed", "rolled_back"].includes(row.phase) ? " is-failed" : ["skipped", "cancelled"].includes(row.phase) ? " is-muted" : ""}`}>
     <div><strong>{row.name}</strong><small>{row.reason || `${row.version || "版本未知"}${row.first_upgrade ? " · 首次升级" : ""}`}</small></div>
     <span>{({ queued: "排队中", skipped: "跳过", cancelled: "已停止" } as Record<string, string>)[row.phase] || componentUpgradeLabel(row.phase)}</span>
   </div>)}</div>;
