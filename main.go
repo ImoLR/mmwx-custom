@@ -187,6 +187,9 @@ func main() {
 		log.Printf("[mmwx-custom] warning: admin database config is unavailable; browser Custom API access is disabled")
 	} else {
 		api.adminStore = adminStore
+		if _, err := adminStore.db.ExecContext(context.Background(), flvxSchema); err != nil {
+			log.Fatalf("[mmwx-custom] FLVX schema migration failed: %v", err)
+		}
 		if err := adminStore.EnsureConnectionOwnershipSchema(context.Background()); err != nil {
 			_ = adminStore.Close()
 			log.Fatalf("[mmwx-custom] connection ownership migration failed: %v", err)
@@ -280,6 +283,9 @@ func newMux(api *app, mmwxAPITarget *url.URL, frontendDir string) *http.ServeMux
 	mux.HandleFunc("/api/custom/agent/metrics", api.withCORS(api.connectionMetricsHandler))
 	mux.HandleFunc("/api/custom/agent/user-connections", api.withCORS(api.helperUserConnectionsHandler))
 	mux.HandleFunc("/api/custom/agent/connections", api.withCORS(api.helperDetailedConnectionsHandler))
+	mux.HandleFunc("/api/custom/flvx/v1/", api.withCORS(api.flvxV1Handler))
+	mux.HandleFunc("/api/custom/flvx/admin", api.withCORS(api.flvxAdminHandler))
+	mux.HandleFunc("/api/custom/flvx/admin/", api.withCORS(api.flvxAdminHandler))
 	mux.HandleFunc("/api/custom/agent/takeover", api.withCORS(api.helperTakeoverHandler))
 	mux.HandleFunc("/api/custom/servers/", api.withCORS(api.serverConnectionsHandler))
 	mux.HandleFunc("/api/custom/helper/install-token", api.withCORS(api.createHelperInstallTokenHandler))

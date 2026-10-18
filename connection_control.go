@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ImoLR/mmwx-custom/internal/flvx"
 	"io"
 	"log"
 	"net/http"
@@ -201,6 +202,7 @@ type serverDetailedConnectionSnapshot struct {
 }
 
 type helperDetailedMetricsRequest struct {
+	FLVX            *flvx.Report                     `json:"flvx,omitempty"`
 	ServerID        any                              `json:"server_id"`
 	HelperVersion   string                           `json:"helper_version"`
 	TCPCount        int64                            `json:"tcp_count"`
@@ -475,7 +477,20 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 		}
 	}
 	settings = a.trafficBlocksForHelper(settings, officialID, request.HelperVersion)
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "settings": sortedConnectionSettings(settingsForHelper(settings, request.HelperVersion)), "command": command})
+	response := map[string]any{"success": true, "settings": sortedConnectionSettings(settingsForHelper(settings, request.HelperVersion)), "command": command}
+	if request.Management != nil {
+		for _, capability := range request.Management.Status.Capabilities {
+			if capability == "flvx.share" {
+				id, _ := strconv.ParseInt(officialID, 10, 64)
+				desired, flvxErr := a.flvxHelperDesired(r.Context(), id, serverID, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), request.Management.Status.Architecture, request.FLVX)
+				if flvxErr == nil && desired != nil {
+					response["flvx"] = desired
+				}
+				break
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
