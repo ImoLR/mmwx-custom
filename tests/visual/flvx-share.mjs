@@ -104,6 +104,14 @@ try {
     await page.getByRole("dialog").locator("select").first().selectOption("9");
     assert.equal(await page.getByLabel("端口起始", { exact: true }).inputValue(), "31000");
     await page.getByText("高级 · 资源上限", { exact: true }).click(); await shot(page, `share-advanced-${width}`);
+    await page.getByRole("dialog").locator("select").nth(1).selectOption("date");
+    await page.getByRole("dialog").locator('input[type="date"]').fill("2026-12-31");
+    await page.getByRole("button", { name: "确认共享", exact: true }).scrollIntoViewIfNeeded();
+    await shot(page, `share-expiry-resources-${width}`);
+    const saveBox = await page.getByRole("button", { name: "确认共享", exact: true }).boundingBox();
+    assert.ok(saveBox && saveBox.y >= 0 && saveBox.y + saveBox.height <= page.viewportSize().height, "dialog actions must remain reachable");
+    checks.push(`share dialog ${width}: date, resource caps and save button reachable`);
+    await page.getByRole("dialog").locator("select").first().scrollIntoViewIfNeeded();
     await page.getByRole("dialog").locator("select").first().selectOption("10"); await shot(page, `share-dual-warning-${width}`);
     assert.equal(await page.getByRole("button", { name: "确认共享", exact: true }).isEnabled(), true);
     await page.getByRole("dialog").locator("select").first().selectOption("11"); await shot(page, `share-native-refused-${width}`);

@@ -52,6 +52,7 @@ type flvxManager struct {
 	logs                            *periodicLogLimiter
 	verifiedHash                    string
 	verifiedMTime                   time.Time
+	persistedHash                   [32]byte
 	removed                         bool
 	// The real transport is the fixed Core CLI's gRPC client; tests inject a fake.
 	apiCall      func(context.Context, string, ...string) ([]byte, error)
@@ -96,6 +97,7 @@ func (m *flvxManager) load() error {
 		if err = json.Unmarshal(raw, &m.state); err != nil {
 			return errors.New("invalid FLVX instance state; refusing to reset counters")
 		}
+		m.persistedHash = sha256.Sum256(raw)
 	}
 	if m.state.Counters == nil {
 		m.state.Counters = map[string]*flvx.Counter{}
@@ -151,7 +153,15 @@ func (m *flvxManager) persist() error {
 	if err != nil {
 		return err
 	}
-	return writeFLVXFile(filepath.Join(m.dir, "state.json"), raw, 0600)
+	hash := sha256.Sum256(raw)
+	if hash == m.persistedHash {
+		return nil
+	}
+	if err := writeFLVXFile(filepath.Join(m.dir, "state.json"), raw, 0600); err != nil {
+		return err
+	}
+	m.persistedHash = hash
+	return nil
 }
 
 func (m *flvxManager) publish() {
@@ -234,6 +244,9 @@ func (m *flvxManager) run(ctx context.Context) {
 					m.state.Report.Nodes[i].Error = "FLVX Core reconciliation failed"
 				}
 			}
+			m.state.Report.Sequence++
+			m.state.Report.CollectedAt = time.Now().UnixMilli()
+			m.logs.report("FLVX error state persistence", m.persist())
 			nextAttempt = time.Now().Add(retryDelay)
 			if retryDelay < 5*time.Minute {
 				retryDelay *= 2
@@ -271,7 +284,7 @@ func (m *flvxManager) accept(e flvx.Envelope) error {
 	if p.Desired.Revision < m.state.Payload.Desired.Revision {
 		return errors.New("stale FLVX node revision")
 	}
-	if m.removed && p.Status == "revoked" && p.Version == m.state.Payload.Version {
+	if m.removed && p.Status == "revoked" {
 		return nil
 	}
 	m.state.Payload = p

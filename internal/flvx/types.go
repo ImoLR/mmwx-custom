@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 )
@@ -191,10 +192,18 @@ func Delta(previous, current int64, reset bool) int64 {
 
 func (c *Counter) Merge(epoch string, up, down int64) int64 {
 	u, d := Delta(c.RawUp, up, c.Epoch != epoch), Delta(c.RawDown, down, c.Epoch != epoch)
-	c.Up += u
-	c.Down += d
+	c.Up = AddBytes(c.Up, u)
+	c.Down = AddBytes(c.Down, d)
 	c.Epoch, c.RawUp, c.RawDown = epoch, up, down
-	return u + d
+	return AddBytes(u, d)
+}
+
+// Saturate cumulative byte counts rather than wrapping and reopening a quota.
+func AddBytes(a, b int64) int64 {
+	if b > math.MaxInt64-a {
+		return math.MaxInt64
+	}
+	return a + b
 }
 
 // Monthly quotas reset at midnight in Taiwan; days beyond month-end clamp.

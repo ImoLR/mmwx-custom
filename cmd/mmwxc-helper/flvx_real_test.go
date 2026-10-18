@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net"
@@ -209,6 +210,8 @@ func TestFLVXRealCore(t *testing.T) {
 	exchange()
 	before, _ := core.snapshot(ctx)
 	second := helperFLVXNode("second", secondPort)
+	second.Protocol, second.SS2022 = "vless_reality_vision", nil
+	second.VLESS = &flvx.VLESS{UUID: "12345678-1234-4234-8234-123456789abc", Flow: "xtls-rprx-vision", Reality: flvx.Reality{Dest: "203.0.113.30:443", ServerNames: []string{"public.example"}, PrivateKey: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x23}, 32)), ShortIDs: []string{""}}}
 	m.state.Payload.Desired.Nodes = append(m.state.Payload.Desired.Nodes, second)
 	m.state.Payload.Desired.Revision++
 	apply()
@@ -268,6 +271,16 @@ func TestFLVXRealCore(t *testing.T) {
 		t.Fatal("share total connection cap not enforced")
 	}
 	m.state.Payload.Config.MaxConnections = 0
+	m.state.Payload.Desired.Nodes[0].MaxConnections = 2
+	apply()
+	blocked = flvxSOCKS(t, socksPort, "203.0.113.10")
+	blocked.Write([]byte("second-node-session"))
+	n, _ = blocked.Read(one)
+	blocked.Close()
+	if n != 0 {
+		t.Fatal("per-node connection cap not enforced")
+	}
+	m.state.Payload.Desired.Nodes[0].MaxConnections = 0
 	m.state.Payload.Status = "paused"
 	apply()
 	connection.SetDeadline(time.Now().Add(time.Second))

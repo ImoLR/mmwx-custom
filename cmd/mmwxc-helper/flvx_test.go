@@ -184,6 +184,16 @@ func TestFLVXDiffCapsPersistenceAndCancel(t *testing.T) {
 			t.Fatal("FLVX did not see removed")
 		}
 	}
+	e := flvx.Envelope{Payload: m.state.Payload, ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
+	e.Payload.ServerID = "7"
+	e.Payload.Version++
+	e.Sign("helper")
+	if err := m.accept(e); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(m.dir); !os.IsNotExist(err) {
+		t.Fatal("repeated cancellation recreated the instance state")
+	}
 }
 
 func TestFLVXSignatureExpiryAndIsolationUnit(t *testing.T) {
@@ -215,5 +225,38 @@ func TestFLVXSignatureExpiryAndIsolationUnit(t *testing.T) {
 	}
 	if m.state.Report.TrafficUsedBytes != 0 || m.state.Report.Nodes[0].State != "active" {
 		t.Fatal("monthly reset failed")
+	}
+}
+
+func TestFLVXRemovedReportAcknowledgement(t *testing.T) {
+	m, f := fakeFLVXManager(t)
+	ctx := context.Background()
+	f.stats["one"] = [2]int64{100, 20}
+	if err := m.reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m.state.Payload.Desired.Nodes = []flvx.Node{}
+	m.state.Payload.Desired.Revision++
+	if err := m.reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.state.Report.Nodes) != 1 || m.state.Report.Nodes[0].State != "removed" || m.state.Report.Nodes[0].UpBytes != 100 {
+		t.Fatal("final tombstone missing")
+	}
+	m.state.Payload.AckGeneration = m.state.Report.Generation
+	m.state.Payload.AckSequence = m.state.Report.Sequence
+	if err := m.reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.state.Report.Nodes) != 0 || m.state.Counters["one"].Up != 100 {
+		t.Fatal("acknowledged history bloats report or loses lifetime ledger")
+	}
+	m.state.Payload.Desired.Nodes = []flvx.Node{helperFLVXNode("one", 30001)}
+	m.state.Payload.Desired.Revision++
+	if err := m.reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.state.Report.Nodes) != 1 || m.state.Report.Nodes[0].UpBytes != 100 {
+		t.Fatal("re-added id lost lifetime counter")
 	}
 }

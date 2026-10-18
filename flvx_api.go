@@ -128,6 +128,9 @@ func flvxCheckServer(ctx context.Context, q flvxQuery, id int64) (flvxServer, er
 }
 
 func (a *app) flvxV1Handler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	r = r.WithContext(ctx)
 	w.Header().Set("Cache-Control", "no-store")
 	if err := a.authorizeFLVX(r); err != nil {
 		writeFLVXError(w, err)
@@ -160,6 +163,9 @@ func (a *app) flvxV1Handler(w http.ResponseWriter, r *http.Request) {
 		if parts[2] == "desired" && r.Method == http.MethodPut {
 			var d flvx.Desired
 			err = decodeFLVX(w, r, &d)
+			if err != nil {
+				err = flvxValidationErrors{{Field: "desired", Message: "invalid desired JSON or unknown field"}}
+			}
 			if err == nil {
 				err = a.putFLVXDesired(r.Context(), id, d)
 			}
@@ -265,6 +271,9 @@ func (a *app) putFLVXHosts(ctx context.Context, h flvx.LandingHosts) error {
 }
 
 func (a *app) flvxAdminHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	r = r.WithContext(ctx)
 	w.Header().Set("Cache-Control", "no-store")
 	if err := a.authorizeOperatorRequest(r); err != nil {
 		writeOperatorAuthorizationError(w, err)
@@ -344,8 +353,16 @@ func (a *app) saveFLVXShare(ctx context.Context, id int64, c flvx.Config, state 
 		if err = flvx.ValidateConfig(c); err != nil {
 			return flvxAPIError{422, "invalid_config", err.Error()}
 		}
-		if s.State == "revoked" && state != "revoked" {
-			return flvxAPIError{409, "share_revoked", "cancelled shares cannot be resumed"}
+		if s.State == "revoked" {
+			if state != "revoked" {
+				return flvxAPIError{409, "share_revoked", "cancelled shares cannot be resumed"}
+			}
+			return nil
+		}
+		if state == "paused" && s.Desired.Revision > 0 && (c.PortMin != s.Config.PortMin || c.PortMax != s.Config.PortMax) {
+			if problems := flvx.ValidateDesired(s.Desired, c, nil); len(problems) > 0 {
+				return flvxValidationErrors(problems)
+			}
 		}
 		if state == "active" {
 			server, e := flvxCheckServer(ctx, tx, id)

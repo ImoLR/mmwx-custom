@@ -224,7 +224,7 @@ func flvxReset(s *flvxShare, now time.Time) {
 }
 
 func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r flvx.Report, now time.Time) error {
-	if r.Generation == "" || len(r.Generation) > 64 || r.Sequence < 1 || len(r.Nodes) > 2*flvx.MaxNodes || r.AppliedRevision > s.Desired.Revision {
+	if r.Generation == "" || len(r.Generation) > 64 || r.Sequence < 1 || r.AppliedRevision > s.Desired.Revision {
 		return errors.New("invalid FLVX report")
 	}
 	if r.Generation == s.Generation && r.Sequence <= s.Sequence {
@@ -258,7 +258,7 @@ func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r 
 		}
 		delta := ledger.Counter.Merge(r.Generation, n.UpBytes, n.DownBytes)
 		if r.Period == s.Period {
-			s.Status.TrafficUsedBytes += delta
+			s.Status.TrafficUsedBytes = flvx.AddBytes(s.Status.TrafficUsedBytes, delta)
 		}
 		n.UpBytes, n.DownBytes = ledger.Counter.Up, ledger.Counter.Down
 		ledger.Status = n

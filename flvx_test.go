@@ -67,6 +67,23 @@ func TestFLVXAPIContractPostgres(t *testing.T) {
 			t.Fatalf("wrong token accepted: %d", w.Code)
 		}
 	}
+	auditDeleteExec(t, a.flvxDB(), `CREATE TABLE sessions(token text,username text,expires_at timestamp); INSERT INTO users(username,role) VALUES('operator','admin'),('ordinary','user'); INSERT INTO sessions VALUES('session-admin','operator',CURRENT_TIMESTAMP+INTERVAL '1 day'),('session-user','ordinary',CURRENT_TIMESTAMP+INTERVAL '1 day')`)
+	for _, check := range []struct {
+		session, path string
+		want          int
+	}{{"session-admin", "/api/custom/flvx/admin", 200}, {"session-user", "/api/custom/flvx/admin", 401}, {"session-admin", "/api/custom/flvx/v1/shares", 401}} {
+		r := httptest.NewRequest("GET", check.path, nil)
+		r.Header.Set("MM-Authorization", check.session)
+		response := httptest.NewRecorder()
+		if strings.Contains(check.path, "/admin") {
+			a.flvxAdminHandler(response, r)
+		} else {
+			a.flvxV1Handler(response, r)
+		}
+		if response.Code != check.want {
+			t.Fatalf("session authorization: %s %s = %d", check.session, check.path, response.Code)
+		}
+	}
 	if w := flvxTestRequest(a, "GET", "/api/custom/flvx/admin", token, nil); w.Code != 401 {
 		t.Fatal("integration token authorized as operator")
 	}
@@ -88,6 +105,10 @@ func TestFLVXAPIContractPostgres(t *testing.T) {
 	if w.Code != 422 || !strings.Contains(w.Body.String(), `"field":"port"`) {
 		t.Fatalf("collision %d %s", w.Code, w.Body.String())
 	}
+	w = flvxTestRequest(a, "PUT", "/api/custom/flvx/v1/shares/7/desired", token, map[string]any{"revision": 2, "nodes": []any{}, "config": map[string]any{"inbounds": []any{}}})
+	if w.Code != 422 || !strings.Contains(w.Body.String(), `"errors":[`) {
+		t.Fatal("raw configuration injection must return the contracted validation envelope", w.Code, w.Body.String())
+	}
 	d = flvxTestDesired()
 	d.Nodes[0].Name = "different"
 	if err := a.putFLVXDesired(ctx, 7, d); err == nil {
@@ -105,6 +126,13 @@ func TestFLVXAPIContractPostgres(t *testing.T) {
 		if (state == "active") != (err == nil) {
 			t.Fatalf("state %s: %v", state, err)
 		}
+		if state == "paused" {
+			narrow := c
+			narrow.PortMax = 30000
+			if err := a.saveFLVXShare(ctx, 7, narrow, "paused"); err == nil {
+				t.Fatal("paused port edit would strand desired state and prevent resume")
+			}
+		}
 	}
 	w = flvxTestRequest(a, "GET", "/api/custom/flvx/v1/shares/7/status", token, nil)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"nodes":[]`) {
@@ -116,6 +144,55 @@ func TestFLVXAPIContractPostgres(t *testing.T) {
 	}
 	if flvxTestRequest(a, "GET", "/api/custom/flvx/v1/shares", token, nil).Code != 401 {
 		t.Fatal("revoked token works")
+	}
+}
+
+func TestFLVXHelperChannelPostgres(t *testing.T) {
+	a := flvxTestApp(t)
+	ctx := context.Background()
+	c := flvx.Config{PortMin: 30000, PortMax: 30100, ResetDay: 1, MemoryMB: 256, CPUPercent: 50}
+	if err := a.saveFLVXShare(ctx, 7, c, "active"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.putFLVXDesired(ctx, 7, flvxTestDesired()); err != nil {
+		t.Fatal(err)
+	}
+	asset := releaseArtifact{URL: "https://github.com/ImoLR/mmwx-custom/releases/download/v1.4.59/mmwxc-core-linux-amd64", SHA256: strings.Repeat("a", 64)}
+	a.releaseCache = &releaseCache{info: cachedReleaseInfo{CoreVersion: "8f5b614", CoreArtifacts: map[string]releaseArtifact{"amd64": asset}}}
+	r := flvx.Report{Generation: "helper-one", Sequence: 1, Period: flvx.Period(time.Now(), 1), Status: flvx.Status{AppliedRevision: 1, Core: flvx.Core{State: "running", Epoch: "core-one"}, Nodes: []flvx.NodeStatus{{ID: "11", State: "active", UpBytes: 100, DownBytes: 20, Connections: 2}}, TrafficUsedBytes: 120, CollectedAt: time.Now().UnixMilli()}}
+	e, err := a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", &r)
+	if err != nil || e == nil {
+		t.Fatal("helper desired", err)
+	}
+	if !e.Verify("helper-secret", "helper-custom-uuid", time.Now()) || e.Verify("operator-token", "helper-custom-uuid", time.Now()) || e.Verify("helper-secret", "8", time.Now()) {
+		t.Fatal("Helper desired not scoped and signed")
+	}
+	if e.Payload.AckSequence != 1 || e.Payload.AckGeneration != r.Generation || e.Payload.TrafficUsedBytes != 120 || e.Payload.Artifact.URL != asset.URL || e.Payload.Artifact.SHA256 != asset.SHA256 || len(e.Payload.OfficialPorts) != 1 || e.Payload.OfficialPorts[0] != 30002 {
+		t.Fatalf("bad Helper envelope: %+v", e.Payload)
+	}
+	// An acknowledged removal can disappear from Helper uploads; PostgreSQL
+	// retains its final monotonic tombstone for FLVX's slower status polling.
+	r.Sequence++
+	r.Nodes[0].State = "removed"
+	r.Nodes[0].Connections = 0
+	r.Nodes[0].UpBytes = 110
+	r.TrafficUsedBytes = 130
+	if _, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", &r); err != nil {
+		t.Fatal(err)
+	}
+	r.Sequence++
+	r.Nodes = []flvx.NodeStatus{}
+	if _, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", &r); err != nil {
+		t.Fatal(err)
+	}
+	s, err := readFLVXShare(ctx, a.flvxDB(), 7, false)
+	if err != nil || len(s.Status.Nodes) != 1 || s.Status.Nodes[0].State != "removed" || s.Status.Nodes[0].UpBytes != 110 || s.Status.TrafficUsedBytes != 130 {
+		t.Fatalf("final counters not retained: %+v %v", s, err)
+	}
+	auditDeleteExec(t, a.flvxDB(), `DELETE FROM server_xray_config_snapshots WHERE server_id=7`)
+	e, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", nil)
+	if err != nil || e.Payload.Status != "paused" {
+		t.Fatal("missing official inventory must prevent admission", err)
 	}
 }
 

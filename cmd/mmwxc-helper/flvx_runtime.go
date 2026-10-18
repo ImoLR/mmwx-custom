@@ -89,7 +89,7 @@ func (m *flvxManager) collect(ctx context.Context, snapshot coreSnapshotResponse
 			c = &flvx.Counter{}
 			m.state.Counters[id] = c
 		}
-		m.state.Report.TrafficUsedBytes += c.Merge(epoch, s.up, s.down)
+		m.state.Report.TrafficUsedBytes = flvx.AddBytes(m.state.Report.TrafficUsedBytes, c.Merge(epoch, s.up, s.down))
 	}
 	m.state.Report.Core = flvx.Core{State: "running", Epoch: epoch, Version: m.state.Payload.Artifact.Version}
 	return nil
@@ -211,7 +211,14 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 		connections[strings.TrimPrefix(u.Identity.InboundTag, "flvxl-")] += u.CurrentTotal
 	}
 	statuses := map[string]flvx.NodeStatus{}
+	acknowledged := m.state.Payload.AckGeneration == m.state.Report.Generation && m.state.Payload.AckSequence >= m.state.Report.Sequence
 	for _, old := range m.state.Report.Nodes {
+		// PostgreSQL keeps the final tombstone and lifetime ledger. Stop sending
+		// acknowledged, unchanged removals in the official Helper report channel.
+		c := m.state.Counters[old.ID]
+		if acknowledged && old.State == "removed" && connections[old.ID] == 0 && (c == nil || c.Up == old.UpBytes && c.Down == old.DownBytes) {
+			continue
+		}
 		old.State = "removed"
 		old.Connections = connections[old.ID]
 		old.Error = ""
@@ -266,6 +273,9 @@ func (m *flvxManager) reconcile(ctx context.Context) error {
 				return err
 			}
 			if err = m.limits(ctx, snapshot, map[string]string{}, nil); err != nil {
+				return err
+			}
+			if err = m.collect(ctx, snapshot); err != nil {
 				return err
 			}
 			if err = m.record(snapshot, nil, nil); err != nil {
@@ -337,6 +347,11 @@ func (m *flvxManager) reconcile(ctx context.Context) error {
 	}
 	if err = m.limits(ctx, snapshot, wanted, changing); err != nil {
 		return err
+	}
+	if len(changing) > 0 {
+		if err = m.collect(ctx, snapshot); err != nil {
+			return err
+		}
 	}
 	// Persist the final raw cursors before removing their handlers/stat counters.
 	if err = m.persist(); err != nil {

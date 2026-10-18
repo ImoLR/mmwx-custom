@@ -3,6 +3,7 @@ package flvx
 import (
 	"encoding/base64"
 	"encoding/json"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -83,6 +84,11 @@ func TestCountersAndEnforcement(t *testing.T) {
 	}
 	if Period(time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), 31) != "2026-02-28" {
 		t.Fatal("month end reset")
+	}
+	c = Counter{Up: math.MaxInt64 - 1}
+	c.Merge("new", 10, 0)
+	if c.Up != math.MaxInt64 || AddBytes(c.Up, 100) != math.MaxInt64 {
+		t.Fatal("byte counter overflow decreased usage")
 	}
 }
 

@@ -453,3 +453,124 @@ official HTTP port and PostgreSQL only to `127.0.0.1`; its named containers,
 volume, and network are disposable. The official and Custom processes should
 use the same local timezone for timestamp-without-time-zone columns and daily
 ledger dates (the empirical harness used UTC).
+
+## FLVX 共享
+
+An operator can share a server with FLVX from the **FLVX 共享** navigation
+entry after **转发管理**. Sharing does not create or modify official nodes,
+users, packages, subscriptions, or the official Core configuration. The service
+card's **已共享给 FLVX** badge opens this page. The page groups FLVX's structured
+node metadata by server or owner; protocol credentials are never returned to
+the operator list. Existing pages retain their layouts.
+
+### Persistence and API v1
+
+The official PostgreSQL database contains three additive Custom-owned tables:
+`mmwxc_flvx_integration` (one SHA-256 integration-token hash, last authenticated
+API call and the latest landing-host report), `mmwxc_flvx_shares` (share config,
+latest desired revision/nodes, Helper acknowledgements and latest aggregate
+status), and `mmwxc_flvx_counters` (per-node persistent cursors, lifetime totals
+and removed-node tombstones). A transaction advisory lock serializes revisions,
+counter merges, host reports and operator edits. Official server addresses and
+current inbound snapshots are read only.
+
+`/api/custom/flvx/v1/*` requires `Authorization: Bearer <FLVX token>`; operator
+sessions, Helper credentials and `MMWXC_API_TOKEN` do not authorize this API.
+The token is generated on the sharing page, returned once, and can be revoked
+or replaced. Responses disable caching. The v1 wire contract is plan 101 §H:
+
+| Method and relative path | Request / response |
+| --- | --- |
+| `GET /shares` | `{shares:[{server_id,name,hosts,status,port_min,port_max,traffic_limit_bytes,traffic_used_bytes,reset_day,max_connections,connections,share_until,core,protocols,dual_install}]}` |
+| `PUT /shares/{server_id}/desired` | `{revision,nodes:[{id,owner,name,protocol,port,enabled,max_connections,max_online_ips,expires_at,ss2022?,vless?}]}` → `{accepted_revision}` |
+| `GET /shares/{server_id}/status` | `{applied_revision,core:{state,epoch},nodes:[{id,state,error?,up_bytes,down_bytes,connections}],share_traffic_used_bytes,collected_at}` |
+| `PUT /landing-hosts` | `{native_landing_hosts:[],flvx_node_hosts:[]}` → `{}` |
+
+Desired state is a complete replacement. An identical revision retry is
+idempotent; stale or changed equal revisions return 409. Validation returns
+`422 {errors:[{node_id,field,message}]}`; other errors use
+`{error:{code,message}}`. Unknown JSON fields, raw inbound configuration,
+duplicate node IDs/ports, official port collisions, invalid credentials and
+unsupported protocols are rejected. Only the §D SS2022 AES-128 template and
+VLESS Reality Vision are supported. The Helper validates again before applying.
+
+The operator endpoints use the existing operator authorization:
+`GET /api/custom/flvx/admin`, `POST`/`DELETE /api/custom/flvx/admin/token`, and
+`PUT /api/custom/flvx/admin/shares/{server_id}` with share config and status
+`active`, `paused` or `revoked`. A status-only update retains the config.
+Cancellation is terminal and the UI requires typing the server name. Paused
+and revoked shares reject FLVX desired pushes. Hostnames are resolved before
+comparison: an FLVX ordinary node match warns, while a native landing match
+refuses sharing. Unresolved addresses or missing official inbound inventory
+fail closed. A later native-host conflict pauses an existing active share.
+
+### Independent Helper instance
+
+Both Embedded and External servers use the same separate Helper manager.
+Helpers advertising `flvx.share` exchange reports and HMAC-signed desired
+envelopes through the existing authenticated
+`POST /api/custom/agent/connections` channel. Envelopes bind the Helper's server
+ID, internal version and ten-minute delivery expiry. No inbound management port
+or FLVX agent is added. Reconciliation, download and retry work run outside the
+official Core management loop, with rate-limited error logging and backoff.
+
+| Resource | FLVX-only location |
+| --- | --- |
+| Binary | `/opt/mmwxc/flvx-core/mmwxc-flvx-core` |
+| Unit / unprivileged account | `mmwxc-flvx-core.service` / `mmwxc-flvx` |
+| Base config | `/etc/mmwxc/flvx-core/config.json` |
+| Control socket | `/run/mmwxc-flvx/core-control.sock` |
+| Persistent desired/counter state | `/var/lib/mmwxc-helper/flvx/state.json` (0600, atomic + fsync) |
+| HandlerService / StatsService | Own persisted ephemeral port on `127.0.0.1` |
+
+The binary comes from the existing Custom release cache and the same bounded,
+SHA-256-verified download path as normal Core installation. A matching installed
+Custom binary can be copied read-only. FLVX never replaces the official binary.
+The unit defaults to `MemoryMax=256M`, `CPUQuota=50%`, and uses
+`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, an empty capability
+set and a private runtime directory. Access logs are disabled; systemd and
+Helper error messages are rate limited. Resource changes use systemd properties
+without restarting Core. Only a binary replacement restarts this instance.
+
+The Helper renders the fixed base config and structured inbound templates.
+Its first routing rule blocks every explicit §D private/loopback/link-local/
+metadata/multicast CIDR, without geoip data. Freedom uses IP resolution and the
+route checks resolved addresses. Sniffed Host/SNI cannot replace the original
+destination for routing. Reality camouflage destinations are resolved, rejected
+if any answer is private, and pinned to a validated public IP because that dial
+does not use normal outbound routing.
+
+Node diffs use gRPC AddInbound/RemoveInbound through the fixed Core CLI.
+Unchanged inbounds retain existing connections. The instance's own control
+socket receives the existing v7 `connectionSettings` semantics for per-node
+connection/online-IP caps and the share-wide total connection cap. Inactive or
+replaced identities are blocked before removing handlers, including established
+connections. These counts retain the current Core total in/out socket semantics.
+
+Inbound up/down statistics include unauthenticated bytes. The Helper persists
+raw cursors and monotonic totals across Core epochs; PostgreSQL independently
+deduplicates Helper generation/sequence reports and merges resets. Final counters
+are sampled before removal. Acknowledged removed nodes stop enlarging Helper
+uploads, while their database tombstones remain available to FLVX's 60-second
+poll. Share quotas reset at Taiwan midnight on the selected monthly day,
+clamped at month-end. Sampling runs about every five seconds, so traffic caps
+can overshoot by traffic between samples. Exceeding the total quota, expiry or
+pause removes FLVX inbounds; a reset, raised quota or resume restores eligible
+nodes. Cancellation stops the instance and waits for final-counter acknowledgement
+before deleting its unit, config, binary and state. The service account remains.
+
+The v1 desired schema does **not** contain a per-node traffic limit. Custom
+therefore shows the node's cumulative usage and **未提供** for that limit;
+FLVX must enforce its node quota by changing `enabled`. No extra v1 field is
+invented. Custom independently enforces the share's total quota and all supplied
+connection caps and expiry values.
+
+The FLVX binary name deliberately contains no `xray`, preserving
+`countXrayProcesses`/SingleCore detection. Official port ownership only examines
+official inbound ports, which sharing excludes. External takeover, drift repair,
+mode switching, machine protection and nftables code are unchanged. Tests use
+fake gRPC/control transports and the real v1.4.59 Core with loopback fixtures to
+check hot updates, statistics, private-address blocks and unchanged official
+process/port ownership. Systemd installation and real-server integration require
+the separately approved release/canary task. Cancel and await cleanup before
+downgrading Helper, so an older Helper cannot leave an unmanaged FLVX unit.
