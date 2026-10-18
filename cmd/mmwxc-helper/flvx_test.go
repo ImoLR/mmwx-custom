@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,6 +25,7 @@ type fakeFLVXCore struct {
 	limits        coreConfig
 	adds, removes int
 	stops         int
+	calls, blocks int
 }
 
 func helperFLVXNode(id string, port int) flvx.Node {
@@ -46,6 +48,9 @@ func fakeFLVXManager(t *testing.T) (*flvxManager, *fakeFLVXCore) {
 			if err := json.NewDecoder(r.Body).Decode(&f.limits); err != nil {
 				t.Error(err)
 			}
+			if f.limits.BlockedIdentities != nil {
+				f.blocks += len(*f.limits.BlockedIdentities)
+			}
 			json.NewEncoder(w).Encode(map[string]bool{"success": true})
 			return
 		}
@@ -60,6 +65,7 @@ func fakeFLVXManager(t *testing.T) (*flvxManager, *fakeFLVXCore) {
 	m.stop = func(context.Context) error { f.stops++; f.present = map[string]bool{}; return nil }
 	m.cleanup = func(context.Context) error { return os.RemoveAll(m.dir) }
 	m.apiCall = func(_ context.Context, command string, args ...string) ([]byte, error) {
+		f.calls++
 		switch command {
 		case "lsi":
 			list := []map[string]string{}
@@ -100,6 +106,88 @@ func fakeFLVXManager(t *testing.T) (*flvxManager, *fakeFLVXCore) {
 		}
 	}
 	return m, f
+}
+
+func TestFLVXRealityPinSurvivesDNSAndRestarts(t *testing.T) {
+	m, f := fakeFLVXManager(t)
+	n := helperFLVXNode("one", 30001)
+	n.Protocol, n.SS2022 = "vless_reality_vision", nil
+	n.VLESS = &flvx.VLESS{UUID: "12345678-1234-4234-8234-123456789abc", Flow: "xtls-rprx-vision", Reality: flvx.Reality{Dest: "public.example:443", ServerNames: []string{"public.example"}, PrivateKey: base64.RawURLEncoding.EncodeToString(make([]byte, 32)), ShortIDs: []string{""}}}
+	m.state.Payload.Desired.Nodes = []flvx.Node{n}
+	lookups, tick := 0, 0
+	m.lookupHost = func(context.Context, string) ([]string, error) {
+		lookups++
+		if tick%3 == 1 {
+			return nil, errors.New("transient DNS failure")
+		}
+		if tick%3 == 2 {
+			return []string{"203.0.113.1", "127.0.0.1"}, nil
+		}
+		return []string{fmt.Sprintf("203.0.113.%d", 1+tick%200)}, nil
+	}
+	apply := func() {
+		t.Helper()
+		if err := m.reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply()
+	initial := m.state.Applied[n.Tag()]
+	f.adds, f.removes, f.blocks = 0, 0, 0
+	for tick = 1; tick <= 60; tick++ {
+		apply()
+		if m.state.Applied[n.Tag()] != initial {
+			t.Fatal("unchanged node was rendered differently")
+		}
+	}
+	if lookups != 1 || f.adds != 0 || f.removes != 0 || f.blocks != 0 {
+		t.Fatalf("DNS churn: lookups=%d adds=%d removes=%d blocks=%d", lookups, f.adds, f.removes, f.blocks)
+	}
+	// A changed destination resolves once and then reuses its new pin.
+	tick = 63
+	m.state.Payload.Desired.Nodes[0].VLESS.Reality.Dest = "changed.example:443"
+	m.state.Payload.Desired.Revision++
+	apply()
+	changed := m.state.Applied[n.Tag()]
+	apply()
+	if lookups != 2 || f.adds != 1 || f.removes != 1 || changed == initial {
+		t.Fatal("changed destination did not re-pin exactly once")
+	}
+	// Both restarts reuse the persisted pin, even while DNS is failing.
+	m.state = flvxLocalState{}
+	if err := m.load(); err != nil {
+		t.Fatal(err)
+	}
+	tick = 64
+	apply()
+	f.epoch = f.epoch.Add(time.Second)
+	f.present = map[string]bool{}
+	apply()
+	if lookups != 2 || m.state.Applied[n.Tag()] != changed {
+		t.Fatal("restart discarded the pin")
+	}
+	// A failed/private re-pin keeps the entire applied inbound and logs once.
+	logs := 0
+	m.logs.print = func(string, ...any) { logs++ }
+	m.state.Payload.Desired.Nodes[0].VLESS.Reality.Dest = "unavailable.example:443"
+	f.adds, f.removes, f.blocks = 0, 0, 0
+	for i := 0; i < 30; i++ {
+		tick = 64 + i%2
+		apply()
+	}
+	if f.adds != 0 || f.removes != 0 || f.blocks != 0 || logs != 1 || m.state.Applied[n.Tag()] != changed || m.state.Report.Nodes[0].State != "active" {
+		t.Fatalf("failed re-pin disrupted node: %+v logs=%d", f, logs)
+	}
+	// A new node has no public pin to fall back to.
+	newNode := m.state.Payload.Desired.Nodes[0]
+	newNode.ID, newNode.Port = "new", 30002
+	m.state.Payload.Desired.Nodes = append(m.state.Payload.Desired.Nodes, newNode)
+	for _, tick = range []int{64, 65} {
+		apply()
+		if f.present[newNode.Tag()] || m.state.Report.Nodes[0].State != "error" || m.state.RealityPins[newNode.Tag()].Dest != "" {
+			t.Fatal("unresolved/private destination admitted without a pin")
+		}
+	}
 }
 
 func TestFLVXDiffCapsPersistenceAndCancel(t *testing.T) {

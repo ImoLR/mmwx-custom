@@ -32,12 +32,18 @@ const (
 )
 
 type flvxLocalState struct {
-	Payload      flvx.Payload             `json:"payload"`
-	APIPort      int                      `json:"api_port"`
-	Counters     map[string]*flvx.Counter `json:"counters"`
-	Applied      map[string]string        `json:"applied"`
-	AppliedEpoch string                   `json:"applied_epoch"`
-	Report       flvx.Report              `json:"report"`
+	Payload      flvx.Payload              `json:"payload"`
+	APIPort      int                       `json:"api_port"`
+	Counters     map[string]*flvx.Counter  `json:"counters"`
+	Applied      map[string]string         `json:"applied"`
+	AppliedEpoch string                    `json:"applied_epoch"`
+	RealityPins  map[string]flvxRealityPin `json:"reality_pins,omitempty"`
+	Report       flvx.Report               `json:"report"`
+}
+
+type flvxRealityPin struct {
+	Hash string `json:"hash"`
+	Dest string `json:"dest"`
 }
 
 type flvxManager struct {
@@ -56,6 +62,7 @@ type flvxManager struct {
 	removed                         bool
 	// The real transport is the fixed Core CLI's gRPC client; tests inject a fake.
 	apiCall      func(context.Context, string, ...string) ([]byte, error)
+	lookupHost   func(context.Context, string) ([]string, error)
 	readOfficial func() ([]int, error)
 	setup        func(context.Context) error
 	stop         func(context.Context) error

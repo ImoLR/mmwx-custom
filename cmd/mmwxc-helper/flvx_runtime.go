@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -95,8 +96,17 @@ func (m *flvxManager) collect(ctx context.Context, snapshot coreSnapshotResponse
 	return nil
 }
 
-func flvxPinnedReality(ctx context.Context, n flvx.Node) (flvx.Node, error) {
+func (m *flvxManager) pinnedReality(ctx context.Context, n flvx.Node) (flvx.Node, error) {
 	if n.VLESS == nil {
+		return n, nil
+	}
+	raw, _ := json.Marshal(n)
+	hash := fmt.Sprintf("%x", sha256.Sum256(raw))
+	pin := m.state.RealityPins[n.Tag()]
+	if pin.Hash == hash && flvxValidRealityPin(pin.Dest) {
+		v := *n.VLESS
+		v.Reality.Dest = pin.Dest
+		n.VLESS = &v
 		return n, nil
 	}
 	host, port, err := net.SplitHostPort(n.VLESS.Reality.Dest)
@@ -105,12 +115,16 @@ func flvxPinnedReality(ctx context.Context, n flvx.Node) (flvx.Node, error) {
 	}
 	child, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	ips, err := net.DefaultResolver.LookupHost(child, host)
+	lookup := m.lookupHost
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupHost
+	}
+	ips, err := lookup(child, host)
 	if err != nil || len(ips) == 0 {
 		return n, errors.New("Reality destination DNS unavailable")
 	}
 	for _, ip := range ips {
-		if flvx.PrivateHost(ip) {
+		if net.ParseIP(ip) == nil || flvx.PrivateHost(ip) {
 			return n, errors.New("Reality destination must resolve exclusively to public addresses")
 		}
 	}
@@ -120,7 +134,16 @@ func flvxPinnedReality(ctx context.Context, n flvx.Node) (flvx.Node, error) {
 	v := *n.VLESS
 	v.Reality.Dest = net.JoinHostPort(ips[0], port)
 	n.VLESS = &v
+	if m.state.RealityPins == nil {
+		m.state.RealityPins = map[string]flvxRealityPin{}
+	}
+	m.state.RealityPins[n.Tag()] = flvxRealityPin{Hash: hash, Dest: v.Reality.Dest}
 	return n, nil
+}
+
+func flvxValidRealityPin(dest string) bool {
+	host, _, err := net.SplitHostPort(dest)
+	return err == nil && net.ParseIP(host) != nil && !flvx.PrivateHost(host)
 }
 
 func (m *flvxManager) wanted(ctx context.Context) (map[string]string, map[string]string) {
@@ -146,8 +169,13 @@ func (m *flvxManager) wanted(ctx context.Context) (map[string]string, map[string
 			problems[n.ID] = "port collides with FLVX control API"
 			continue
 		}
-		node, err := flvxPinnedReality(ctx, n)
+		node, err := m.pinnedReality(ctx, n)
 		if err != nil {
+			if applied := m.state.Applied[n.Tag()]; applied != "" && flvxValidRealityPin(m.state.RealityPins[n.Tag()].Dest) {
+				wanted[n.Tag()] = applied
+				m.logs.report("FLVX Reality destination retained", errors.New("destination unavailable or private; keeping the applied public pin"))
+				continue
+			}
 			problems[n.ID] = "Reality destination is unavailable or private"
 			continue
 		}

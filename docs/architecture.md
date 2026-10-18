@@ -538,7 +538,11 @@ metadata/multicast CIDR, without geoip data. Freedom uses IP resolution and the
 route checks resolved addresses. Sniffed Host/SNI cannot replace the original
 destination for routing. Reality camouflage destinations are resolved, rejected
 if any answer is private, and pinned to a validated public IP because that dial
-does not use normal outbound routing.
+does not use normal outbound routing. The pin is persisted by node tag and a
+hash of its structured fields, and reused across reconciles and Helper/Core
+restarts. Only changed fields or a missing pin trigger resolution. If a changed
+node cannot resolve safely, an already applied public pin keeps serving, with
+a rate-limited warning; a new node without a valid pin reports an error.
 
 Node diffs use gRPC AddInbound/RemoveInbound through the fixed Core CLI.
 Unchanged inbounds retain existing connections. The instance's own control
