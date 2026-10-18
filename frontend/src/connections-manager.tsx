@@ -124,6 +124,8 @@ export function ConnectionsManager({ server, token }: Props) {
   const machine = snapshot?.machine_protection;
   const machineSettings = settings.machine_protection ?? emptySettings.machine_protection!;
   const coreAccounting = data?.core_accounting;
+  const coreInboundTCP = (snapshot?.proxy_users ?? []).reduce((total, user) => total + (user.inbound_tcp?.tcp_total ?? 0), 0);
+  const coreOutboundTCP = (snapshot?.proxy_users ?? []).reduce((total, user) => total + (user.outbound_tcp?.tcp_total ?? 0), 0);
   const coreCloseWait = (snapshot?.proxy_users ?? []).reduce((total, user) => total + (user.inbound_tcp?.close_wait ?? 0) + (user.outbound_tcp?.close_wait ?? 0), 0);
 
   return (
@@ -177,52 +179,52 @@ export function ConnectionsManager({ server, token }: Props) {
       <section className="connection-section connection-global-settings">
         <div className="connection-section-head"><div><span className="connection-level">Level 2</span><h4>Xray Core</h4></div><span className="connection-source">仅 Fork Core tracker</span></div>
         <div className="connection-core-accounting">
-          <span>Core 总连接 <strong>{coreAccounting?.total ?? snapshot?.global?.current_total ?? "--"}</strong></span>
-          <span>已归属 Management User <strong>{coreAccounting?.attributed ?? "--"}</strong></span>
-          <span>Core 未归属 <strong>{coreAccounting?.unattributed ?? "--"}</strong></span>
+          <span>用户连接 <strong>{coreAccounting?.inbound_current ?? snapshot?.global?.current_inbound ?? "--"}</strong></span>
+          <span>已归属 Management User 套接字 <strong>{coreAccounting?.attributed ?? "--"}</strong></span>
+          <span>Core 未归属套接字 <strong>{coreAccounting?.unattributed ?? "--"}</strong></span>
         </div>
+        <p className="connection-definition">TCP 套接字 {coreAccounting?.total ?? snapshot?.global?.current_total ?? "--"}（入站 {coreInboundTCP} + 出站 {coreOutboundTCP}，含 TIME_WAIT/CLOSE_WAIT）</p>
         {coreAccounting && !coreAccounting.balanced && <div className="connection-message error"><AlertTriangle /><span>Core tracker 对账差额 {coreAccounting.reconciliation_delta}，未把差额伪装成 pending 或未归属。</span></div>}
         <div className="connection-global-summary">
           <span>当前 CLOSE_WAIT <strong>{coreCloseWait}</strong></span>
           <span>自动关闭秒数 <strong>{displayLimit(settings.default_close_wait_timeout_seconds)}</strong></span>
-          <span>Core 总限额拒绝 <strong>{snapshot?.global?.rejected_global_total_limit ?? "--"}</strong></span>
+          <span>全局连接拒绝 <strong>{snapshot?.global?.rejected_global_inbound_limit ?? "--"}</strong></span>
         </div>
-        <label className="connection-toggle">
-          <input type="checkbox" checked={settings.global_total_limit_enabled} onChange={(event) => updateSettings((current) => ({ ...current, global_total_limit_enabled: event.target.checked }))} />
-          <span><strong>启用 Xray Core 总连接保护</strong><small>只限制 Fork Core，达到上限后只拒绝新连接，不清理现有连接</small></span>
-        </label>
         <div className="connection-limit-grid">
-          <NullableNumber label="Xray Core 总连接上限" value={settings.max_global_total_connections} min={1} required={settings.global_total_limit_enabled} onChange={(value) => updateSettings((current) => ({ ...current, max_global_total_connections: value }))} />
+          <NullableNumber label="Core 连接上限" value={settings.max_global_inbound_connections} min={1} onChange={(value) => updateSettings((current) => ({ ...current, max_global_inbound_connections: value }))} />
           <NullableNumber label="CLOSE_WAIT 超时关闭（秒）" value={settings.default_close_wait_timeout_seconds} min={0} placeholder="0 / 留空 = 关闭" onChange={(value) => updateSettings((current) => ({ ...current, default_close_wait_timeout_seconds: value }))} />
           <NullableNumber label="在线 IP 保留秒数" value={settings.online_ip_grace_period_seconds} min={1} required onChange={(value) => updateSettings((current) => ({ ...current, online_ip_grace_period_seconds: value ?? 30 }))} />
         </div>
       </section>
+
+      <LegacySocketLimits settings={settings} setSettings={updateSettings} snapshot={snapshot} />
 
       <section className="connection-section connection-user-tree">
         <div className="connection-section-head"><div><span className="connection-level">Level 3</span><h4>Management User</h4></div><span className="connection-source">正式关系优先，默认折叠</span></div>
         {managementUsers.length ? managementUsers.map((user) => (
           <details className="connection-fold connection-user-fold" key={user.username}>
             <summary>
-              <span>{user.username}<small>{sourceText(user.source)} · {user.ports.length} 个 Port</small><small>Total {user.aggregate.current_total}/{displayLimit(managementSetting(settings, user.username).max_total_connections)} · 在线 IP {user.aggregate.inbound_online_ips?.length ?? 0}/{displayLimit(managementSetting(settings, user.username).max_inbound_online_ips)} · NEW {user.aggregate.outbound_new_rate}/s/{displayLimit(managementSetting(settings, user.username).max_outbound_tcp_new_per_second)}</small></span>
-              <strong>{user.aggregate.current_total}/{displayLimit(managementSetting(settings, user.username).max_total_connections)}</strong>
+              <span>{user.username}<small>{sourceText(user.source)} · {user.ports.length} 个 Port</small><small>连接 {user.aggregate.inbound_current}/{displayLimit(managementSetting(settings, user.username).max_inbound_connections)} · 在线 IP {user.aggregate.inbound_online_ips?.length ?? 0}/{displayLimit(managementSetting(settings, user.username).max_inbound_online_ips)} · NEW {user.aggregate.outbound_new_rate}/s/{displayLimit(managementSetting(settings, user.username).max_outbound_tcp_new_per_second)}</small><small>TCP 套接字 {user.aggregate.current_total} = 入站 {user.aggregate.inbound_tcp.tcp_total} + 出站 {user.aggregate.outbound_tcp.tcp_total}</small></span>
+              <strong>连接 {user.aggregate.inbound_current}/{displayLimit(managementSetting(settings, user.username).max_inbound_connections)}</strong>
             </summary>
             <div className="connection-fold-body">
               <div className="connection-inline-stats">
-                <span>Total <strong>{user.aggregate.current_total}</strong></span>
+                <span>连接 <strong>{user.aggregate.inbound_current}/{displayLimit(managementSetting(settings, user.username).max_inbound_connections)}</strong></span>
                 <span>NEW <strong>{user.aggregate.outbound_new_rate}/s</strong></span>
                 <span>在线 IP <strong>{user.aggregate.inbound_online_ips?.length ?? 0}</strong></span>
               </div>
+              <SocketSummary aggregate={user.aggregate} />
               <div className="connection-rejection-grid" aria-label="管理用户拒绝原因">
-                <span>用户总连接 <strong>{user.aggregate.rejected_user_combined_limit}</strong></span>
+                <span>用户连接 <strong>{user.aggregate.rejected_user_inbound_limit}</strong></span>
                 <span>用户 NEW/s <strong>{user.aggregate.rejected_user_new_rate_limit}</strong></span>
-                <span>端口总连接 <strong>{user.aggregate.rejected_port_combined_limit}</strong></span>
+                <span>端口连接 <strong>{user.aggregate.rejected_port_inbound_limit}</strong></span>
                 <span>端口 NEW/s <strong>{user.aggregate.rejected_port_new_rate_limit}</strong></span>
                 <span>用户在线 IP <strong>{user.aggregate.rejected_user_online_ip_limit}</strong></span>
                 <span>端口在线 IP <strong>{user.aggregate.rejected_port_online_ip_limit}</strong></span>
-                <span>全局总数 <strong>{user.aggregate.rejected_global_total_limit}</strong></span>
+                <span>全局连接 <strong>{user.aggregate.rejected_global_inbound_limit}</strong></span>
               </div>
               <div className="connection-limit-grid">
-                <NullableNumber label="用户总连接上限" value={managementSetting(settings, user.username).max_total_connections} min={1} onChange={(value) => patchManagementUser(user.username, "max_total_connections", value, updateSettings)} />
+                <NullableNumber label="用户连接上限" value={managementSetting(settings, user.username).max_inbound_connections} min={1} onChange={(value) => patchManagementUser(user.username, "max_inbound_connections", value, updateSettings)} />
                 <NullableNumber label="用户在线 IP 上限" value={managementSetting(settings, user.username).max_inbound_online_ips} min={0} onChange={(value) => patchManagementUser(user.username, "max_inbound_online_ips", value, updateSettings)} />
                 <NullableNumber label="该管理用户出站 NEW/s 总上限" value={managementSetting(settings, user.username).max_outbound_tcp_new_per_second} min={1} onChange={(value) => patchManagementUser(user.username, "max_outbound_tcp_new_per_second", value, updateSettings)} />
               </div>
@@ -256,7 +258,7 @@ export function ConnectionsManager({ server, token }: Props) {
       )}
 
       <button className="connection-save" type="button" onClick={() => void save()} disabled={saving || loading}><Save /> <span>{saving ? "保存中..." : "保存全部连接设置"}</span></button>
-      <p className="connection-boundary">Total 只统计 Core 能以精确四元组归属的 TCP 状态，包含 TIME_WAIT、CLOSE_WAIT；未知整机连接不会塞给 Xray。User Total 为其各 Port Total 合计，达到 Machine → Core → User → Port 任一 Total 上限时只拒绝新的受控连接，不清理已有状态。CLOSE_WAIT 仅在超时后二次确认仍为 CLOSE_WAIT 才由 Core 关闭；TIME_WAIT 永不强清。</p>
+      <p className="connection-boundary">连接 = 客户端连到本机并通过认证的入站连接（Mux 按逻辑连接算），和「用户」页一致；用户连接数为其各端口连接数之和。TCP 套接字 = 入站+出站，含 TIME_WAIT/CLOSE_WAIT，只用于诊断。机器 TCP = 整机所有程序的 TCP 总数（含 ESTABLISHED、TIME_WAIT 等全部状态），与服务器卡片同一整机口径。达到上限只拒绝新连接，不断开已有连接。CLOSE_WAIT 仍按配置超时关闭，TIME_WAIT 不强清。</p>
     </div>
   );
 }
@@ -279,27 +281,29 @@ function PortDetails({ user, port, settings, setSettings, onRemoveAssignment, as
   const portLimit = portSetting(settings, port.inbound_tag);
   return <details className="connection-fold connection-port-fold">
     <summary>
-      <span><em className="connection-level">Level 4 · Port</em>{port.inbound_tag}<small>{port.protocol || "协议未知"} · {port.port || "端口未知"} · {sourceText(port.source)}</small><small>Total {aggregate.current_total}/{displayLimit(portLimit.max_total_connections)} · 在线 IP {aggregate.inbound_online_ips?.length ?? 0}/{displayLimit(portLimit.max_inbound_online_ips)}</small></span>
-      <strong>{aggregate.current_total}/{displayLimit(portLimit.max_total_connections)}</strong>
+      <span><em className="connection-level">Level 4 · Port</em>{port.inbound_tag}<small>{port.protocol || "协议未知"} · {port.port || "端口未知"} · {sourceText(port.source)}</small><small>连接 {aggregate.inbound_current}/{displayLimit(portLimit.max_inbound_connections)} · 在线 IP {aggregate.inbound_online_ips?.length ?? 0}/{displayLimit(portLimit.max_inbound_online_ips)}</small><small>TCP 套接字 {aggregate.current_total} = 入站 {aggregate.inbound_tcp.tcp_total} + 出站 {aggregate.outbound_tcp.tcp_total}</small></span>
+      <strong>连接 {aggregate.inbound_current}/{displayLimit(portLimit.max_inbound_connections)}</strong>
     </summary>
     <div className="connection-fold-body">
       <div className="connection-inline-stats">
-        <span>Total <strong>{aggregate.current_total}</strong></span>
+        <span>连接 <strong>{aggregate.inbound_current}/{displayLimit(portLimit.max_inbound_connections)}</strong></span>
         <span>NEW <strong>{aggregate.outbound_new_rate}/s</strong></span>
       </div>
-      <ConnectionSubsection title="入站 TCP" meta={`在线 IP ${aggregate.inbound_online_ips?.length ?? 0}`} states={aggregate.inbound_tcp} />
-      <ConnectionSubsection title="物理出站 TCP" meta={`累计 Dial ${aggregate.outbound_new_total}`} states={aggregate.outbound_tcp} />
+      <SocketSummary aggregate={aggregate} />
+      <ConnectionSubsection title="入站 TCP 套接字" meta={`在线 IP ${aggregate.inbound_online_ips?.length ?? 0}`} states={aggregate.inbound_tcp} />
+      <ConnectionSubsection title="出站 TCP 套接字" meta={`累计 Dial ${aggregate.outbound_new_total}`} states={aggregate.outbound_tcp} />
       <div className="connection-rejection-grid">
-        <span>用户总连接 <strong>{aggregate.rejected_user_combined_limit}</strong></span>
+        <span>用户连接 <strong>{aggregate.rejected_user_inbound_limit}</strong></span>
         <span>用户 NEW/s <strong>{aggregate.rejected_user_new_rate_limit}</strong></span>
-        <span>端口总连接 <strong>{aggregate.rejected_port_combined_limit}</strong></span>
+        <span>端口连接 <strong>{aggregate.rejected_port_inbound_limit}</strong></span>
         <span>端口 NEW/s <strong>{aggregate.rejected_port_new_rate_limit}</strong></span>
         <span>用户在线 IP <strong>{aggregate.rejected_user_online_ip_limit}</strong></span>
         <span>端口在线 IP <strong>{aggregate.rejected_port_online_ip_limit}</strong></span>
+        <span>全局连接 <strong>{aggregate.rejected_global_inbound_limit}</strong></span>
       </div>
       {aggregate.inbound_online_ips?.length > 0 && <IPList values={aggregate.inbound_online_ips} />}
       <div className="connection-limit-grid">
-        <NullableNumber label="端口总连接上限" value={portLimit.max_total_connections} min={1} onChange={(value) => patchPort(port.inbound_tag, "max_total_connections", value, setSettings)} />
+        <NullableNumber label="端口连接上限" value={portLimit.max_inbound_connections} min={1} onChange={(value) => patchPort(port.inbound_tag, "max_inbound_connections", value, setSettings)} />
         <NullableNumber label="端口在线 IP 上限" value={portLimit.max_inbound_online_ips} min={0} onChange={(value) => patchPort(port.inbound_tag, "max_inbound_online_ips", value, setSettings)} />
         <NullableNumber label="该端口出站 NEW/s 上限" value={portLimit.max_outbound_tcp_new_per_second} min={1} onChange={(value) => patchPort(port.inbound_tag, "max_outbound_tcp_new_per_second", value, setSettings)} />
       </div>
@@ -307,6 +311,51 @@ function PortDetails({ user, port, settings, setSettings, onRemoveAssignment, as
       <small className="connection-attribution-note">{port.runtime_attributed ? "本用户的统计来自唯一确定的 Core identity" : "此处仅展示管理关系；未把共享或不确定连接拆分到本用户"}</small>
       <AssignmentControls inboundTag={port.inbound_tag} identities={port.protocol_identities} assignableUsers={assignableUsers} draft={assignmentDraft} setDraft={setAssignmentDraft} onAssign={onAssign} saving={saving} />
       {(port.manual_assignments ?? []).map((identity) => <button className="connection-remove-assignment" type="button" key={identity || "tag-only"} onClick={() => void onRemoveAssignment(port.inbound_tag, user, identity)}><Trash2 />删除手工关系{identity ? `：${identity}` : "（整个端口）"}</button>)}
+    </div>
+  </details>;
+}
+
+function SocketSummary({ aggregate }: { aggregate: Pick<ManagementPort["aggregate"], "current_total" | "inbound_tcp" | "outbound_tcp"> }) {
+  return <p className="connection-definition">TCP 套接字 {aggregate.current_total} = 入站 {aggregate.inbound_tcp.tcp_total} + 出站 {aggregate.outbound_tcp.tcp_total}</p>;
+}
+
+function LegacySocketLimits({ settings, setSettings, snapshot }: {
+  settings: ServerConnectionSettings;
+  setSettings: Dispatch<SetStateAction<ServerConnectionSettings>>;
+  snapshot?: NonNullable<DetailedConnectionResponse["record"]>["snapshot"];
+}) {
+  const limits: Array<{ label: string; value: number | null; clear: () => void }> = [];
+  if (settings.global_total_limit_enabled || settings.max_global_total_connections != null) {
+    limits.push({ label: `Core（${settings.global_total_limit_enabled ? "已启用" : "未启用"}）`, value: settings.max_global_total_connections, clear: () => setSettings((current) => ({ ...current, global_total_limit_enabled: false, max_global_total_connections: null })) });
+  }
+  for (const user of settings.management_users) {
+    if (user.max_total_connections != null) limits.push({ label: `用户 ${user.username}`, value: user.max_total_connections, clear: () => patchManagementUser(user.username, "max_total_connections", null, setSettings) });
+  }
+  for (const port of settings.ports) {
+    if (port.max_total_connections != null) limits.push({ label: `端口 ${port.inbound_tag}`, value: port.max_total_connections, clear: () => patchPort(port.inbound_tag, "max_total_connections", null, setSettings) });
+  }
+  for (const user of settings.users) {
+    if (user.max_total_connections != null) limits.push({ label: `协议身份 ${user.identity.inbound_tag} / ${user.identity.user}`, value: user.max_total_connections, clear: () => setSettings((current) => ({ ...current, users: current.users.map((item) => item.identity.inbound_tag === user.identity.inbound_tag && item.identity.user === user.identity.user ? { ...item, max_total_connections: null } : item) })) });
+  }
+  const counters: Array<[string, number]> = [["全局套接字拒绝", snapshot?.global?.rejected_global_total_limit ?? 0]];
+  const addCounters = (label: string, aggregate: Partial<ManagementPort["aggregate"]>) => {
+    counters.push(
+      [`${label} · 用户旧总数拒绝`, aggregate.rejected_user_total_limit ?? 0],
+      [`${label} · 用户套接字拒绝`, aggregate.rejected_user_combined_limit ?? 0],
+      [`${label} · 端口旧总数拒绝`, aggregate.rejected_port_total_limit ?? 0],
+      [`${label} · 端口套接字拒绝`, aggregate.rejected_port_combined_limit ?? 0],
+      [`${label} · 全局套接字拒绝`, aggregate.rejected_global_total_limit ?? 0],
+    );
+  };
+  for (const user of snapshot?.management_groups ?? []) addCounters(`用户 ${user.group}`, user);
+  for (const user of snapshot?.proxy_users ?? []) addCounters(`${user.inbound_tag} / ${user.user}`, user);
+  const rejected = counters.filter(([, value]) => value > 0);
+  if (!limits.length && !rejected.length) return null;
+  return <details className="connection-fold connection-legacy-limits">
+    <summary><span>旧的 TCP 套接字上限（入站+出站）<small>保留原值；清除后需保存全部连接设置</small></span></summary>
+    <div className="connection-fold-body">
+      {limits.map(({ label, value, clear }) => <div className="connection-inline-stats" key={label}><span>{label} <strong>{value ?? "不限"}</strong></span><button type="button" onClick={clear}>清除 {label}</button></div>)}
+      <div className="connection-rejection-grid">{rejected.map(([label, value]) => <span key={label}>{label} <strong>{value}</strong></span>)}</div>
     </div>
   </details>;
 }

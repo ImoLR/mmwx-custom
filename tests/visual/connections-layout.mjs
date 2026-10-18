@@ -25,7 +25,7 @@ const tcp = (overrides = {}) => ({
 });
 const proxy = (tag, user, port, outbound) => ({
   identity: { inbound_tag: tag, user }, inbound_tag: tag, user, inbound_port: port,
-  current_total: outbound + 4, inbound_active: 3, inbound_tcp: tcp({ tcp_total: 3, established: 3, time_wait: 0 }),
+  current_total: outbound + 4, inbound_active: 3, inbound_current: 3, inbound_tcp: tcp({ tcp_total: 3, established: 3, time_wait: 0 }),
   inbound_online_ips: [{ ip: "198.51.100.23", connections: 3 }], outbound_active: outbound,
   outbound_pending: 1, outbound_tcp: tcp({ tcp_total: outbound + 1, established: outbound, time_wait: 1 }),
   outbound_new_rate: 2, outbound_new_total: 300, outbound_rejected_total: 5,
