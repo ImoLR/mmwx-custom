@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -168,6 +170,83 @@ func TestWriteServerConnectionsUsesEmptyArrays(t *testing.T) {
 	for _, expected := range [][]byte{[]byte(`"inbounds":[]`), []byte(`"proxy_users":[]`)} {
 		if !bytes.Contains(response.Body.Bytes(), expected) {
 			t.Fatalf("response does not contain %s: %s", expected, response.Body.String())
+		}
+	}
+}
+
+func TestInboundSettingsPUTPersistsAndReachesHelper(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "helper-state.json")
+	state, err := openHelperState(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &app{apiToken: "operator-token", helperState: state, helperTokens: map[string]string{"7": "helper-token"},
+		adminStore: &fakePersistentConnectionStore{fakeAdminSessionStore: fakeAdminSessionStore{authorized: true, server: true}},
+		helperRate: make(map[string]time.Time), connectionMetrics: make(map[string]connectionMetrics), detailedConnections: make(map[string]serverDetailedConnectionRecord)}
+	settings := defaultServerConnectionSettings()
+	settings.GlobalTotalLimitEnabled = true
+	settings.MaxGlobalTotalConnections = int64Pointer(2000)
+	settings.MaxGlobalInboundConnections = int64Pointer(1000)
+	settings.ManagementUsers = []serverManagementUserSettings{{Username: "ken", MaxInboundConnections: int64Pointer(100), MaxTotalConnections: int64Pointer(40)}}
+	settings.Ports = []serverPortConnectionSettings{{InboundTag: "in-a", MaxInboundConnections: int64Pointer(30), MaxTotalConnections: int64Pointer(25)}}
+	put := func(want serverConnectionSettings, status int) {
+		t.Helper()
+		body, err := json.Marshal(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(http.MethodPut, "/api/custom/servers/7/connections", bytes.NewReader(body))
+		r.Header.Set("Authorization", "Bearer operator-token")
+		w := httptest.NewRecorder()
+		a.serverConnectionsHandler(w, r)
+		if w.Code != status {
+			t.Fatalf("PUT: %d %s", w.Code, w.Body.String())
+		}
+	}
+	for _, field := range []string{"global", "user", "port"} {
+		invalid := cloneServerConnectionSettings(settings)
+		switch field {
+		case "global":
+			invalid.MaxGlobalInboundConnections = int64Pointer(-1)
+		case "user":
+			invalid.ManagementUsers[0].MaxInboundConnections = int64Pointer(-1)
+		case "port":
+			invalid.Ports[0].MaxInboundConnections = int64Pointer(-1)
+		}
+		put(invalid, http.StatusBadRequest)
+	}
+	for _, value := range []*int64{int64Pointer(1000), int64Pointer(0), nil} {
+		settings.MaxGlobalInboundConnections = value
+		if value == nil || *value == 0 {
+			settings.ManagementUsers[0].MaxInboundConnections = value
+			settings.Ports[0].MaxInboundConnections = value
+		}
+		put(settings, http.StatusOK)
+		a.helperState, err = openHelperState(path, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := cloneServerConnectionSettings(settings)
+		if got := a.helperState.connectionSettings("7"); !reflect.DeepEqual(got, want) {
+			t.Fatalf("settings lost on reload: got %#v want %#v", got, want)
+		}
+		a.helperRate = make(map[string]time.Time)
+		r := httptest.NewRequest(http.MethodPost, "/api/custom/agent/connections", bytes.NewBufferString(`{"server_id":"7","helper_version":"v0.7.4","snapshot":{}}`))
+		r.Header.Set("Authorization", "Bearer helper-token")
+		w := httptest.NewRecorder()
+		a.helperDetailedConnectionsHandler(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("Helper report: %d %s", w.Code, w.Body.String())
+		}
+		var reply struct {
+			Settings serverConnectionSettings `json:"settings"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &reply); err != nil {
+			t.Fatal(err)
+		}
+		reply.Settings = cloneServerConnectionSettings(reply.Settings)
+		if !reflect.DeepEqual(reply.Settings, want) {
+			t.Fatalf("Helper settings changed inbound or legacy values: got %#v want %#v", reply.Settings, want)
 		}
 	}
 }

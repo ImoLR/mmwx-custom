@@ -278,18 +278,19 @@ func buildManagementView(snapshot serverDetailedConnectionSnapshot, settings ser
 	sort.Strings(usernames)
 	for _, username := range usernames {
 		user := users[username]
-		var userTotal int64
+		var userTotal, inboundCurrent int64
 		var inboundTCP, outboundTCP serverTCPStateCounts
 		for index := range user.Ports {
 			sort.Strings(user.Ports[index].ProtocolIdentities)
 			userTotal += user.Ports[index].Aggregate.CurrentTotal
+			inboundCurrent += user.Ports[index].Aggregate.InboundCurrent
 			addServerTCPCounts(&inboundTCP, user.Ports[index].Aggregate.InboundTCP)
 			addServerTCPCounts(&outboundTCP, user.Ports[index].Aggregate.OutboundTCP)
 		}
-		// The administrator-facing User Total is defined strictly as the sum of
-		// the exact Port totals visible under that user. Group-level rejection
-		// counters remain sourced from Core, but cannot introduce another Total.
+		// User connections and socket totals sum the ports visible under that user.
+		// Group-level rejection counters remain sourced from Core.
 		user.Aggregate.CurrentTotal = userTotal
+		user.Aggregate.InboundCurrent = inboundCurrent
 		user.Aggregate.InboundTCP = inboundTCP
 		user.Aggregate.OutboundTCP = outboundTCP
 		sort.Slice(user.Ports, func(i, j int) bool {

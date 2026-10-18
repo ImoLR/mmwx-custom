@@ -323,3 +323,35 @@ func mustOwnership(t *testing.T, app *app, serverID string) connectionOwnershipD
 	}
 	return value
 }
+
+func TestManagementInboundCountsSumPortsWithoutSharedIdentityDuplication(t *testing.T) {
+	snapshot := ownershipSnapshot("in-a", 10015, "alice-a", "alice-b", "bob", "unknown")
+	second := ownershipSnapshot("in-b", 10016, "alice-c")
+	snapshot.Inbounds = append(snapshot.Inbounds, second.Inbounds...)
+	snapshot.ProxyUsers = append(snapshot.ProxyUsers, second.ProxyUsers...)
+	for i := range snapshot.ProxyUsers {
+		snapshot.ProxyUsers[i].InboundCurrent = int64(i + 2)
+		snapshot.ProxyUsers[i].InboundTCP = serverTCPStateCounts{Total: 20, Established: 10, TimeWait: 9, CloseWait: 1}
+		snapshot.ProxyUsers[i].CurrentTotal += 20
+	}
+	// The stale group count must not replace the sum of the visible ports.
+	snapshot.ManagementGroups = []serverManagementGroupConnections{{Username: "alice", InboundCurrent: 999, RejectedUserInboundLimit: 17}}
+	ownership := connectionOwnershipData{Relations: []connectionOwnershipRelation{
+		{InboundTag: "in-a", ManagementUsername: "alice", ProtocolIdentity: "alice-a", Source: connectionSourceBinding},
+		{InboundTag: "in-a", ManagementUsername: "alice", ProtocolIdentity: "alice-b", Source: connectionSourceBinding},
+		{InboundTag: "in-b", ManagementUsername: "alice", ProtocolIdentity: "alice-c", Source: connectionSourceBinding},
+		{InboundTag: "in-a", ManagementUsername: "bob", ProtocolIdentity: "bob", Source: connectionSourceBinding},
+		{InboundTag: "in-a", ManagementUsername: "observer", Source: connectionSourceManual},
+	}}
+	view, _ := buildManagementView(snapshot, defaultServerConnectionSettings(), ownership)
+	if len(view.Users) != 3 {
+		t.Fatalf("users = %#v", view.Users)
+	}
+	alice, bob, observer := view.Users[0], view.Users[1], view.Users[2]
+	if alice.Aggregate.InboundCurrent != 11 || alice.Ports[0].Aggregate.InboundCurrent != 5 || alice.Ports[1].Aggregate.InboundCurrent != 6 || bob.Aggregate.InboundCurrent != 4 || observer.Aggregate.InboundCurrent != 0 {
+		t.Fatalf("inbound counts were doubled or guessed: %#v", view.Users)
+	}
+	if alice.Aggregate.CurrentTotal != 64 || alice.Aggregate.InboundTCP.Total != 60 || alice.Aggregate.InboundTCP.TimeWait != 27 || alice.Aggregate.InboundTCP.CloseWait != 3 || alice.Aggregate.RejectedUserInboundLimit != 17 {
+		t.Fatalf("socket totals or rejection counts changed: %#v", alice.Aggregate)
+	}
+}
