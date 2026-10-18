@@ -148,6 +148,38 @@ func TestFLVXRealCore(t *testing.T) {
 	})
 	beforeCount, _ := countXrayProcesses()
 	beforeOwners, _ := listeningPIDsForPorts([]int{officialPort})
+	// Exercise the installed-binary reuse path with a read-only xray-named
+	// source. Sample SingleCore while the copied FLVX binary prints its version.
+	probe := &flvxManager{binary: filepath.Join(dir, "mmwxc-flvx-probe")}
+	ready, done := make(chan struct{}), make(chan struct{})
+	counts := make(chan [2]int, 1)
+	go func() {
+		maxCount, samples := 0, 0
+		for {
+			n, _ := countXrayProcesses()
+			if n > maxCount {
+				maxCount = n
+			}
+			samples++
+			if samples == 1 {
+				close(ready)
+			}
+			select {
+			case <-done:
+				counts <- [2]int{maxCount, samples}
+				return
+			default:
+			}
+		}
+	}()
+	<-ready
+	installed, installErr := probe.installBinary(ctx, referenceBin, "ae4b83f0cf77c4aa73857cb1de773e7ec89b1bc5ded272a677b46d417cf40212")
+	close(done)
+	observed := <-counts
+	if installErr != nil || !installed || observed[0] != beforeCount {
+		t.Fatalf("staged version probe changed SingleCore: %d -> %d, installed=%t, err=%v", beforeCount, observed[0], installed, installErr)
+	}
+	t.Logf("xray-named source version probe: SingleCore count=%d across %d samples", observed[0], observed[1])
 	apiPort, nodePort, secondPort, socksPort := flvxFreePort(t), flvxFreePort(t), flvxFreePort(t), flvxFreePort(t)
 	base := flvx.BaseConfig(apiPort)
 	base["outbounds"].([]any)[0].(map[string]any)["settings"].(map[string]any)["redirect"] = echo.Addr().String()

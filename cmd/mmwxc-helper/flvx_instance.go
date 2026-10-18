@@ -457,22 +457,26 @@ func (m *flvxManager) ensureBinary(ctx context.Context) (bool, error) {
 		}
 		defer os.Remove(staged)
 	}
+	return m.installBinary(ctx, staged, a.SHA256)
+}
+
+func (m *flvxManager) installBinary(ctx context.Context, staged, hash string) (bool, error) {
 	if err := validateELFArchitecture(staged); err != nil {
 		return false, err
 	}
-	version, err := binaryVersion(ctx, staged, "version")
+	if err := os.MkdirAll(filepath.Dir(m.binary), 0755); err != nil {
+		return false, err
+	}
+	defer os.Remove(m.binary + ".new")
+	if err := copyFile(staged, m.binary+".new", 0755); err != nil {
+		return false, err
+	}
+	if copied, err := flvxFileHash(m.binary + ".new"); err != nil || copied != hash {
+		return false, errors.New("FLVX staged binary checksum mismatch")
+	}
+	version, err := binaryVersion(ctx, m.binary+".new", "version")
 	if err != nil || !strings.Contains(strings.ToLower(version), "xray") {
 		return false, errors.New("invalid Custom Core binary")
-	}
-	if err = os.MkdirAll(filepath.Dir(m.binary), 0755); err != nil {
-		return false, err
-	}
-	if err = copyFile(staged, m.binary+".new", 0755); err != nil {
-		return false, err
-	}
-	if hash, err := flvxFileHash(m.binary + ".new"); err != nil || hash != a.SHA256 {
-		os.Remove(m.binary + ".new")
-		return false, errors.New("FLVX staged binary checksum mismatch")
 	}
 	if err = os.Rename(m.binary+".new", m.binary); err != nil {
 		return false, err
