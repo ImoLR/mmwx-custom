@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { smallText, enforceFontFloor, fontFloor } from "./font-floor.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const require = createRequire(path.join(root, "frontend/package.json"));
@@ -34,7 +35,7 @@ function serve(dist) {
   server.on("upgrade", (_req, socket) => socket.destroy());
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ server, origin: `http://127.0.0.1:${server.address().port}` })));
 }
-const baseline = await serve(path.join(run, "baseline-dist")), current = await serve(path.join(root, "frontend/dist"));
+const baseline = await serve(path.join(run, "baseline-dist")), current = await serve(process.env.FLVX_DIST || path.join(root, "frontend/dist"));
 let browser;
 const captures = [], errors = [], checks = [], mutations = [];
 const chromiumPath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || (existsSync("/root/.cache/ms-playwright/chromium-1124/chrome-linux/chrome") ? "/root/.cache/ms-playwright/chromium-1124/chrome-linux/chrome" : undefined);
@@ -77,9 +78,13 @@ async function contextFor(origin, width) {
   return { context, page };
 }
 
+const fontIssues = [];
 async function shot(page, name) {
   await page.waitForTimeout(120);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${name}: horizontal overflow`);
+  const small = await smallText(page, ".flvx-page, .flvx-dialog");
+  if (small.length) fontIssues.push({ name, small });
+  if (enforceFontFloor) assert.deepEqual(small, [], `${name}: text below ${fontFloor}px`);
   const file = `${name}.png`; await page.screenshot({ path: path.join(screens, file), fullPage: true, animations: "disabled" }); captures.push(file);
 }
 async function openPage(page, name) { await page.getByRole("button", { name: "打开菜单", exact: true }).click(); await page.getByRole("button", { name, exact: true }).click(); }
@@ -136,7 +141,7 @@ try {
   assert.ok(mutations.every((r) => r.path === "/api/custom/flvx/admin/token" && r.method === "POST"));
 } finally {
   await browser?.close(); await new Promise((r) => baseline.server.close(r)); await new Promise((r) => current.server.close(r));
-  writeFileSync(path.join(screens, "manifest.json"), JSON.stringify({ captures, errors, checks, mutations: mutations.map(({ method, path }) => ({ method, path })), hashes: Object.fromEntries(captures.map((f) => [f, createHash("sha256").update(readFileSync(path.join(screens, f))).digest("hex")])) }, null, 2));
+  writeFileSync(path.join(screens, "manifest.json"), JSON.stringify({ captures, errors, checks, fontIssues, mutations: mutations.map(({ method, path }) => ({ method, path })), hashes: Object.fromEntries(captures.map((f) => [f, createHash("sha256").update(readFileSync(path.join(screens, f))).digest("hex")])) }, null, 2));
 }
 writeFileSync(path.join(screens, "index.html"), `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>FLVX 共享 · 截图预览</title><style>body{font:15px system-ui;background:#edf0f4;color:#253247;margin:24px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px}article{background:white;padding:16px;border-radius:14px}img{width:100%;height:auto;border:1px solid #e0e5ed}a{color:#215daa}</style><h1>FLVX 共享 · 桌面与手机预览</h1><p>本机合成数据，未连接生产或真实服务器。概览前后像素完全一致。令牌仅为无效演示文字。</p><main>${captures.map((f) => `<article><h2>${f.replace(".png", "")}</h2><a href="${f}"><img src="${f}" loading="lazy"></a></article>`).join("")}</main></html>`);
 console.log(`${captures.length} screenshots; ${checks.join("; ")}`);

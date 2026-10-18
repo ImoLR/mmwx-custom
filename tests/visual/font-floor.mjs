@@ -1,10 +1,10 @@
-// Text on the compact node/user/package pages must not drop below the quick-filter size.
+// Text on the compact pages and FLVX 共享 must not drop below the quick-filter size.
 export const fontFloor = Number(process.env.FONT_FLOOR || 13);
 export const enforceFontFloor = process.env.FONT_FLOOR_ASSERT !== "0";
 
-export async function smallText(page) {
-  return page.evaluate((floor) => {
-    const scopes = [...document.querySelectorAll(".node-redesign, .cx-manager, .cx-sheet")];
+export async function smallText(page, scope = ".node-redesign, .cx-manager, .cx-sheet") {
+  return page.evaluate(({ floor, scope }) => {
+    const scopes = [...document.querySelectorAll(scope)];
     const found = new Map();
     for (const scope of scopes) for (const element of scope.querySelectorAll("*")) {
       if (element.closest("svg")) continue;
@@ -18,5 +18,5 @@ export async function smallText(page) {
       if (!found.has(key)) found.set(key, text.slice(0, 40));
     }
     return [...found].map(([element, text]) => ({ element, text }));
-  }, fontFloor);
+  }, { floor: fontFloor, scope });
 }
