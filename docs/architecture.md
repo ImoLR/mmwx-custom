@@ -501,8 +501,11 @@ The operator endpoints use the existing operator authorization:
 Cancellation is terminal and the UI requires typing the server name. Paused
 and revoked shares reject FLVX desired pushes. Hostnames are resolved before
 comparison: an FLVX ordinary node match warns, while a native landing match
-refuses sharing. Unresolved addresses or missing official inbound inventory
-fail closed. A later native-host conflict pauses an existing active share.
+refuses sharing. Unresolved addresses refuse new/resumed shares and desired
+pushes, but a server-domain lookup error in a later host report leaves an active
+share running and remains visible as `detection_error` in the admin list.
+Missing official inbound inventory fails closed. Only a positive native-host
+conflict pauses an existing active share during host reporting.
 
 ### Independent Helper instance
 

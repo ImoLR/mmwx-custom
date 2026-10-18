@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -257,6 +259,34 @@ func TestFLVXDualInstallPostgres(t *testing.T) {
 	if err := a.saveFLVXShare(ctx, 8, c, "active"); err == nil {
 		t.Fatal("native landing accepted")
 	}
+	resolver := net.DefaultResolver
+	net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("fixture DNS unavailable")
+	}}
+	t.Cleanup(func() { net.DefaultResolver = resolver })
+	auditDeleteExec(t, a.flvxDB(), `UPDATE remote_servers SET domain='shared.invalid' WHERE id=7`)
+	auditDeleteExec(t, a.flvxDB(), `UPDATE mmwxc_flvx_integration SET token_hash=$1`, flvxTokenHash("flvx_fixture"))
+	before, _ := readFLVXShare(ctx, a.flvxDB(), 7, false)
+	w := flvxTestRequest(a, "PUT", "/api/custom/flvx/v1/landing-hosts", "flvx_fixture", h)
+	if w.Code != 200 {
+		t.Fatalf("valid host report rejected: %d %s", w.Code, w.Body.String())
+	}
+	after, _ := readFLVXShare(ctx, a.flvxDB(), 7, false)
+	if after.State != "active" || after.Version != before.Version {
+		t.Fatal("server-domain DNS failure changed an active share")
+	}
+	w = flvxTestRequest(a, "GET", "/api/custom/flvx/admin", "operator-token", nil)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"detection_error":true`) {
+		t.Fatal("DNS warning missing from admin list", w.Body.String())
+	}
+	w = flvxTestRequest(a, "PUT", "/api/custom/flvx/v1/shares/7/desired", "flvx_fixture", flvxTestDesired())
+	if w.Code != 409 || !strings.Contains(w.Body.String(), `"code":"host_resolution"`) {
+		t.Fatal("DNS failure no longer rejects desired pushes", w.Body.String())
+	}
+	if err := a.saveFLVXShare(ctx, 7, c, "active"); err == nil {
+		t.Fatal("DNS failure no longer rejects activation")
+	}
+	auditDeleteExec(t, a.flvxDB(), `UPDATE remote_servers SET domain='' WHERE id=7`)
 	h.Native = append(h.Native, "203.0.113.7")
 	if err := a.putFLVXHosts(ctx, h); err != nil {
 		t.Fatal(err)

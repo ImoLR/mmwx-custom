@@ -248,7 +248,7 @@ func (a *app) putFLVXHosts(ctx context.Context, h flvx.LandingHosts) error {
 		}
 		for _, server := range servers {
 			detectFLVXDual(ctx, &server, h, lookup)
-			if !server.NativeLanding && !server.DetectionError {
+			if !server.NativeLanding {
 				continue
 			}
 			s, e := readFLVXShare(ctx, tx, server.ID, true)
