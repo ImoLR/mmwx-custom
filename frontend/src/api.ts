@@ -428,6 +428,16 @@ async function requestCustomApi<T>(path: string, init?: RequestInit): Promise<T>
   return parseJSONBody<T>(response.status, response.headers.get("content-type"), body);
 }
 
+export async function requestFLVXAdmin<T>(token: string, path = "", method = "GET", body?: unknown): Promise<T> {
+  const response = await fetch(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/flvx/admin${path}`), {
+    method, cache: "no-store", headers: { "MM-Authorization": token, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error?.message || data.errors?.map((e: { node_id: string; field: string; message: string }) => `${e.node_id} ${e.field}: ${e.message}`).join("；") || data.message || "FLVX 共享请求失败");
+  return data as T;
+}
+
 async function requestCustomOperator<T>(path: string, token: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("MM-Authorization", token);

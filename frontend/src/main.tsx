@@ -4,6 +4,7 @@ import type { ServerDeletionPlan } from "./server-delete-state";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { HelperBatchUpgrade } from "./helper-batch";
+import { FLVXSharePage, useFLVXSharedServers } from "./flvx-share";
 import { UpgradeProgressView } from "./upgrade-progress";
 import { componentUpgradeLabel, upgradeRunning, progressForComponent, upgradeBlocked, officialReconnectText } from "./upgrade-progress-state";
 import {
@@ -313,6 +314,7 @@ function Dashboard({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
+  const flvxSharedServers = useFLVXSharedServers(session.token, session.isAdmin && activeTab === "services");
   const [menuOpen, setMenuOpen] = useState(false);
   const [selectedServerId, setSelectedServerId] = useState<number | null>(null);
   const [runtimeXrayStatus, setRuntimeXrayStatus] = useState<{ serverId: number; running?: boolean; version?: string } | null>(null);
@@ -867,6 +869,8 @@ function Dashboard({
 
       {activeTab === "services" ? (
         <ServiceManagementPage
+          flvxSharedServers={flvxSharedServers}
+          onOpenFLVX={() => setActiveTab("flvx-share")}
           sessionToken={session.token}
           servers={visibleServiceServers}
           allServers={state.servers}
@@ -895,6 +899,8 @@ function Dashboard({
         <UserManagementPage token={session.token} currentUsername={session.username} />
       ) : activeTab === "forward" ? (
         <ForwardManagementPage token={session.token} />
+      ) : activeTab === "flvx-share" && session.isAdmin ? (
+        <FLVXSharePage token={session.token} />
       ) : activeTab === "settings" ? (
         <ServerSettingsPage token={session.token} canEdit={session.isAdmin} />
       ) : activeTab !== "overview" ? (
@@ -1413,6 +1419,8 @@ function TrafficListDialog({
 }
 
 function ServiceManagementPage({
+  flvxSharedServers,
+  onOpenFLVX,
   sessionToken,
   servers,
   allServers,
@@ -1433,6 +1441,8 @@ function ServiceManagementPage({
   onOpenDialog,
   deletionHistory,
 }: {
+  flvxSharedServers: Set<number>;
+  onOpenFLVX: () => void;
   sessionToken: string;
   deletionHistory?: React.ReactNode;
   servers: RemoteServer[];
@@ -1538,6 +1548,8 @@ function ServiceManagementPage({
         {servers.length ? (
           servers.map((server) => (
             <ServiceServerCard
+              flvxShared={flvxSharedServers.has(server.id)}
+              onOpenFLVX={onOpenFLVX}
               key={server.id}
               server={server}
               connectionMetric={connectionMetrics[String(server.id)]}
@@ -1791,6 +1803,8 @@ function ServiceSummaryItem({ icon, value, tone, label }: { icon: React.ReactNod
 }
 
 function ServiceServerCard({
+  flvxShared,
+  onOpenFLVX,
   server,
   connectionMetric,
   coreMode,
@@ -1799,6 +1813,8 @@ function ServiceServerCard({
   onOpenMenu,
   onOpenDialog,
 }: {
+  flvxShared: boolean;
+  onOpenFLVX: () => void;
   server: RemoteServer;
   connectionMetric?: ConnectionMetric;
   coreMode?: CoreModeSummary;
@@ -1834,6 +1850,7 @@ function ServiceServerCard({
             <span className="connection-tag-value">{formatConnectionCount(connectionMetric)}</span>
           </button>
           {server.ddns_pending && <span className="service-badge warning">DDNS 待同步</span>}
+          {flvxShared && <button className="service-badge flvx-shared-badge" type="button" onClick={onOpenFLVX}>已共享给 FLVX</button>}
         </div>
 
         <div className="service-v3-metrics">
@@ -3670,6 +3687,7 @@ function SideMenu({
     { key: "users", label: "用户管理", icon: Users },
     { key: "packages", label: "套餐管理", icon: PackageIcon },
     { key: "forward", label: "转发管理", icon: Share2 },
+    ...(session.isAdmin ? [{ key: "flvx-share", label: "FLVX 共享", icon: Share2 }] : []),
     { key: "services", label: "服务管理", icon: Server },
     { key: "settings", label: "服务器配置", icon: Settings },
     { key: "inbounds", label: "入站", icon: LogIn },
@@ -4407,6 +4425,7 @@ function tabTitle(tab: string) {
     nodes: "节点",
     packages: "套餐管理",
     forward: "转发管理",
+    "flvx-share": "FLVX 共享",
     users: "用户管理",
     subscriptions: "订阅",
     settings: "服务器配置",
