@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -22,20 +23,20 @@ func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, 
 		if err != nil {
 			return err
 		}
+		previous, _ := json.Marshal(s)
 		if report != nil {
 			if err = mergeFLVXReport(ctx, tx, id, &s, *report, time.Now()); err != nil {
 				return err
 			}
 		}
 		flvxReset(&s, time.Now())
-		if err = writeFLVXShare(ctx, tx, id, s); err != nil {
-			return err
+		current, _ := json.Marshal(s)
+		if string(previous) != string(current) {
+			if err = writeFLVXShare(ctx, tx, id, s); err != nil {
+				return err
+			}
 		}
-		servers, err := flvxServers(ctx, tx)
-		if err != nil {
-			return err
-		}
-		server, err := flvxServerByID(servers, id)
+		server, err := flvxServerSnapshot(ctx, tx, id)
 		if err != nil {
 			return err
 		}

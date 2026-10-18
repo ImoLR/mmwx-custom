@@ -172,6 +172,18 @@ func flvxServers(ctx context.Context, q flvxQuery) ([]flvxServer, error) {
 	return servers, nil
 }
 
+func flvxServerSnapshot(ctx context.Context, q flvxQuery, id int64) (flvxServer, error) {
+	s := flvxServer{ID: id}
+	var raw sql.NullString
+	err := q.QueryRowContext(ctx, `SELECT (SELECT config_json FROM server_xray_config_snapshots WHERE server_id=s.id AND status='current' ORDER BY created_at DESC,id DESC LIMIT 1) FROM remote_servers s WHERE id=$1`, id).Scan(&raw)
+	if err != nil || !raw.Valid {
+		return s, err
+	}
+	s.OfficialPorts, err = flvx.OfficialPorts([]byte(raw.String))
+	s.PortsKnown = err == nil
+	return s, err
+}
+
 type flvxLookup func(context.Context, string) ([]string, error)
 
 func flvxHostSet(ctx context.Context, hosts []string, lookup flvxLookup) (map[string]bool, error) {

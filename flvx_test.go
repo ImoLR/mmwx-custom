@@ -184,6 +184,28 @@ func TestFLVXHelperChannelPostgres(t *testing.T) {
 	if e.Payload.AckSequence != 1 || e.Payload.AckGeneration != r.Generation || e.Payload.TrafficUsedBytes != 120 || e.Payload.Artifact.URL != asset.URL || e.Payload.Artifact.SHA256 != asset.SHA256 || len(e.Payload.OfficialPorts) != 1 || e.Payload.OfficialPorts[0] != 30002 {
 		t.Fatalf("bad Helper envelope: %+v", e.Payload)
 	}
+	version := func() string {
+		t.Helper()
+		var xmin string
+		if err := a.flvxDB().QueryRow(`SELECT xmin::text FROM mmwxc_flvx_shares WHERE server_id=7`).Scan(&xmin); err != nil {
+			t.Fatal(err)
+		}
+		return xmin
+	}
+	previous := version()
+	// A broken unrelated snapshot must not be read for this Helper's report.
+	auditDeleteExec(t, a.flvxDB(), `UPDATE server_xray_config_snapshots SET config_json='invalid fixture' WHERE server_id=8`)
+	for i := 0; i < 10; i++ {
+		if _, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", &r); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if version() != previous {
+		t.Fatal("duplicate/absent Helper report rewrote an unchanged share")
+	}
 	// An acknowledged removal can disappear from Helper uploads; PostgreSQL
 	// retains its final monotonic tombstone for FLVX's slower status polling.
 	r.Sequence++
@@ -193,6 +215,9 @@ func TestFLVXHelperChannelPostgres(t *testing.T) {
 	r.TrafficUsedBytes = 130
 	if _, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", &r); err != nil {
 		t.Fatal(err)
+	}
+	if version() == previous {
+		t.Fatal("changed Helper report was not written")
 	}
 	r.Sequence++
 	r.Nodes = []flvx.NodeStatus{}
