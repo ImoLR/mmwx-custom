@@ -45,6 +45,18 @@ func flvxTestDesired() flvx.Desired {
 	return flvx.Desired{Revision: 1, Nodes: []flvx.Node{{ID: "11", Owner: flvx.Owner{ID: "2", Name: "Alice"}, Name: "SS", Protocol: "ss2022", Port: 30001, Enabled: &enabled, SS2022: &flvx.SS2022{Method: "2022-blake3-aes-128-gcm", ServerKey: key, UserKey: key}}}}
 }
 
+func TestFLVXPersistedReportFreshness(t *testing.T) {
+	for _, check := range []struct {
+		age  time.Duration
+		want string
+	}{{35 * time.Second, "running"}, {65 * time.Second, "error"}} {
+		s := flvx.Status{Core: flvx.Core{State: "running"}, CollectedAt: time.Now().Add(-check.age).UnixMilli()}
+		if flvxPublicStatus(s)["core"].(map[string]any)["state"] != check.want {
+			t.Fatal("freshness does not allow the persisted report cadence")
+		}
+	}
+}
+
 func TestFLVXAPIContractPostgres(t *testing.T) {
 	a := flvxTestApp(t)
 	ctx := context.Background()

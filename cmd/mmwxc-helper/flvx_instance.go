@@ -59,10 +59,15 @@ type flvxManager struct {
 	verifiedHash                    string
 	verifiedMTime                   time.Time
 	persistedHash                   [32]byte
+	persistedAt                     time.Time
+	reportedMaterial                [32]byte
+	reconciledPayload               [32]byte
 	removed                         bool
 	// The real transport is the fixed Core CLI's gRPC client; tests inject a fake.
 	apiCall      func(context.Context, string, ...string) ([]byte, error)
 	lookupHost   func(context.Context, string) ([]string, error)
+	writeState   func(string, []byte, os.FileMode) error
+	clock        func() time.Time
 	readOfficial func() ([]int, error)
 	setup        func(context.Context) error
 	stop         func(context.Context) error
@@ -105,6 +110,7 @@ func (m *flvxManager) load() error {
 			return errors.New("invalid FLVX instance state; refusing to reset counters")
 		}
 		m.persistedHash = sha256.Sum256(raw)
+		m.persistedAt = m.now()
 	}
 	if m.state.Counters == nil {
 		m.state.Counters = map[string]*flvx.Counter{}
@@ -120,6 +126,12 @@ func (m *flvxManager) load() error {
 		m.state.Report.Generation = hex.EncodeToString(id[:])
 	}
 	if m.state.Payload.Version > 0 {
+		if m.state.Payload.AckGeneration == m.state.Report.Generation && m.state.Report.Sequence < m.state.Payload.AckSequence {
+			m.state.Report.Sequence = m.state.Payload.AckSequence
+			if err = m.persist(); err != nil {
+				return err
+			}
+		}
 		m.publish()
 	}
 	return nil
@@ -164,11 +176,65 @@ func (m *flvxManager) persist() error {
 	if hash == m.persistedHash {
 		return nil
 	}
-	if err := writeFLVXFile(filepath.Join(m.dir, "state.json"), raw, 0600); err != nil {
+	write := m.writeState
+	if write == nil {
+		write = writeFLVXFile
+	}
+	if err := write(filepath.Join(m.dir, "state.json"), raw, 0600); err != nil {
 		return err
 	}
 	m.persistedHash = hash
+	m.persistedAt = m.now()
 	return nil
+}
+
+func (m *flvxManager) materialHash() [32]byte {
+	s := m.state
+	s.Payload.AckGeneration, s.Payload.AckSequence = "", 0
+	s.Payload.Period, s.Payload.TrafficUsedBytes = "", 0
+	s.Counters = nil
+	s.Report.Nodes = append([]flvx.NodeStatus{}, s.Report.Nodes...)
+	for i := range s.Report.Nodes {
+		s.Report.Nodes[i].UpBytes = 0
+		s.Report.Nodes[i].DownBytes = 0
+		s.Report.Nodes[i].Connections = 0
+	}
+	s.Report.Sequence, s.Report.CollectedAt = 0, 0
+	s.Report.TrafficUsedBytes = 0
+	if limit := s.Payload.Config.TrafficLimitBytes; limit > 0 && m.state.Report.TrafficUsedBytes >= limit {
+		s.Report.TrafficUsedBytes = 1
+	}
+	raw, _ := json.Marshal(s)
+	return sha256.Sum256(raw)
+}
+
+func (m *flvxManager) persistReport(force bool) error {
+	for i := range m.state.Report.Nodes {
+		n := &m.state.Report.Nodes[i]
+		if c := m.state.Counters[n.ID]; c != nil {
+			n.UpBytes, n.DownBytes = c.Up, c.Down
+		}
+	}
+	m.state.Report.CollectedAt = m.now().UnixMilli()
+	if !force && m.materialHash() == m.reportedMaterial && m.now().Sub(m.persistedAt) < 30*time.Second {
+		return nil
+	}
+	if p := m.state.Payload; p.AckGeneration == m.state.Report.Generation && p.AckSequence > m.state.Report.Sequence {
+		m.state.Report.Sequence = p.AckSequence
+	}
+	m.state.Report.Sequence++
+	if err := m.persist(); err != nil {
+		return err
+	}
+	m.publish()
+	return nil
+}
+
+func (m *flvxManager) now() time.Time {
+	if m.clock != nil {
+		return m.clock()
+	}
+	return time.Now()
 }
 
 func (m *flvxManager) publish() {
@@ -177,6 +243,7 @@ func (m *flvxManager) publish() {
 	r := m.state.Report
 	r.Nodes = append([]flvx.NodeStatus{}, r.Nodes...)
 	m.report = &r
+	m.reportedMaterial = m.materialHash()
 }
 
 func (m *flvxManager) snapshotReport() *flvx.Report {
@@ -251,9 +318,7 @@ func (m *flvxManager) run(ctx context.Context) {
 					m.state.Report.Nodes[i].Error = "FLVX Core reconciliation failed"
 				}
 			}
-			m.state.Report.Sequence++
-			m.state.Report.CollectedAt = time.Now().UnixMilli()
-			m.logs.report("FLVX error state persistence", m.persist())
+			m.logs.report("FLVX error state persistence", m.persistReport(true))
 			nextAttempt = time.Now().Add(retryDelay)
 			if retryDelay < 5*time.Minute {
 				retryDelay *= 2
@@ -265,7 +330,6 @@ func (m *flvxManager) run(ctx context.Context) {
 			retryDelay = 5 * time.Second
 			nextAttempt = time.Now().Add(5 * time.Second)
 		}
-		m.publish()
 	}
 }
 
@@ -294,6 +358,8 @@ func (m *flvxManager) accept(e flvx.Envelope) error {
 	if m.removed && p.Status == "revoked" {
 		return nil
 	}
+	previous, _ := json.Marshal(m.state.Payload)
+	previousPeriod := m.state.Report.Period
 	m.state.Payload = p
 	period := flvx.Period(time.Now(), p.Config.ResetDay)
 	if m.state.Report.Period != period {
@@ -302,6 +368,10 @@ func (m *flvxManager) accept(e flvx.Envelope) error {
 	}
 	if p.Period == period && p.TrafficUsedBytes > m.state.Report.TrafficUsedBytes {
 		m.state.Report.TrafficUsedBytes = p.TrafficUsedBytes
+	}
+	current, _ := json.Marshal(p)
+	if string(previous) == string(current) && previousPeriod == period {
+		return nil
 	}
 	return m.persist()
 }
@@ -371,7 +441,9 @@ func (m *flvxManager) ensureBinary(ctx context.Context) (bool, error) {
 		}
 	}
 	m.state.Report.Core.State = "installing"
-	m.publish()
+	if err := m.persistReport(true); err != nil {
+		return false, err
+	}
 	staged := ""
 	// Read the already installed Custom binary when it matches the release hash;
 	// never install, restart or otherwise mutate the official-serving instance.

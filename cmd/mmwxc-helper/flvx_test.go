@@ -26,6 +26,7 @@ type fakeFLVXCore struct {
 	adds, removes int
 	stops         int
 	calls, blocks int
+	writes        int
 }
 
 func helperFLVXNode(id string, port int) flvx.Node {
@@ -61,6 +62,13 @@ func fakeFLVXManager(t *testing.T) (*flvxManager, *fakeFLVXCore) {
 	m := &flvxManager{dir: filepath.Join(dir, "state"), core: newCoreClient(socket), config: config{Token: "helper", ServerID: "7"}, logs: newPeriodicLogLimiter()}
 	m.state = flvxLocalState{Payload: flvx.Payload{Version: 1, Status: "active", Config: flvx.Config{PortMin: 30000, PortMax: 31000, ResetDay: 1, MemoryMB: 256, CPUPercent: 50, MaxConnections: 6}, Desired: flvx.Desired{Revision: 1, Nodes: []flvx.Node{helperFLVXNode("one", 30001)}}}, APIPort: 49000, Counters: map[string]*flvx.Counter{}, Applied: map[string]string{}, Report: flvx.Report{Generation: "helper-a"}}
 	m.setup = func(context.Context) error { return nil }
+	m.writeState = func(path string, raw []byte, mode os.FileMode) error {
+		if err := writeFLVXFile(path, raw, mode); err != nil {
+			return err
+		}
+		f.writes++
+		return nil
+	}
 	m.readOfficial = func() ([]int, error) { return []int{30003}, nil }
 	m.stop = func(context.Context) error { f.stops++; f.present = map[string]bool{}; return nil }
 	m.cleanup = func(context.Context) error { return os.RemoveAll(m.dir) }
@@ -106,6 +114,172 @@ func fakeFLVXManager(t *testing.T) (*flvxManager, *fakeFLVXCore) {
 		}
 	}
 	return m, f
+}
+
+func TestFLVXSteadyStateRates(t *testing.T) {
+	for _, interval := range []time.Duration{time.Second, 5 * time.Second} {
+		t.Run(interval.String(), func(t *testing.T) {
+			m, f := fakeFLVXManager(t)
+			now := time.Now()
+			m.clock = func() time.Time { return now }
+			if err := m.reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			f.calls, f.writes = 0, 0
+			ticks := int(time.Minute / interval)
+			for i := 1; i <= ticks; i++ {
+				now = now.Add(interval)
+				f.stats["one"] = [2]int64{int64(i * 100), int64(i * 20)}
+				if err := m.reconcile(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Logf("steady minute: ticks=%d writes=%d CLI=%d", ticks, f.writes, f.calls)
+			if f.writes > 3 || f.calls > ticks || f.writes < 2 {
+				t.Fatal("heartbeat persistence or Core CLI rate regressed")
+			}
+		})
+	}
+}
+
+func TestFLVXPublishedCountersSurviveCrash(t *testing.T) {
+	for _, restartCore := range []bool{false, true} {
+		t.Run(fmt.Sprint(restartCore), func(t *testing.T) {
+			m, f := fakeFLVXManager(t)
+			now := time.Now()
+			m.clock = func() time.Time { return now }
+			for i := 0; i <= 7; i++ {
+				f.stats["one"] = [2]int64{int64(i * 100), int64(i * 20)}
+				if err := m.reconcile(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				r := m.snapshotReport()
+				raw, err := os.ReadFile(filepath.Join(m.dir, "state.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var disk flvxLocalState
+				if err = json.Unmarshal(raw, &disk); err != nil {
+					t.Fatal(err)
+				}
+				if r.Sequence > disk.Report.Sequence || r.Nodes[0].UpBytes > disk.Counters["one"].Up || r.Nodes[0].DownBytes > disk.Counters["one"].Down {
+					t.Fatal("published counters or sequence were not persisted")
+				}
+				now = now.Add(5 * time.Second)
+			}
+			published := m.snapshotReport()
+			if published.Nodes[0].UpBytes != 600 || m.state.Counters["one"].Up != 700 {
+				t.Fatal("fixture did not leave an unpersisted tail")
+			}
+			// Discard memory exactly as a crash would; retain only state.json.
+			restarted := &flvxManager{dir: m.dir, core: m.core, config: m.config, logs: newPeriodicLogLimiter(), clock: m.clock, setup: m.setup, stop: m.stop, cleanup: m.cleanup, readOfficial: m.readOfficial, apiCall: m.apiCall}
+			if err := restarted.load(); err != nil {
+				t.Fatal(err)
+			}
+			if restartCore {
+				f.epoch = f.epoch.Add(time.Second)
+				f.present = map[string]bool{}
+				f.stats["one"] = [2]int64{1, 1}
+			}
+			for i := 0; i < 3; i++ {
+				r := restarted.snapshotReport()
+				if r.Sequence < published.Sequence || r.Nodes[0].UpBytes < published.Nodes[0].UpBytes || r.Nodes[0].DownBytes < published.Nodes[0].DownBytes {
+					t.Fatal("restart decreased an already published lifetime/sequence")
+				}
+				if err := restarted.reconcile(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				now = now.Add(30 * time.Second)
+			}
+		})
+	}
+}
+
+func TestFLVXPersistenceFailureAndQuota(t *testing.T) {
+	m, f := fakeFLVXManager(t)
+	now := time.Now()
+	m.clock = func() time.Time { return now }
+	m.state.Payload.Config.TrafficLimitBytes = 150
+	if err := m.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	published, writes := m.snapshotReport(), f.writes
+	now = now.Add(5 * time.Second)
+	f.stats["one"] = [2]int64{100, 0}
+	if err := m.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.writes != writes || !reflect.DeepEqual(published, m.snapshotReport()) {
+		t.Fatal("counter-only tick wrote or published before 30 seconds")
+	}
+	// The quota uses memory and must persist/block on the next five-second tick.
+	now = now.Add(5 * time.Second)
+	f.stats["one"] = [2]int64{160, 0}
+	if err := m.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.writes == writes || len(f.present) != 0 || f.blocks == 0 || m.snapshotReport().Nodes[0].UpBytes != 160 {
+		t.Fatal("quota crossing waited for heartbeat flush")
+	}
+	published = m.snapshotReport()
+	write := m.writeState
+	m.writeState = func(string, []byte, os.FileMode) error { return errors.New("disk unavailable") }
+	now = now.Add(30 * time.Second)
+	f.stats["one"] = [2]int64{170, 0}
+	if err := m.reconcile(context.Background()); err == nil {
+		t.Fatal("failed persistence was ignored")
+	}
+	m.state.Report.Core.State = "error"
+	if err := m.persistReport(true); err == nil || !reflect.DeepEqual(published, m.snapshotReport()) {
+		t.Fatal("failed write published unpersisted counters/error state")
+	}
+	m.writeState = write
+	if err := m.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if m.snapshotReport().Nodes[0].UpBytes < 170 {
+		t.Fatal("recovery lost counters")
+	}
+}
+
+func TestFLVXRepeatedDesiredAndAcknowledgements(t *testing.T) {
+	m, f := fakeFLVXManager(t)
+	now := time.Now()
+	m.clock = func() time.Time { return now }
+	m.state.Payload.ServerID = "7"
+	if err := m.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.calls, f.writes = 0, 0
+	for i := 1; i <= 12; i++ {
+		now = now.Add(5 * time.Second)
+		r := m.snapshotReport()
+		p := m.state.Payload
+		p.AckGeneration, p.AckSequence = r.Generation, r.Sequence
+		p.Period, p.TrafficUsedBytes = r.Period, r.TrafficUsedBytes
+		e := flvx.Envelope{Payload: p, ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
+		e.Sign("helper")
+		if err := m.accept(e); err != nil {
+			t.Fatal(err)
+		}
+		f.stats["one"] = [2]int64{int64(i * 100), 0}
+		if err := m.reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.writes > 3 || f.calls != 12 || m.snapshotReport().Sequence > 3 {
+		t.Fatalf("ACK/desired caused persistence feedback: writes=%d CLI=%d sequence=%d", f.writes, f.calls, m.snapshotReport().Sequence)
+	}
+	// Even an older file carrying a newer Custom acknowledgement cannot regress.
+	m.state.Payload.AckSequence = m.state.Report.Sequence + 10
+	if err := m.persist(); err != nil {
+		t.Fatal(err)
+	}
+	want := m.state.Payload.AckSequence
+	m.state = flvxLocalState{}
+	if err := m.load(); err != nil || m.snapshotReport().Sequence < want {
+		t.Fatal("load regressed an acknowledged sequence", err)
+	}
 }
 
 func TestFLVXRealityPinSurvivesDNSAndRestarts(t *testing.T) {
@@ -214,6 +388,9 @@ func TestFLVXDiffCapsPersistenceAndCancel(t *testing.T) {
 	apply()
 	if m.state.Report.Nodes[0].UpBytes != 100 {
 		t.Fatal(m.state.Report)
+	}
+	if err := m.persistReport(true); err != nil {
+		t.Fatal(err)
 	}
 	saved := m.state
 	m.state = flvxLocalState{}

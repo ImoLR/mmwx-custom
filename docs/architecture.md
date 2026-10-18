@@ -554,7 +554,14 @@ connections. These counts retain the current Core total in/out socket semantics.
 Inbound up/down statistics include unauthenticated bytes. The Helper persists
 raw cursors and monotonic totals across Core epochs; PostgreSQL independently
 deduplicates Helper generation/sequence reports and merges resets. Final counters
-are sampled before removal. Acknowledged removed nodes stop enlarging Helper
+are sampled before removal. Material changes (including quota crossings and
+acknowledgements) are persisted immediately; counter/heartbeat-only writes occur
+at most once per 30 seconds. Reports and their sequence are published only after
+a successful durable write, so a crash cannot roll back published lifetime
+totals. The public status allows 60 seconds before marking a running report stale.
+Steady reconciliation uses one Core CLI stats query; inbound listing and extra
+samples are reserved for desired changes, diffs, epoch changes or error recovery.
+Acknowledged removed nodes stop enlarging Helper
 uploads, while their database tombstones remain available to FLVX's 60-second
 poll. Share quotas reset at Taiwan midnight on the selected monthly day,
 clamped at month-end. Sampling runs about every five seconds, so traffic caps

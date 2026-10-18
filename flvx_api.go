@@ -193,7 +193,7 @@ func flvxPublicStatus(s flvx.Status) map[string]any {
 	if state == "" {
 		state = "stopped"
 	}
-	if s.CollectedAt > 0 && time.Now().UnixMilli()-s.CollectedAt > 30000 && state == "running" {
+	if s.CollectedAt > 0 && time.Now().UnixMilli()-s.CollectedAt > 60000 && state == "running" {
 		state = "error"
 	}
 	return map[string]any{"applied_revision": s.AppliedRevision, "core": map[string]any{"state": state, "epoch": s.Core.Epoch}, "nodes": s.Nodes, "share_traffic_used_bytes": s.TrafficUsedBytes, "collected_at": s.CollectedAt}

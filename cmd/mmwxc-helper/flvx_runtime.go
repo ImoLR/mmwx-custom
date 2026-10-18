@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,7 +49,7 @@ func (m *flvxManager) collect(ctx context.Context, snapshot coreSnapshotResponse
 		return errors.New("invalid FLVX inbound statistics")
 	}
 	epoch := snapshot.StartedAt.UTC().Format(time.RFC3339Nano)
-	period := flvx.Period(time.Now(), m.state.Payload.Config.ResetDay)
+	period := flvx.Period(m.now(), m.state.Payload.Config.ResetDay)
 	if m.state.Report.Period != period {
 		m.state.Report.Period = period
 		m.state.Report.TrafficUsedBytes = 0
@@ -162,7 +163,7 @@ func (m *flvxManager) wanted(ctx context.Context) (map[string]string, map[string
 		problems[e.NodeID] = e.Message
 	}
 	for _, n := range p.Desired.Nodes {
-		if !flvx.Active(p.Status, p.Config, m.state.Report.TrafficUsedBytes, n, time.Now()) || problems[n.ID] != "" {
+		if !flvx.Active(p.Status, p.Config, m.state.Report.TrafficUsedBytes, n, m.now()) || problems[n.ID] != "" {
 			continue
 		}
 		if n.Port == m.state.APIPort {
@@ -276,16 +277,26 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 		}
 		m.state.Report.Nodes = append(m.state.Report.Nodes, s)
 	}
-	m.state.Report.CollectedAt = time.Now().UnixMilli()
-	m.state.Report.Sequence++
-	return m.persist()
+	return m.persistReport(m.reconciledPayload == [32]byte{})
 }
 
-func (m *flvxManager) reconcile(ctx context.Context) error {
+func (m *flvxManager) reconcile(ctx context.Context) (result error) {
 	if m.removed {
 		return nil
 	}
 	p := m.state.Payload
+	desired := p
+	desired.AckGeneration, desired.AckSequence = "", 0
+	desired.Period, desired.TrafficUsedBytes = "", 0
+	rawDesired, _ := json.Marshal(desired)
+	payloadHash := sha256.Sum256(rawDesired)
+	defer func() {
+		if result == nil {
+			m.reconciledPayload = payloadHash
+		} else {
+			m.reconciledPayload = [32]byte{}
+		}
+	}()
 	if p.Status == "revoked" && m.state.Report.Core.State == "stopped" && p.AckGeneration == m.state.Report.Generation && p.AckSequence >= m.state.Report.Sequence && m.state.Report.Sequence > 0 {
 		if err := m.cleanup(ctx); err != nil {
 			return err
@@ -323,13 +334,19 @@ func (m *flvxManager) reconcile(ctx context.Context) error {
 		m.state.Report.AppliedRevision = p.Desired.Revision
 		return m.record(coreSnapshotResponse{}, nil, nil)
 	}
-	// Save final counters before a binary replacement can restart only this Core.
-	if snapshot, err := m.core.snapshot(ctx); err == nil {
-		if err = m.collect(ctx, snapshot); err != nil {
-			return err
-		}
-		if err = m.persist(); err != nil {
-			return err
+	checkInbounds := m.reconciledPayload != payloadHash || m.state.Report.Core.State != "running"
+	for _, n := range m.state.Report.Nodes {
+		checkInbounds = checkInbounds || n.State == "error"
+	}
+	// Save final counters only when setup may replace/recover this Core.
+	if checkInbounds {
+		if snapshot, err := m.core.snapshot(ctx); err == nil {
+			if err = m.collect(ctx, snapshot); err != nil {
+				return err
+			}
+			if err = m.persist(); err != nil {
+				return err
+			}
 		}
 	}
 	if err := m.setup(ctx); err != nil {
@@ -347,10 +364,18 @@ func (m *flvxManager) reconcile(ctx context.Context) error {
 	}
 	epoch := snapshot.StartedAt.UTC().Format(time.RFC3339Nano)
 	if m.state.AppliedEpoch != epoch {
+		checkInbounds = true
 		m.state.Applied = map[string]string{}
 		m.state.AppliedEpoch = epoch
 	}
 	wanted, problems := m.wanted(ctx)
+	if !checkInbounds && reflect.DeepEqual(wanted, m.state.Applied) {
+		if err = m.limits(ctx, snapshot, wanted, nil); err != nil {
+			return err
+		}
+		m.state.Report.AppliedRevision = p.Desired.Revision
+		return m.record(snapshot, wanted, problems)
+	}
 	raw, err := m.apiCall(ctx, "lsi")
 	if err != nil {
 		return err
@@ -428,6 +453,9 @@ func (m *flvxManager) reconcile(ctx context.Context) error {
 	if p.Config.TrafficLimitBytes > 0 && m.state.Report.TrafficUsedBytes >= p.Config.TrafficLimitBytes && len(wanted) > 0 {
 		wanted = map[string]string{}
 		if err = m.limits(ctx, snapshot, wanted, nil); err != nil {
+			return err
+		}
+		if err = m.persist(); err != nil {
 			return err
 		}
 		for tag := range m.state.Applied {
