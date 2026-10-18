@@ -195,6 +195,27 @@ func TestFLVXPublishedCountersSurviveCrash(t *testing.T) {
 	}
 }
 
+func TestFLVXUnchangedNodeErrorThrottlesWrites(t *testing.T) {
+	m, f := fakeFLVXManager(t)
+	now := time.Now()
+	m.clock = func() time.Time { return now }
+	m.state.Payload.Desired.Nodes = append(m.state.Payload.Desired.Nodes, helperFLVXNode("collision", 30003))
+	if err := m.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.writes = 0
+	for i := 1; i <= 60; i++ {
+		now = now.Add(time.Second)
+		f.stats["one"] = [2]int64{int64(i * 100), 0}
+		if err := m.reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.writes != 2 || !f.present["flvxl-one"] || m.snapshotReport().Nodes[0].State != "error" {
+		t.Fatalf("unchanged node error bypassed counter write cadence: writes=%d", f.writes)
+	}
+}
+
 func TestFLVXPersistenceFailureAndQuota(t *testing.T) {
 	m, f := fakeFLVXManager(t)
 	now := time.Now()
@@ -279,6 +300,33 @@ func TestFLVXRepeatedDesiredAndAcknowledgements(t *testing.T) {
 	m.state = flvxLocalState{}
 	if err := m.load(); err != nil || m.snapshotReport().Sequence < want {
 		t.Fatal("load regressed an acknowledged sequence", err)
+	}
+}
+
+func TestFLVXDesiredPersistenceRetry(t *testing.T) {
+	m, _ := fakeFLVXManager(t)
+	if err := m.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	p := m.state.Payload
+	p.ServerID, p.Version = "7", p.Version+1
+	e := flvx.Envelope{Payload: p, ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
+	e.Sign("helper")
+	write := m.writeState
+	m.writeState = func(string, []byte, os.FileMode) error { return errors.New("disk unavailable") }
+	for i := 0; i < 2; i++ {
+		if err := m.accept(e); err == nil {
+			t.Fatal("unpersisted desired retry was acknowledged")
+		}
+	}
+	m.writeState = write
+	if err := m.accept(e); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(m.dir, "state.json"))
+	var disk flvxLocalState
+	if err != nil || json.Unmarshal(raw, &disk) != nil || disk.Payload.Version != p.Version {
+		t.Fatal("retried desired was not persisted")
 	}
 }
 

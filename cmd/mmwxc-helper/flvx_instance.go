@@ -59,6 +59,7 @@ type flvxManager struct {
 	verifiedHash                    string
 	verifiedMTime                   time.Time
 	persistedHash                   [32]byte
+	persistedPayload                [32]byte
 	persistedAt                     time.Time
 	reportedMaterial                [32]byte
 	reconciledPayload               [32]byte
@@ -110,6 +111,8 @@ func (m *flvxManager) load() error {
 			return errors.New("invalid FLVX instance state; refusing to reset counters")
 		}
 		m.persistedHash = sha256.Sum256(raw)
+		payload, _ := json.Marshal(m.state.Payload)
+		m.persistedPayload = sha256.Sum256(payload)
 		m.persistedAt = m.now()
 	}
 	if m.state.Counters == nil {
@@ -184,6 +187,8 @@ func (m *flvxManager) persist() error {
 		return err
 	}
 	m.persistedHash = hash
+	payload, _ := json.Marshal(m.state.Payload)
+	m.persistedPayload = sha256.Sum256(payload)
 	m.persistedAt = m.now()
 	return nil
 }
@@ -361,7 +366,6 @@ func (m *flvxManager) accept(e flvx.Envelope) error {
 	if m.reportAbsentInstance(p) {
 		return nil
 	}
-	previous, _ := json.Marshal(m.state.Payload)
 	previousPeriod := m.state.Report.Period
 	m.state.Payload = p
 	period := flvx.Period(time.Now(), p.Config.ResetDay)
@@ -373,7 +377,7 @@ func (m *flvxManager) accept(e flvx.Envelope) error {
 		m.state.Report.TrafficUsedBytes = p.TrafficUsedBytes
 	}
 	current, _ := json.Marshal(p)
-	if string(previous) == string(current) && previousPeriod == period {
+	if sha256.Sum256(current) == m.persistedPayload && previousPeriod == period {
 		return nil
 	}
 	return m.persist()

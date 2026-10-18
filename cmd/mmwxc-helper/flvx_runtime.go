@@ -337,12 +337,13 @@ func (m *flvxManager) reconcile(ctx context.Context) (result error) {
 		m.state.Report.AppliedRevision = p.Desired.Revision
 		return m.record(coreSnapshotResponse{}, nil, nil)
 	}
-	checkInbounds := m.reconciledPayload != payloadHash || m.state.Report.Core.State != "running"
+	checkSetup := m.reconciledPayload != payloadHash || m.state.Report.Core.State != "running"
+	checkInbounds := checkSetup
 	for _, n := range m.state.Report.Nodes {
 		checkInbounds = checkInbounds || n.State == "error"
 	}
 	// Save final counters only when setup may replace/recover this Core.
-	if checkInbounds {
+	if checkSetup {
 		if snapshot, err := m.core.snapshot(ctx); err == nil {
 			if err = m.collect(ctx, snapshot); err != nil {
 				return err
@@ -408,10 +409,10 @@ func (m *flvxManager) reconcile(ctx context.Context) (result error) {
 		if err = m.collect(ctx, snapshot); err != nil {
 			return err
 		}
-	}
-	// Persist the final raw cursors before removing their handlers/stat counters.
-	if err = m.persist(); err != nil {
-		return err
+		// Persist final cursors only when handlers/stat counters will be removed.
+		if err = m.persist(); err != nil {
+			return err
+		}
 	}
 	for tag := range changing {
 		if _, err = m.apiCall(ctx, "rmi", tag); err != nil {
@@ -430,6 +431,9 @@ func (m *flvxManager) reconcile(ctx context.Context) (result error) {
 	for tag, config := range wanted {
 		if present[tag] && m.state.Applied[tag] == config {
 			continue
+		}
+		if err = m.persist(); err != nil {
+			return err
 		}
 		path := filepath.Join(m.dir, "inbound.json")
 		if err = writeFLVXFile(path, []byte(`{"inbounds":[`+config+`]}`), 0600); err != nil {
