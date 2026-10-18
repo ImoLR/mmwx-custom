@@ -94,6 +94,7 @@ var helperCapabilities = []string{
 	"external.takeover",
 	"core.mode.apply",
 	"connection.status", "connection.settings",
+	"flvx.share",
 }
 
 func helperTokenHash(token string) string {
@@ -148,6 +149,7 @@ func signManagementResult(result *managementResult, token string) error {
 }
 
 type commandExecutor struct {
+	flvx             *flvxManager
 	lifecycle        *lifecycleManager
 	core             *coreClient
 	state            *localState

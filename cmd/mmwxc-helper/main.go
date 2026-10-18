@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/ImoLR/mmwx-custom/internal/flvx"
 	"io"
 	"log"
 	"net/http"
@@ -180,6 +181,20 @@ func main() {
 	}
 
 	periodicLogs := newPeriodicLogLimiter()
+	executor.flvx, err = newFLVXManager(cfg)
+	if err != nil {
+		periodicLogs.report("FLVX state unavailable", err)
+		stopContext, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if _, statErr := os.Stat(flvxUnitPath); statErr == nil {
+			_ = systemctl(stopContext, "stop", flvxServiceName)
+		}
+		stopCancel()
+	}
+	flvxContext, cancelFLVX := context.WithCancel(context.Background())
+	defer cancelFLVX()
+	if executor.flvx != nil {
+		go executor.flvx.run(flvxContext)
+	}
 	runOnce := func() {
 		executor.runOnce(onlineTracker, nftables, machineProtection, periodicLogs)
 	}
@@ -237,7 +252,7 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 	state.HelperVersion = helperVersion
 	logs.report("save heartbeat failed", saveLocalState(cfg.StatePath, *state))
 	report := &managementReport{Status: executor.status(context.Background()), Result: state.PendingResult}
-	response, err := uploadDetailedMetrics(context.Background(), client, cfg, snapshot, report)
+	response, err := uploadDetailedMetrics(context.Background(), client, cfg, snapshot, report, executor.flvx.snapshotReport())
 	logs.report("upload failed", err)
 	if err != nil {
 		return
@@ -251,6 +266,7 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 		executor.reportUpdateProgress("helper", "success", helperVersion, "", updateProgressDetails{LogLine: "新 Helper 进程已启动，首次上报成功"})
 	}
 	state.updateSettings(response.Settings)
+	executor.flvx.submit(response.FLVX)
 	if response.Command != nil && !completedCommand(state.CompletedCommandIDs, response.Command.ID) {
 		commandCtx, cancelCommand := context.WithTimeout(context.Background(), 31*time.Minute)
 		result := executor.execute(commandCtx, *response.Command, cfg.Token)
@@ -462,7 +478,7 @@ func uploadMetrics(ctx context.Context, client *http.Client, cfg config, snapsho
 	return nil
 }
 
-func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config, snapshot detailedConnectionSnapshot, management *managementReport) (detailedMetricsResponse, error) {
+func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config, snapshot detailedConnectionSnapshot, management *managementReport, flvxReport ...*flvx.Report) (detailedMetricsResponse, error) {
 	legacy, err := readConnections()
 	if err != nil {
 		legacy = connectionSnapshot{TCPCount: snapshot.System.Total, ConnectionCount: snapshot.System.Total, SampledAt: snapshot.SampledAt}
@@ -470,6 +486,9 @@ func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config,
 	payload := detailedMetricsPayload{
 		ServerID: cfg.ServerID, HelperVersion: helperVersion, TCPCount: legacy.TCPCount, UDPCount: legacy.UDPCount,
 		ConnectionCount: legacy.ConnectionCount, Snapshot: snapshot, Management: management,
+	}
+	if len(flvxReport) > 0 {
+		payload.FLVX = flvxReport[0]
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -491,7 +510,7 @@ func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config,
 		return detailedMetricsResponse{}, fmt.Errorf("HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(data)))
 	}
 	var decoded detailedMetricsResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&decoded); err != nil {
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&decoded); err != nil {
 		return detailedMetricsResponse{}, fmt.Errorf("decode controller response: %w", err)
 	}
 	if !decoded.Success {

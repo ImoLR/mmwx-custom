@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"github.com/ImoLR/mmwx-custom/internal/flvx"
+	"time"
+)
 
 type tcpStateCounts struct {
 	Total       int64 `json:"tcp_total"`
@@ -350,6 +353,7 @@ type detailedConnectionSnapshot struct {
 }
 
 type detailedMetricsPayload struct {
+	FLVX            *flvx.Report               `json:"flvx,omitempty"`
 	ServerID        string                     `json:"server_id"`
 	HelperVersion   string                     `json:"helper_version"`
 	TCPCount        int64                      `json:"tcp_count"`
@@ -360,6 +364,7 @@ type detailedMetricsPayload struct {
 }
 
 type detailedMetricsResponse struct {
+	FLVX     *flvx.Envelope     `json:"flvx,omitempty"`
 	Success  bool               `json:"success"`
 	Settings connectionSettings `json:"settings"`
 	Command  *managementCommand `json:"command,omitempty"`
