@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { smallText, enforceFontFloor, fontFloor } from "./font-floor.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -78,7 +79,15 @@ try {
     if (!baseline) await page.waitForFunction(() => document.querySelector(".cx-manager")?.getAttribute("aria-busy") === "false");
     await page.evaluate(() => scrollTo(0, 0));
   };
-  const shot = async (name, fullPage = false) => { await page.mouse.move(0, 0); return page.screenshot({ path: path.join(evidence, `${name}.png`), fullPage }); };
+  const fontIssues = [];
+  const shot = async (name, fullPage = false) => {
+    await page.mouse.move(0, 0);
+    const small = await smallText(page);
+    if (small.length) fontIssues.push({ name, small });
+    writeFileSync(path.join(evidence, "font-issues.json"), JSON.stringify(fontIssues, null, 2));
+    if (enforceFontFloor && !baseline) assert.deepEqual(small, [], `${name}: text below ${fontFloor}px`);
+    return page.screenshot({ path: path.join(evidence, `${name}.png`), fullPage });
+  };
   const measure = async (label, kind) => {
     const selector = baseline ? `.${kind}-card` : `.${kind}-compact-row`;
     const data = await page.evaluate(({ selector, kind }) => {
@@ -92,8 +101,8 @@ try {
     if (!baseline) {
       assert.equal(data.overflow, false, `${label}: page overflow`);
       assert.equal(data.lineOverflow, false, `${label}: row line overflow`);
-      assert.ok(data.rowHeights.every((height) => height <= 88), `${label}: rows too tall`);
-      if (data.width === 390) assert.ok(data.firstScreenUnique >= 7, `${label}: only ${data.firstScreenUnique} distinct rows on first screen`);
+      assert.ok(data.rowHeights.every((height) => height <= 92), `${label}: rows too tall`);
+      if (data.width === 390) assert.ok(data.firstScreenUnique >= 6, `${label}: only ${data.firstScreenUnique} distinct rows on first screen`);
     }
   };
   const close = async () => { await page.keyboard.press("Escape"); await page.getByRole("dialog").waitFor({ state: "hidden" }); };

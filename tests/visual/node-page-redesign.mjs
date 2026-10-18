@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { smallText, enforceFontFloor, fontFloor } from "./font-floor.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -132,17 +133,24 @@ try {
   await page.waitForFunction(() => document.querySelector(".node-manager")?.getAttribute("aria-busy") === "false");
   await page.locator(".node-group-label strong").filter({ hasText: "自用" }).waitFor();
   await page.locator(".node-row-tag.out").first().waitFor();
-  const screenshot = async (name, fullPage = false) => page.screenshot({ path: path.join(evidence, `${name}.png`), fullPage });
+  const fontIssues = [];
+  const screenshot = async (name, fullPage = false) => {
+    const small = await smallText(page);
+    if (small.length) fontIssues.push({ name, small });
+    if (enforceFontFloor) assert.deepEqual(small, [], `${name}: text below ${fontFloor}px`);
+    return page.screenshot({ path: path.join(evidence, `${name}.png`), fullPage });
+  };
   const measure = async (label) => {
     const data = await page.evaluate(() => {
       const rows = [...document.querySelectorAll(".node-compact-row")].map((element) => ({ id: element.dataset.nodeId, rect: element.getBoundingClientRect(), addressHeight: element.querySelector(".node-row-address").getBoundingClientRect().height, metaHeight: element.querySelector(".node-row-meta").getBoundingClientRect().height }));
       const addresses = [...document.querySelectorAll(".node-row-address")];
-      return { width: innerWidth, height: innerHeight, pageHeight: document.documentElement.scrollHeight, rowHeights: [...new Set(rows.map((row) => row.rect.height))], firstScreenNodes: new Set(rows.filter((row) => row.rect.top >= 0 && row.rect.bottom <= innerHeight).map((row) => row.id)).size, visibleRows: rows.length, uniqueNodes: new Set(rows.map((row) => row.id)).size, overflow: document.documentElement.scrollWidth > innerWidth, overflowPixels: Math.max(0, document.documentElement.scrollWidth - innerWidth), addressOverflow: addresses.some((element) => element.scrollWidth > element.clientWidth || element.scrollHeight > element.clientHeight || getComputedStyle(element).textOverflow === "ellipsis"), rowDetails: rows.map((row) => ({ id: row.id, height: row.rect.height, addressHeight: row.addressHeight, metaHeight: row.metaHeight })) };
+      return { width: innerWidth, height: innerHeight, pageHeight: document.documentElement.scrollHeight, rowHeights: [...new Set(rows.map((row) => row.rect.height))], firstScreenNodes: new Set(rows.filter((row) => row.rect.top >= 0 && row.rect.bottom <= innerHeight).map((row) => row.id)).size, visibleRows: rows.length, uniqueNodes: new Set(rows.map((row) => row.id)).size, overflow: document.documentElement.scrollWidth > innerWidth, overflowPixels: Math.max(0, document.documentElement.scrollWidth - innerWidth), metaOverflow: [...document.querySelectorAll(".node-row-meta")].some((element) => element.scrollWidth > element.clientWidth + 1), addressOverflow: addresses.some((element) => element.scrollWidth > element.clientWidth || element.scrollHeight > element.clientHeight || getComputedStyle(element).textOverflow === "ellipsis"), rowDetails: rows.map((row) => ({ id: row.id, height: row.rect.height, addressHeight: row.addressHeight, metaHeight: row.metaHeight })) };
     });
     assert.equal(data.overflow, false, `${label}: horizontal overflow`);
     assert.equal(data.addressOverflow, false, `${label}: clipped address`);
-    assert.ok(data.rowDetails.filter((row) => row.addressHeight === 18 && row.metaHeight === 17).every((row) => row.height <= 84), `${label}: common rows too tall`);
-    if (data.width === 390) assert.ok(data.rowDetails.filter((row) => row.addressHeight === 18).every((row) => row.height <= 84), `${label}: extra wrap without a long address`);
+    assert.equal(data.metaOverflow, false, `${label}: meta line overflow`);
+    assert.ok(data.rowDetails.filter((row) => row.addressHeight === 20 && row.metaHeight === 20).every((row) => row.height <= 92), `${label}: common rows too tall`);
+    if (data.width === 390) assert.ok(data.rowDetails.filter((row) => row.addressHeight === 20).every((row) => row.height <= 92), `${label}: extra wrap without a long address ${JSON.stringify(data.rowDetails.filter((row) => row.addressHeight === 20 && row.height > 96))}`);
     metrics.push({ label, ...data });
   };
   for (const theme of ["light", "dark"]) {
@@ -278,9 +286,9 @@ try {
   assert.equal(configWrites.length, 1, "group/collapse preferences must not write user_config");
   checks.push("ungrouped drag persists node_order once; grouping/collapse UI preferences never write user_config");
   assert.equal(errors.length, 0, errors.join("\n"));
-  assert.ok(metrics.filter((item) => item.label.startsWith("390-")).every((item) => item.firstScreenNodes >= 7));
+  assert.ok(metrics.filter((item) => item.label.startsWith("390-")).every((item) => item.firstScreenNodes >= 6));
   assert.equal(requests.filter((request) => request.path === "/api/v3" && request.body.op !== "034e094d05aa3f83" && request.body.op !== "c87c168b92b5f22d" && request.body.op !== "edc667caa2f10498").length, 0, "display must not write node names");
-  writeFileSync(path.join(evidence, "metrics.json"), JSON.stringify({ fixtureNodes: nodes.length, metrics, checks, requests, errors }, null, 2));
+  writeFileSync(path.join(evidence, "metrics.json"), JSON.stringify({ fixtureNodes: nodes.length, metrics, fontIssues, checks, requests, errors }, null, 2));
   console.log(JSON.stringify({ fixtureNodes: nodes.length, metrics, checks }, null, 2));
 } finally {
   await browser?.close();

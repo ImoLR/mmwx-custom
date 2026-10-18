@@ -208,9 +208,9 @@ export function PackageManagementPage({ token }: { token: string }) {
                   <div className="package-row-meta">
                     <span className="package-row-nodes" title={linkedServers.join("、")}>{pkg.nodes?.length || (pkg.nodes_configured ? packageDanglingNodeIds(pkg, allNodes).length : allNodes.length)} 个节点{linkedServers.length ? ` · ${linkedServers.join(" / ")}` : " · 全部节点"}</span>
                     <span className="package-row-users" title={bound.map((user) => user.username).join("、")}>{usersError ? "绑定待核对" : bound.map((user) => user.username).join("、") || "未绑定"}</span>
-                    {(groupCounts[pkg.id] ?? 0) > 0 && <span className="cx-tag">共享组 {groupCounts[pkg.id]}</span>}
-                    {groupCounts[pkg.id] === undefined && <span className="cx-tag bad">共享组待核对</span>}
-                    {overrides > 0 && <span className="cx-tag">节点覆盖 {overrides}</span>}
+                    {(groupCounts[pkg.id] ?? 0) > 0 && <span className="cx-tag" title={`共享组 ${groupCounts[pkg.id]}`}>共享 {groupCounts[pkg.id]}</span>}
+                    {groupCounts[pkg.id] === undefined && <span className="cx-tag bad" title="共享组待核对">共享待核对</span>}
+                    {overrides > 0 && <span className="cx-tag" title={`节点覆盖 ${overrides}`}>覆盖 {overrides}</span>}
                     {(pkg.speed_limit_mbps > 0 || pkg.device_limit > 0) && <span className="cx-tag">{[pkg.speed_limit_mbps > 0 ? "限速" : "", pkg.device_limit > 0 ? "连接" : ""].filter(Boolean).join("/")}</span>}
                     {pkg.forward_rule_limit > 0 && <span className="cx-tag">转发</span>}
                   </div>
