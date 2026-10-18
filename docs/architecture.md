@@ -556,7 +556,8 @@ connections. These counts retain the current Core total in/out socket semantics.
 
 Inbound up/down statistics include unauthenticated bytes. The Helper persists
 raw cursors and monotonic totals across Core epochs; PostgreSQL independently
-deduplicates Helper generation/sequence reports and merges resets. Final counters
+deduplicates Helper generation/sequence reports and merges resets, retaining the
+newest 32 retired generations. Final counters
 are sampled before removal. Material changes (including quota crossings and
 acknowledgements) are persisted immediately; counter/heartbeat-only writes occur
 at most once per 30 seconds. Reports and their sequence are published only after
@@ -572,6 +573,8 @@ can overshoot by traffic between samples. Exceeding the total quota, expiry or
 pause removes FLVX inbounds; a reset, raised quota or resume restores eligible
 nodes. Cancellation stops the instance and waits for final-counter acknowledgement
 before deleting its unit, config, binary and state. The service account remains.
+A revoked payload with no local unit, state file or API port reports only a
+stopped tombstone, without recreating instance files or reloading systemd.
 
 The v1 desired schema does **not** contain a per-node traffic limit. Custom
 therefore shows the node's cumulative usage and **未提供** for that limit;

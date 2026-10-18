@@ -285,6 +285,9 @@ func (m *flvxManager) reconcile(ctx context.Context) (result error) {
 		return nil
 	}
 	p := m.state.Payload
+	if m.reportAbsentInstance(p) {
+		return nil
+	}
 	desired := p
 	desired.AckGeneration, desired.AckSequence = "", 0
 	desired.Period, desired.TrafficUsedBytes = "", 0

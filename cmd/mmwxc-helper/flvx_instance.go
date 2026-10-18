@@ -358,6 +358,9 @@ func (m *flvxManager) accept(e flvx.Envelope) error {
 	if m.removed && p.Status == "revoked" {
 		return nil
 	}
+	if m.reportAbsentInstance(p) {
+		return nil
+	}
 	previous, _ := json.Marshal(m.state.Payload)
 	previousPeriod := m.state.Report.Period
 	m.state.Payload = p
@@ -374,6 +377,31 @@ func (m *flvxManager) accept(e flvx.Envelope) error {
 		return nil
 	}
 	return m.persist()
+}
+
+func (m *flvxManager) reportAbsentInstance(p flvx.Payload) bool {
+	if p.Status != "revoked" || m.state.APIPort != 0 || len(m.state.Counters) > 0 || len(m.state.Applied) > 0 {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(m.dir, "state.json")); !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	if _, err := os.Stat(flvxUnitPath); !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	// No local lifetime counters exist. Reuse only Custom's durable totals and
+	// acknowledgement; an empty stopped tombstone needs no instance files.
+	m.state.Payload = p
+	m.state.Report.Status = flvx.Status{AppliedRevision: p.Desired.Revision, Core: flvx.Core{State: "stopped"}, Nodes: []flvx.NodeStatus{}, TrafficUsedBytes: p.TrafficUsedBytes, CollectedAt: m.now().UnixMilli()}
+	m.state.Report.Period = p.Period
+	if p.AckGeneration != "" {
+		m.state.Report.Generation = p.AckGeneration
+		m.state.Report.Sequence = p.AckSequence
+	}
+	m.state.Report.Sequence++
+	m.removed = true
+	m.publish()
+	return true
 }
 
 func flvxServiceUnit(c flvx.Config) string {

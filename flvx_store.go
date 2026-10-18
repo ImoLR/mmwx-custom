@@ -250,6 +250,9 @@ func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r 
 	if r.Generation != s.Generation && s.Generation != "" {
 		s.Retired = append(s.Retired, s.Generation)
 	}
+	if len(s.Retired) > 32 {
+		s.Retired = s.Retired[len(s.Retired)-32:]
+	}
 	flvxReset(s, now)
 	seen := map[string]bool{}
 	for _, n := range r.Nodes {

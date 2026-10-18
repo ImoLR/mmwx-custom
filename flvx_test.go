@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http/httptest"
 	"strings"
@@ -267,6 +268,33 @@ func TestFLVXCountersPostgres(t *testing.T) {
 		if err != nil || len(s.Status.Nodes) != 1 || s.Status.Nodes[0].UpBytes != v.want || s.Status.TrafficUsedBytes != v.want {
 			t.Fatalf("merge %v: %+v %v", v, s, err)
 		}
+	}
+}
+
+func TestFLVXRetiredGenerationsPostgres(t *testing.T) {
+	a := flvxTestApp(t)
+	ctx := context.Background()
+	c := flvx.Config{PortMin: 30000, PortMax: 30100, ResetDay: 1, MemoryMB: 256, CPUPercent: 50}
+	if err := a.saveFLVXShare(ctx, 7, c, "active"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 40; i++ {
+		r := flvx.Report{Generation: fmt.Sprintf("reset-%02d", i), Sequence: 1, Period: flvx.Period(time.Now(), 1)}
+		if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", &r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := readFLVXShare(ctx, a.flvxDB(), 7, false)
+	if err != nil || len(s.Retired) != 32 || s.Retired[0] != "reset-07" || s.Retired[31] != "reset-38" || s.Generation != "reset-39" {
+		t.Fatalf("retired generations not bounded/newest: %+v %v", s, err)
+	}
+	r := flvx.Report{Generation: "reset-38", Sequence: 2}
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", &r); err != nil {
+		t.Fatal(err)
+	}
+	s, err = readFLVXShare(ctx, a.flvxDB(), 7, false)
+	if err != nil || s.Generation != "reset-39" || s.Sequence != 1 {
+		t.Fatal("recent retired report was not ignored", err)
 	}
 }
 

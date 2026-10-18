@@ -525,3 +525,50 @@ func TestFLVXRemovedReportAcknowledgement(t *testing.T) {
 		t.Fatal("re-added id lost lifetime counter")
 	}
 }
+
+func TestFLVXRevokedAbsentInstance(t *testing.T) {
+	var payload flvx.Payload
+	for restart := 0; restart < 3; restart++ {
+		m, f := fakeFLVXManager(t)
+		m.state.APIPort = 0
+		if restart == 0 {
+			payload = m.state.Payload
+			payload.ServerID, payload.Status = "7", "revoked"
+			payload.Period, payload.TrafficUsedBytes = flvx.Period(time.Now(), 1), 999
+			payload.AckGeneration, payload.AckSequence = "durable-helper", 100
+		}
+		m.setup = func(context.Context) error { t.Fatal("absent instance setup"); return nil }
+		m.cleanup = func(context.Context) error { t.Fatal("absent instance cleanup/daemon-reload"); return nil }
+		e := flvx.Envelope{Payload: payload, ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
+		e.Sign("helper")
+		for i := 0; i < 10; i++ {
+			if err := m.accept(e); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r := m.snapshotReport()
+		if r == nil || r.Core.State != "stopped" || len(r.Nodes) != 0 || r.TrafficUsedBytes != 999 || r.Generation != payload.AckGeneration || r.Sequence <= payload.AckSequence {
+			t.Fatal("missing stopped tombstone or regressed acknowledgement", r)
+		}
+		if f.writes != 0 || f.calls != 0 || f.stops != 0 {
+			t.Fatalf("absent instance did work: %+v", f)
+		}
+		if _, err := os.Stat(m.dir); !os.IsNotExist(err) {
+			t.Fatal("revoked payload recreated instance files")
+		}
+		payload.AckSequence = r.Sequence
+	}
+	// An existing state file must still follow the final-counter/cleanup path.
+	m, f := fakeFLVXManager(t)
+	m.state.APIPort = 0
+	if err := m.persist(); err != nil {
+		t.Fatal(err)
+	}
+	m.state.Payload.Status = "revoked"
+	if err := m.reconcile(context.Background()); err != nil || m.removed || f.stops != 1 {
+		t.Fatal("existing state bypassed cancellation", err)
+	}
+}
