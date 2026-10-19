@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
+  ArrowDownToLine,
+  ArrowUpToLine,
   ArrowUp,
+  ArrowUpDown,
   Braces,
   Check,
   Cloud,
@@ -9,6 +12,8 @@ import {
   Eye,
   KeyRound,
   LoaderCircle,
+  LockKeyhole,
+  MoreHorizontal,
   Play,
   Plus,
   RefreshCw,
@@ -61,6 +66,9 @@ import { serverCoreVersion, supportsCustomCoreFeatures } from "./xray-capabiliti
 import { defaultNodeIPVersion } from "./node-manager-logic";
 import { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, nodeInboundFlow, normalizeInboundFlow, relayPortChangeWarning } from "./inbound-flow";
 import { nodeManagedServer } from "./node-card-logic";
+
+import { CompactSheet, CompactSegments } from "./compact-ui";
+import { beginOrderDraft, defaultOutboundChange, isProtectedRule, moveToPosition, orderChanged, orderPayload, ruleMatcherSummary, type MovePosition, type OrderDraft } from "./xray-order-logic";
 
 type Tab = "config" | "inbounds" | "outbounds" | "routing";
 type Notice = { kind: "success" | "error"; text: string } | null;
@@ -548,7 +556,7 @@ export function useCoreModes(servers: RemoteServer[], token: string) {
   return state.serverIds === serverIds && state.token === token ? state.modes : {};
 }
 
-export function XrayManager({ server, token, username }: { server: RemoteServer; token: string; username: string }) {
+export function XrayManager({ server, token, username, onClose }: { server: RemoteServer; token: string; username: string; onClose: () => void }) {
   const coreModes = useCoreModes([server], token);
   const warpAllowed = () => supportsCustomCoreFeatures(server, coreModes[String(server.id)]);
   const [tab, setTab] = useState<Tab>("config");
@@ -571,6 +579,25 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
   const [editor, setEditor] = useState<{ kind: "inbound" | "outbound" | "rule" | "balancer" | "view"; item: XrayObject; index?: number; originalTag?: string } | null>(null);
   const [hideDefaults, setHideDefaults] = useState(false);
   const [warpOpen, setWarpOpen] = useState(false);
+  const [addRulesOpen, setAddRulesOpen] = useState(false);
+  const [orderDraft, setOrderDraft] = useState<OrderDraft | null>(null);
+  const unsavedOrder = Boolean(orderDraft && orderChanged(orderDraft));
+  const changedDefault = orderDraft ? defaultOutboundChange(orderDraft) : null;
+  useEffect(() => {
+    if (!unsavedOrder) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [unsavedOrder]);
+  function discardOrder() {
+    if (busy || (unsavedOrder && !window.confirm("顺序尚未保存，确认放弃排序修改？"))) return false;
+    setOrderDraft(null);
+    return true;
+  }
+  function openRuleEditor(item: XrayObject) {
+    setAddRulesOpen(false);
+    setEditor({ kind: "rule", item });
+  }
 
   const configError = useMemo(() => {
     try {
@@ -650,6 +677,10 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
   useEffect(() => {
     void refreshTab(tab);
   }, [tab, refreshTab]);
+
+  useEffect(() => {
+    void Promise.all([refreshInbounds(), refreshOutbounds(), refreshRouting()]).catch((error) => setNotice({ kind: "error", text: getError(error, "读取 Xray 列表失败") }));
+  }, [refreshInbounds, refreshOutbounds, refreshRouting]);
 
   async function runService(action: "start" | "stop" | "restart") {
     const label = action === "start" ? "启动" : action === "stop" ? "停止" : "重启";
@@ -825,51 +856,56 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
     }
   }
 
-  async function moveItem(kind: "outbound" | "rule", index: number, delta: -1 | 1) {
-    setBusy(`move-${kind}-${index}`);
+  function moveItem(_kind: "outbound" | "rule", index: number, position: MovePosition) {
+    setOrderDraft((draft) => draft && { ...draft, items: moveToPosition(draft.items, index, position) });
+  }
+
+  async function saveOrder() {
+    if (!orderDraft || !orderChanged(orderDraft) || busy) return;
+    if (changedDefault && !window.confirm(`默认出站将变为 ${changedDefault}，确认保存顺序？`)) return;
+    const draft = orderDraft;
+    setBusy("save-order");
     setNotice(null);
     try {
-      if (kind === "outbound") {
-        const reordered = [...outbounds];
-        [reordered[index], reordered[index + delta]] = [reordered[index + delta], reordered[index]];
-        await mutateXrayOutbound(token, server.id, { action: "reorder", tags: reordered.map((item) => asString(item.tag)) });
-        await refreshOutbounds();
-      } else {
-        const visibleRules = [...rules];
-        [visibleRules[index], visibleRules[index + delta]] = [visibleRules[index + delta], visibleRules[index]];
-        await mutateXrayRouting(token, server.id, { action: "set", routing: { ...routing, rules: [...protectedRules, ...visibleRules] } });
+      const payload = orderPayload(draft);
+      if (payload.action === "set") {
+        await mutateXrayRouting(token, server.id, payload);
+        // The write has succeeded: don't let a restart/readback failure resubmit it.
+        setOrderDraft(null);
         await restartAfterRouting();
         await refreshRouting();
+      } else {
+        await mutateXrayOutbound(token, server.id, payload);
+        setOrderDraft(null);
+        await refreshOutbounds();
       }
       setNotice({ kind: "success", text: "顺序已保存" });
     } catch (error) {
-      setNotice({ kind: "error", text: getError(error, kind === "outbound" ? "当前 Agent 不支持出站排序" : "排序失败") });
-      await refreshTab(kind === "outbound" ? "outbounds" : "routing");
+      setOrderDraft(null);
+      await (draft.kind === "rule" ? refreshRouting() : refreshOutbounds()).catch(() => undefined);
+      setNotice({ kind: "error", text: getError(error, draft.kind === "outbound" ? "当前 Agent 不支持出站排序" : "排序失败，请刷新确认远端状态") });
     } finally {
       setBusy("");
     }
   }
 
   const allRules = Array.isArray(routing.rules) ? routing.rules as XrayObject[] : [];
-  const isProtectedRule = (rule: XrayObject) => asString(rule.outboundTag) === "api" || (Array.isArray(rule.inboundTag) && (rule.inboundTag as unknown[]).some((value) => asString(value) === "api" || asString(value) === "tunnel-in"));
-  const protectedRules = allRules.filter(isProtectedRule);
-  const rules = allRules.filter((rule) => !isProtectedRule(rule));
+  const rules = orderDraft?.kind === "rule" ? orderDraft.items : allRules.filter((rule) => !isProtectedRule(rule));
   const balancers = Array.isArray(routing.balancers) ? routing.balancers as XrayObject[] : [];
-  const visibleOutbounds = hideDefaults ? outbounds.filter((item) => !["direct", "block"].includes(asString(item.tag).toLowerCase())) : outbounds;
+  const orderedOutbounds = orderDraft?.kind === "outbound" ? orderDraft.items : outbounds;
+  const visibleOutbounds = orderDraft?.kind === "outbound" ? orderedOutbounds : hideDefaults ? outbounds.filter((item) => !["direct", "block"].includes(asString(item.tag).toLowerCase())) : outbounds;
   const managedTags = new Set(nodes.filter((node) => node.node_type === "routed" && node.routed_outbound_tag).map((node) => asString(node.routed_outbound_tag)));
 
   return (
+    <CompactSheet title="Xray 管理" className="xray-compact" onClose={() => { if (discardOrder()) onClose(); }} closeDisabled={Boolean(busy)} header={<div className="xray-sheet-heading"><div><h2>Xray 管理</h2><p><span className={`xray-status-dot ${running ? "running" : ""}`} />{server.name}</p></div><button type="button" disabled={Boolean(busy)} onClick={() => { if (discardOrder()) void refreshTab(); }} aria-label="刷新当前页面"><RefreshCw /></button></div>} footer={orderDraft && <div className="xray-order-bar"><span className={changedDefault ? "default-change" : undefined}>{changedDefault ? `默认出站将变为 ${changedDefault}` : unsavedOrder ? (orderDraft.kind === "rule" ? "顺序尚未保存 · 保存时只重启一次 Xray" : "顺序尚未保存") : "调整顺序后统一保存"}</span><div><button type="button" disabled={Boolean(busy)} onClick={() => setOrderDraft(null)}>取消</button><button type="button" className="primary" disabled={!unsavedOrder || Boolean(busy)} onClick={() => void saveOrder()}><Save />{busy ? "保存中…" : "保存顺序"}</button></div></div>}>
     <div className="xray-manager">
-      <div className="xray-server-line"><span>{server.name}</span><button type="button" onClick={() => void refreshTab()} aria-label="刷新当前页面" title="刷新"><RefreshCw /></button></div>
-      <div className="service-tabs xray-tabs" role="tablist">
-        {(["config", "inbounds", "outbounds", "routing"] as Tab[]).map((value) => <button key={value} type="button" className={tab === value ? "active" : ""} onClick={() => setTab(value)}>{({ config: "配置", inbounds: "入站", outbounds: "出站", routing: "路由" })[value]}</button>)}
-      </div>
+      <CompactSegments<Tab> label="Xray 页面" value={tab} onChange={(value) => { if (value !== tab && discardOrder()) setTab(value); }} options={[["config", "配置"], ["inbounds", `入站 ${inbounds.length}`], ["outbounds", `出站 ${outbounds.length}`], ["routing", `路由 ${rules.length}`]]} />
       {notice && <div className={`xray-notice ${notice.kind}`} role="status">{notice.kind === "success" ? <Check /> : <X />}<span>{notice.text}</span></div>}
       {loading ? <div className="xray-loading"><LoaderCircle /> 正在读取服务器数据...</div> : null}
 
       {!loading && tab === "config" && <>
-        <section className="xray-panel xray-status-panel">
-          <div><span className={`xray-status-dot ${running ? "running" : ""}`} /><div><strong>{running ? "运行中" : "已停止"}</strong><p>{coreVersion.version || "未返回版本信息"}{server.xray_mode === "external" && ` · ${coreVersion.source}`}</p>{coreVersion.officialVersion && <small>官方 Agent 读数（参考）：{coreVersion.officialVersion}</small>}</div></div>
+        <section className="xray-panel xray-status-card">
+          <div className="xray-status-line"><span className={`xray-status-dot ${running ? "running" : ""}`} /><div><strong>{running ? "运行中" : "已停止"}</strong><p>{coreVersion.version || "未返回版本信息"}{server.xray_mode === "external" && ` · ${coreVersion.source}`}</p>{coreVersion.officialVersion && <small>官方 Agent 读数（参考）：{coreVersion.officialVersion}</small>}</div></div>
           <div className="xray-control-row">
             <button type="button" disabled={Boolean(busy)} onClick={() => void runService("start")}><Play />启动</button>
             <button type="button" disabled={Boolean(busy)} onClick={() => void runService("stop")} className="danger"><Square />停止</button>
@@ -898,55 +934,56 @@ export function XrayManager({ server, token, username }: { server: RemoteServer;
 
       {!loading && tab === "inbounds" && <section className="xray-list-section">
         <ListHeader title={`入站 (${inbounds.length})`} action="添加入站" onAdd={() => setEditor({ kind: "inbound", item: defaultInboundForUser("vless", username) })} />
-        {inbounds.length === 0 ? <Empty text="当前服务器没有可管理的入站" /> : inbounds.map((item, index) => <article className="xray-item" key={`${asString(item.tag)}-${index}`}>
-          <div className="xray-item-head"><div><strong>{asString(item.tag) || `入站 ${index + 1}`}</strong><p>{asString(item.protocol)} · {asString(item.listen) || "0.0.0.0"}:{asString(item.port) || "--"}</p></div><span>{inboundUsers(item)} 用户</span></div>
-          <div className="xray-chip-row"><span>{transportName(item)}</span><span>{securityName(item)}</span>{item._runtime_status != null && <span>{asString(item._runtime_status)}</span>}</div>
-          {inboundFlowWarning(item) && <p className="xray-inline-warning" role="alert">{inboundFlowWarning(item)}</p>}
-          <ItemActions onView={() => setEditor({ kind: "view", item })} onEdit={() => setEditor({ kind: "inbound", item, originalTag: asString(item.tag) })} onDelete={() => void removeItem("inbound", index, item)} busy={Boolean(busy)} />
-        </article>)}
+        {inbounds.length === 0 ? <Empty text="当前服务器没有可管理的入站" /> : <div className="xray-rows">{inbounds.map((item, index) => <XrayRow key={`${asString(item.tag)}-${index}`} name={asString(item.tag) || `入站 ${index + 1}`} pill={<span className="cx-tag">{asString(item.protocol)}</span>} line={`${asString(item.listen) || "0.0.0.0"}:${asString(item.port) || "--"} · ${transportName(item)} · ${securityName(item)} · ${inboundUsers(item)} 用户${item._runtime_status != null ? ` · ${asString(item._runtime_status)}` : ""}`} warning={inboundFlowWarning(item)} busy={Boolean(busy)} onView={() => setEditor({ kind: "view", item })} onEdit={() => setEditor({ kind: "inbound", item, originalTag: asString(item.tag) })} onDelete={() => void removeItem("inbound", index, item)} />)}</div>}
       </section>}
 
       {!loading && tab === "outbounds" && <section className="xray-list-section">
-        <ListHeader title={`出站 (${visibleOutbounds.length})`} action="添加出站" onAdd={() => setEditor({ kind: "outbound", item: defaultOutbound("freedom", outbounds) })} extra={<label className="xray-check"><input type="checkbox" checked={hideDefaults} onChange={(event) => setHideDefaults(event.target.checked)} />隐藏默认</label>} />
-        <div className="xray-node-import"><select value={selectedNodeId} onChange={(event) => setSelectedNodeId(event.target.value)}><option value="">从节点创建出站...</option>{nodes.map((node) => <option key={node.id} value={node.id}>{node.node_name} ({node.protocol})</option>)}</select><button type="button" disabled={!selectedNodeId} onClick={() => { try { const node = nodes.find((value) => String(value.id) === selectedNodeId); if (!node) return; setEditor({ kind: "outbound", item: nodeToOutbound(node) }); setNotice(null); } catch (error) { setNotice({ kind: "error", text: getError(error, "节点转换失败") }); } }}><Plus />导入</button></div>
+        <ListHeader title={`出站 (${visibleOutbounds.length})`} action="添加出站" onAdd={() => setEditor({ kind: "outbound", item: defaultOutbound("freedom", outbounds) })} disabled={Boolean(orderDraft) || Boolean(busy)} extra={<><button type="button" disabled={Boolean(orderDraft) || Boolean(busy)} onClick={() => setOrderDraft(beginOrderDraft("outbound", outbounds))}><ArrowUpDown />排序</button><label className="xray-check"><input type="checkbox" disabled={Boolean(orderDraft)} checked={hideDefaults} onChange={(event) => setHideDefaults(event.target.checked)} />隐藏默认</label></>} />
+        {!orderDraft && <><div className="xray-node-import"><select value={selectedNodeId} onChange={(event) => setSelectedNodeId(event.target.value)}><option value="">从节点创建出站...</option>{nodes.map((node) => <option key={node.id} value={node.id}>{node.node_name} ({node.protocol})</option>)}</select><button type="button" disabled={!selectedNodeId} onClick={() => { try { const node = nodes.find((value) => String(value.id) === selectedNodeId); if (!node) return; setEditor({ kind: "outbound", item: nodeToOutbound(node) }); setNotice(null); } catch (error) { setNotice({ kind: "error", text: getError(error, "节点转换失败") }); } }}><Plus />导入</button></div>
         <div className="xray-quick-row">{["freedom", "blackhole", "dns", "http", "loopback"].map((protocol) => <button type="button" key={protocol} onClick={() => setEditor({ kind: "outbound", item: defaultOutbound(protocol, outbounds) })}>{outboundProtocolLabels[protocol]}</button>)}<button type="button" disabled={!warpAllowed()} onClick={() => setWarpOpen(true)}><Cloud />Cloudflare WARP{!warpAllowed() ? "（需要 Custom Core）" : ""}</button></div>
-        {visibleOutbounds.length === 0 ? <Empty text="当前服务器没有可显示的出站" /> : visibleOutbounds.map((item) => {
-          const index = outbounds.indexOf(item); const detail = describeOutbound(item); const managed = managedTags.has(asString(item.tag)); const portForward = asString(item.tag).startsWith("tunnel-"); const protectedDelete = ["freedom", "blackhole"].includes(asString(item.protocol)) || managed || portForward;
-          return <article className="xray-item" key={`${asString(item.tag)}-${index}`}>
-            <div className="xray-item-head"><div><strong>{asString(item.tag) || `出站 ${index + 1}`}</strong><p>{outboundProtocolLabels[asString(item.protocol)] || asString(item.protocol)} · {detail.address}:{detail.port}</p></div>{index === 0 && <span>默认</span>}</div>
-            <div className="xray-chip-row"><span>{detail.users} 用户</span>{managed && <span>路由出站</span>}{portForward && <span>端口转发</span>}</div>
-            <ItemActions onView={() => setEditor({ kind: "view", item })} onEdit={portForward ? undefined : () => setEditor({ kind: "outbound", item, originalTag: asString(item.tag) })} onDelete={protectedDelete ? undefined : () => void removeItem("outbound", index, item)} busy={Boolean(busy)} moveUp={index > 0 ? () => void moveItem("outbound", index, -1) : undefined} moveDown={index < outbounds.length - 1 ? () => void moveItem("outbound", index, 1) : undefined} />
-          </article>;
-        })}
+        </>}
+        {visibleOutbounds.length === 0 ? <Empty text="当前服务器没有可显示的出站" /> : <div className="xray-rows">{visibleOutbounds.map((item) => {
+          const index = orderedOutbounds.indexOf(item); const detail = describeOutbound(item); const managed = managedTags.has(asString(item.tag)); const portForward = asString(item.tag).startsWith("tunnel-"); const protectedDelete = ["freedom", "blackhole"].includes(asString(item.protocol)) || managed || portForward;
+          return <XrayRow key={`${asString(item.tag)}-${index}`} name={asString(item.tag) || `出站 ${index + 1}`} pill={<span className="cx-tag">{outboundProtocolLabels[asString(item.protocol)] || asString(item.protocol)}</span>} line={`${detail.address}:${detail.port} · ${detail.users} 用户`} tags={<>{index === 0 && <span className="cx-tag">默认</span>}{managed && <span className="cx-tag out">路由出站</span>}{portForward && <span className="cx-tag out">端口转发</span>}</>} busy={Boolean(busy)} onView={() => setEditor({ kind: "view", item })} onEdit={portForward ? undefined : () => setEditor({ kind: "outbound", item, originalTag: asString(item.tag) })} onDelete={protectedDelete ? undefined : () => void removeItem("outbound", index, item)} order={orderDraft ? <OrderActions index={index} count={orderedOutbounds.length} busy={Boolean(busy)} onMove={(position) => moveItem("outbound", index, position)} /> : undefined} />;
+        })}</div>}
       </section>}
 
       {!loading && tab === "routing" && <section className="xray-list-section">
-        <div className="xray-routing-base"><label><span>域名策略</span><select value={asString(routing.domainStrategy) || "AsIs"} onChange={(event) => setRouting((value) => ({ ...value, domainStrategy: event.target.value }))}>{["AsIs", "IPIfNonMatch", "IPOnDemand"].map((value) => <option key={value} value={value}>{domainStrategyLabels[value]}</option>)}</select></label><button type="button" disabled={Boolean(busy)} onClick={() => void (async () => { if (!window.confirm("确认保存路由基础配置并重启 Xray？")) return; setBusy("routing-base"); try { await mutateXrayRouting(token, server.id, { action: "set", routing }); await restartAfterRouting(); await refreshRouting(); setNotice({ kind: "success", text: "路由配置已保存并重启" }); } catch (error) { setNotice({ kind: "error", text: getError(error, "保存失败") }); } finally { setBusy(""); } })()}><Save />保存</button></div>
-        <div className="xray-quick-block"><div className="xray-quick-heading"><strong>内置快捷规则</strong><span>选择后可继续编辑，保存才会应用</span></div><div className="xray-quick-row">
-          <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", protocol: ["bittorrent"], outboundTag: "block", marktag: "ban-bt" } })}>禁止 BT</button>
-          <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", ip: ["geoip:cn"], outboundTag: "block", marktag: "ban-cn-ip" } })}>禁止访问大陆 IP</button>
-          <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", ip: ["geoip:private"], outboundTag: "block", marktag: "ban-private" } })}>禁止内网访问</button>
-          <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", domain: ["geosite:openai"], outboundTag: "direct", marktag: "openai-direct" } })}>OpenAI 直连</button>
-          <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", domain: ["geosite:cn"], outboundTag: "warp-v4", marktag: "anti-cn-warp" } })}>防止送中（走 WARP）</button>
-          <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", domain: ["geosite:speedtest"], outboundTag: "warp-v4", marktag: "speedtest-warp" } })}>测速分流（走 WARP）</button>
-          <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", domain: ["geosite:category-pt"], outboundTag: "warp-v4", marktag: "home-bypass-warp" } })}>家宽常用（走 WARP）</button>
-          <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", domain: ["geosite:tiktok"], outboundTag: asString(outbounds[0]?.tag) || "direct", marktag: "tiktok" } })}>抖音解锁</button>
-          <button type="button" onClick={() => setEditor({ kind: "rule", item: { type: "field", domain: ["domain:emby.media"], outboundTag: asString(outbounds[0]?.tag) || "direct", marktag: "emby" } })}>RFC EMBY</button>
-        </div></div>
-        {routingPresets.length > 0 && <div className="xray-custom-quick"><div className="xray-quick-heading"><strong>最近使用 / 自定义快捷规则</strong><span>按当前管理员账号同步，最多保留 20 条</span></div><div className="xray-custom-quick-grid">{routingPresets.map((preset) => <div className="xray-custom-quick-item" key={preset.id}><button type="button" className="xray-custom-quick-open" onClick={() => setEditor({ kind: "rule", item: cloneObject(preset.rule) })}><strong>{preset.name}</strong><span>{preset.rule.balancerTag ? `负载均衡：${asString(preset.rule.balancerTag)}` : `出站：${asString(preset.rule.outboundTag) || "--"}`}</span></button><button type="button" className="xray-custom-quick-delete" disabled={Boolean(busy)} onClick={() => void removeRoutingPreset(preset)} title="删除快捷规则" aria-label={`删除快捷规则 ${preset.name}`}><Trash2 /></button></div>)}</div></div>}
-        <ListHeader title={`路由规则 (${rules.length})`} action="自定义规则" onAdd={() => setEditor({ kind: "rule", item: { type: "field", outboundTag: outbounds[0]?.tag || "direct" } })} />
-        {rules.length === 0 ? <Empty text="当前没有路由规则" /> : rules.map((item, index) => <article className="xray-item" key={`rule-${index}`}>
-          <div className="xray-item-head"><div><strong>{displayMarkTag(item.marktag, index)}</strong><p>{item.balancerTag ? `负载均衡：${asString(item.balancerTag)}` : `出站：${asString(item.outboundTag) || "--"}`}</p></div><span>#{index + 1}</span></div>
-          <div className="xray-chip-row">{["domain", "ip", "port", "protocol", "network", "inboundTag", "user", "source"].filter((key) => item[key] != null).map((key) => <span key={key}>{routingFieldLabels[key]}</span>)}</div>
-          <ItemActions onView={() => setEditor({ kind: "view", item })} onEdit={managedTags.has(asString(item.outboundTag)) || asString(item.outboundTag).startsWith("tunnel-") ? undefined : () => setEditor({ kind: "rule", item, index: allRules.indexOf(item) })} onDelete={managedTags.has(asString(item.outboundTag)) || asString(item.outboundTag).startsWith("tunnel-") ? undefined : () => void removeItem("rule", allRules.indexOf(item), item)} busy={Boolean(busy)} moveUp={index > 0 ? () => void moveItem("rule", index, -1) : undefined} moveDown={index < rules.length - 1 ? () => void moveItem("rule", index, 1) : undefined} />
-        </article>)}
-        <ListHeader title={`负载均衡 (${balancers.length})`} action="添加负载均衡" onAdd={() => setEditor({ kind: "balancer", item: { tag: "", selector: [], strategy: { type: "random" } } })} />
-        {balancers.map((item, index) => <article className="xray-item" key={`balancer-${index}`}><div className="xray-item-head"><div><strong>{asString(item.tag) || `负载均衡 ${index + 1}`}</strong><p>{Array.isArray(item.selector) ? item.selector.join(", ") : "--"}</p></div><span>{({ random: "随机", roundRobin: "轮询", leastPing: "最低延迟", leastLoad: "最低负载" } as Record<string, string>)[asString(asObject(item.strategy).type)] || asString(asObject(item.strategy).type) || "随机"}</span></div><ItemActions onView={() => setEditor({ kind: "view", item })} onEdit={() => setEditor({ kind: "balancer", item, index })} onDelete={() => void removeItem("balancer", index, item)} busy={Boolean(busy)} /></article>)}
+        <div className="xray-routing-base"><label><span>域名策略</span><select disabled={Boolean(orderDraft) || Boolean(busy)} value={asString(routing.domainStrategy) || "AsIs"} onChange={(event) => setRouting((value) => ({ ...value, domainStrategy: event.target.value }))}>{["AsIs", "IPIfNonMatch", "IPOnDemand"].map((value) => <option key={value} value={value}>{domainStrategyLabels[value]}</option>)}</select></label><button type="button" disabled={Boolean(orderDraft) || Boolean(busy)} onClick={() => void (async () => { if (!window.confirm("确认保存路由基础配置并重启 Xray？")) return; setBusy("routing-base"); try { await mutateXrayRouting(token, server.id, { action: "set", routing }); await restartAfterRouting(); await refreshRouting(); setNotice({ kind: "success", text: "路由配置已保存并重启" }); } catch (error) { setNotice({ kind: "error", text: getError(error, "保存失败") }); } finally { setBusy(""); } })()}><Save />保存</button></div>
+        <ListHeader title={`路由规则 (${rules.length})`} action="添加规则" disabled={Boolean(orderDraft) || Boolean(busy)} onAdd={() => setAddRulesOpen(true)} extra={<button type="button" disabled={Boolean(orderDraft) || Boolean(busy)} onClick={() => setOrderDraft(beginOrderDraft("rule", allRules, routing))}><ArrowUpDown />排序</button>} />
+        {rules.length === 0 ? <Empty text="当前没有路由规则" /> : <div className="xray-rows">{rules.map((item, index) => {
+          const target = asString(item.outboundTag);
+          const lock = managedTags.has(target) ? "路由节点" : target.startsWith("tunnel-") ? "端口转发" : "";
+          return <XrayRow key={`rule-${index}`} name={displayMarkTag(item.marktag, index)} pill={<><span className="cx-tag" title={item.balancerTag ? "负载均衡" : "出站"}>{item.balancerTag ? `均衡 ${asString(item.balancerTag)}` : target || "--"}</span>{lock && <span className="cx-tag out xray-lock-tag" title={`由${lock}管理，只能查看`}><LockKeyhole />{lock}</span>}</>} line={ruleMatcherSummary(item)} note={lock ? `由${lock}管理，这里只能查看。` : undefined} busy={Boolean(busy)} onView={() => setEditor({ kind: "view", item })} onEdit={lock ? undefined : () => setEditor({ kind: "rule", item, index: allRules.indexOf(item) })} onDelete={lock ? undefined : () => void removeItem("rule", allRules.indexOf(item), item)} order={orderDraft ? <OrderActions index={index} count={rules.length} busy={Boolean(busy)} onMove={(position) => moveItem("rule", index, position)} /> : undefined} />;
+        })}</div>}
+        <ListHeader title={`负载均衡 (${balancers.length})`} action="添加负载均衡" disabled={Boolean(orderDraft) || Boolean(busy)} onAdd={() => setEditor({ kind: "balancer", item: { tag: "", selector: [], strategy: { type: "random" } } })} />
+        {balancers.length > 0 && <div className="xray-rows">{balancers.map((item, index) => <XrayRow key={`balancer-${index}`} name={asString(item.tag) || `负载均衡 ${index + 1}`} pill={<span className="cx-tag">{({ random: "随机", roundRobin: "轮询", leastPing: "最低延迟", leastLoad: "最低负载" } as Record<string, string>)[asString(asObject(item.strategy).type)] || asString(asObject(item.strategy).type) || "随机"}</span>} line={Array.isArray(item.selector) ? item.selector.join(", ") : "--"} busy={Boolean(busy) || Boolean(orderDraft)} onView={() => setEditor({ kind: "view", item })} onEdit={() => setEditor({ kind: "balancer", item, index })} onDelete={() => void removeItem("balancer", index, item)} />)}</div>}
       </section>}
 
+      {addRulesOpen && <CompactSheet title="添加规则" subtitle="选择后可继续编辑，保存才会应用" className="xray-add-rules" onClose={() => setAddRulesOpen(false)}>
+        <h3 className="cx-sheet-section">内置快捷</h3>
+        <div className="cx-sheet-items">
+          <button type="button" onClick={() => openRuleEditor({ type: "field", protocol: ["bittorrent"], outboundTag: "block", marktag: "ban-bt" })}>禁止 BT</button>
+          <button type="button" onClick={() => openRuleEditor({ type: "field", ip: ["geoip:cn"], outboundTag: "block", marktag: "ban-cn-ip" })}>禁止访问大陆 IP</button>
+          <button type="button" onClick={() => openRuleEditor({ type: "field", ip: ["geoip:private"], outboundTag: "block", marktag: "ban-private" })}>禁止内网访问</button>
+          <button type="button" onClick={() => openRuleEditor({ type: "field", domain: ["geosite:openai"], outboundTag: "direct", marktag: "openai-direct" })}>OpenAI 直连</button>
+          <button type="button" onClick={() => openRuleEditor({ type: "field", domain: ["geosite:cn"], outboundTag: "warp-v4", marktag: "anti-cn-warp" })}>防止送中（走 WARP）</button>
+          <button type="button" onClick={() => openRuleEditor({ type: "field", domain: ["geosite:speedtest"], outboundTag: "warp-v4", marktag: "speedtest-warp" })}>测速分流（走 WARP）</button>
+          <button type="button" onClick={() => openRuleEditor({ type: "field", domain: ["geosite:category-pt"], outboundTag: "warp-v4", marktag: "home-bypass-warp" })}>家宽常用（走 WARP）</button>
+          <button type="button" onClick={() => openRuleEditor({ type: "field", domain: ["geosite:tiktok"], outboundTag: asString(outbounds[0]?.tag) || "direct", marktag: "tiktok" })}>抖音解锁</button>
+          <button type="button" onClick={() => openRuleEditor({ type: "field", domain: ["domain:emby.media"], outboundTag: asString(outbounds[0]?.tag) || "direct", marktag: "emby" })}>RFC EMBY</button>
+        </div>
+        {routingPresets.length > 0 && <>
+          <h3 className="cx-sheet-section">最近使用<small>按当前管理员账号同步，最多保留 20 条</small></h3>
+          <div className="xray-preset-list">{routingPresets.map((preset) => <div className="xray-preset-row" key={preset.id}><button type="button" className="xray-preset-open" onClick={() => openRuleEditor(cloneObject(preset.rule))}><span>{preset.name}</span><small>{preset.rule.balancerTag ? `负载均衡：${asString(preset.rule.balancerTag)}` : `出站：${asString(preset.rule.outboundTag) || "--"}`}</small></button><button type="button" className="xray-preset-delete" disabled={Boolean(busy)} onClick={() => void removeRoutingPreset(preset)} title="删除快捷规则" aria-label={`删除快捷规则 ${preset.name}`}><Trash2 /></button></div>)}</div>
+        </>}
+        <h3 className="cx-sheet-section">自定义规则</h3>
+        <div className="cx-sheet-items"><button type="button" onClick={() => openRuleEditor({ type: "field", outboundTag: outbounds[0]?.tag || "direct" })}><Plus />自定义规则</button></div>
+      </CompactSheet>}
       {editor && <ObjectEditor editor={editor} server={server} token={token} username={username} nodes={nodes} inbounds={inbounds} outbounds={outbounds} balancers={balancers} usedPorts={inbounds.map((item) => asNumber(item.port)).filter(Boolean)} pending={busy.startsWith("save-")} onCancel={() => setEditor(null)} onSave={(item) => void saveEditor(item)} />}
       {warpOpen && <WarpManager allowed={warpAllowed} server={server} token={token} onClose={() => setWarpOpen(false)} onChanged={() => void refreshOutbounds()} />}
     </div>
+    </CompactSheet>
   );
 }
 
@@ -1230,16 +1267,44 @@ function Switch({ label, checked, onChange }: { label: string; checked: boolean;
   return <label className="xray-switch"><span>{label}</span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i /></label>;
 }
 
-function ListHeader({ title, action, onAdd, extra }: { title: string; action: string; onAdd: () => void; extra?: React.ReactNode }) {
-  return <div className="xray-list-head"><div><h4>{title}</h4>{extra}</div><button type="button" onClick={onAdd}><Plus />{action}</button></div>;
+function ListHeader({ title, action, onAdd, extra, disabled }: { title: string; action: string; onAdd: () => void; extra?: React.ReactNode; disabled?: boolean }) {
+  return <div className="xray-list-head"><h4>{title}</h4>{extra}<button type="button" disabled={disabled} onClick={onAdd}><Plus />{action}</button></div>;
 }
 
 function Empty({ text }: { text: string }) {
   return <div className="xray-empty">{text}</div>;
 }
 
-function ItemActions({ onView, onEdit, onDelete, moveUp, moveDown, busy }: { onView: () => void; onEdit?: () => void; onDelete?: () => void; moveUp?: () => void; moveDown?: () => void; busy: boolean }) {
-  return <div className="xray-item-actions"><button type="button" disabled={busy} onClick={onView} title="查看 JSON" aria-label="查看 JSON"><Eye /><span>查看</span></button>{onEdit && <button type="button" disabled={busy} onClick={onEdit} title="编辑" aria-label="编辑"><Edit3 /><span>编辑</span></button>}{moveUp && <button type="button" disabled={busy} onClick={moveUp} title="上移" aria-label="上移"><ArrowUp /></button>}{moveDown && <button type="button" disabled={busy} onClick={moveDown} title="下移" aria-label="下移"><ArrowDown /></button>}{onDelete && <button type="button" disabled={busy} onClick={onDelete} className="danger" title="删除" aria-label="删除"><Trash2 /><span>删除</span></button>}</div>;
+// Two-line compact row; ⋯ opens a small sheet with the same view / edit / delete conditions as before.
+function XrayRow({ name, pill, line, tags, warning, note, order, busy, onView, onEdit, onDelete }: { name: string; pill: React.ReactNode; line: string; tags?: React.ReactNode; warning?: string; note?: string; order?: React.ReactNode; busy: boolean; onView: () => void; onEdit?: () => void; onDelete?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const run = (action: () => void) => { setOpen(false); action(); };
+  return <article className={`cx-row xray-row${order ? " ordering" : ""}`}>
+    <div className="cx-row-content">
+      <div className="cx-row-title">
+        {order ? <strong className="cx-row-name" title={name}>{name}</strong> : <button type="button" className="cx-row-name" title={name} disabled={busy} onClick={() => setOpen(true)}>{name}</button>}
+        {pill}
+        {!order && <button type="button" className="cx-row-more" disabled={busy} aria-label={`${name} 更多操作`} onClick={() => setOpen(true)}><MoreHorizontal /></button>}
+      </div>
+      <div className="xray-row-line"><span className="node-row-address" title={line}>{line}</span>{tags}</div>
+      {warning && <p className="xray-inline-warning" role="alert">{warning}</p>}
+      {order}
+    </div>
+    {open && <CompactSheet title={name} subtitle={line} className="xray-item-sheet" onClose={() => setOpen(false)}>
+      {note && <p className="xray-item-note">{note}</p>}
+      <div className="cx-sheet-items">
+        <button type="button" disabled={busy} onClick={() => run(onView)}><Eye />查看 JSON</button>
+        {onEdit && <button type="button" disabled={busy} onClick={() => run(onEdit)}><Edit3 />编辑</button>}
+        {onDelete && <button type="button" disabled={busy} className="danger" onClick={() => run(onDelete)}><Trash2 />删除</button>}
+      </div>
+    </CompactSheet>}
+  </article>;
+}
+
+function OrderActions({ index, count, busy, onMove }: { index: number; count: number; busy: boolean; onMove: (position: MovePosition) => void }) {
+  return <div className="xray-order-actions">{([
+    ["top", "置顶", <ArrowUpToLine />], [-1, "上移", <ArrowUp />], [1, "下移", <ArrowDown />], ["bottom", "置底", <ArrowDownToLine />],
+  ] as const).map(([position, label, icon]) => <button key={label} type="button" disabled={busy || ((position === "top" || position === -1) ? index === 0 : index === count - 1)} onClick={() => onMove(position)} aria-label={label}>{icon}{label}</button>)}</div>;
 }
 
 type RoutingChoice = { value: string; label: string; detail?: string; historical?: boolean };

@@ -1,0 +1,734 @@
+{
+  "now": "2026-10-19T08:00:00Z",
+  "servers": [
+    {
+      "id": 1,
+      "name": "Boil HKT",
+      "country_code": "HK",
+      "region": "香港",
+      "ip_address": "192.0.2.1",
+      "domain": "server-1.example.test",
+      "pull_address": "server-1.example.test",
+      "status": "connected",
+      "ws_connected": true,
+      "xray_running": true,
+      "xray_mode": "embedded",
+      "agent_version": "v0.5.5",
+      "xray_version": "Xray 26.9.23",
+      "traffic_used": 128849018880,
+      "traffic_limit": 1099511627776,
+      "current_upload_speed": 24000,
+      "current_download_speed": 540000,
+      "traffic_reset_day": 25,
+      "last_traffic_reset_at": "2026-09-25T00:00:00Z",
+      "ddns_pending": false
+    },
+    {
+      "id": 2,
+      "name": "Boil HKT 99u",
+      "country_code": "HK",
+      "region": "香港",
+      "ip_address": "192.0.2.2",
+      "domain": "server-2.example.test",
+      "pull_address": "server-2.example.test",
+      "status": "connected",
+      "ws_connected": true,
+      "xray_running": true,
+      "xray_mode": "external",
+      "agent_version": "v0.5.5",
+      "xray_version": "Xray 26.9.23",
+      "traffic_used": 162135015424,
+      "traffic_limit": 1099511627776,
+      "current_upload_speed": 26300,
+      "current_download_speed": 553000,
+      "traffic_reset_day": 25,
+      "last_traffic_reset_at": "2026-09-25T00:00:00Z",
+      "ddns_pending": false
+    },
+    {
+      "id": 3,
+      "name": "Breadcloud US",
+      "country_code": "US",
+      "region": "美国",
+      "ip_address": "192.0.2.3",
+      "domain": "server-3.example.test",
+      "pull_address": "server-3.example.test",
+      "status": "connected",
+      "ws_connected": true,
+      "xray_running": true,
+      "xray_mode": "external",
+      "agent_version": "v0.5.5",
+      "xray_version": "Xray 26.9.23",
+      "traffic_used": 195421011968,
+      "traffic_limit": 1099511627776,
+      "current_upload_speed": 28600,
+      "current_download_speed": 566000,
+      "traffic_reset_day": 25,
+      "last_traffic_reset_at": "2026-09-25T00:00:00Z",
+      "ddns_pending": false
+    },
+    {
+      "id": 5,
+      "name": "Boil Hinet 马年",
+      "country_code": "TW",
+      "region": "台湾",
+      "ip_address": "192.0.2.5",
+      "domain": "server-5.example.test",
+      "pull_address": "server-5.example.test",
+      "status": "connected",
+      "ws_connected": true,
+      "xray_running": true,
+      "xray_mode": "external",
+      "agent_version": "v0.5.5",
+      "xray_version": "Xray 26.9.23",
+      "traffic_used": 228707008512,
+      "traffic_limit": 1099511627776,
+      "current_upload_speed": 30900,
+      "current_download_speed": 579000,
+      "traffic_reset_day": 25,
+      "last_traffic_reset_at": "2026-09-25T00:00:00Z",
+      "ddns_pending": false
+    },
+    {
+      "id": 7,
+      "name": "Breadcloud US 年付",
+      "country_code": "US",
+      "region": "美国",
+      "ip_address": "192.0.2.7",
+      "domain": "server-7.example.test",
+      "pull_address": "server-7.example.test",
+      "status": "connected",
+      "ws_connected": true,
+      "xray_running": true,
+      "xray_mode": "external",
+      "agent_version": "v0.5.5",
+      "xray_version": "Xray 26.9.23",
+      "traffic_used": 261993005056,
+      "traffic_limit": 1099511627776,
+      "current_upload_speed": 33200,
+      "current_download_speed": 592000,
+      "traffic_reset_day": 25,
+      "last_traffic_reset_at": "2026-09-25T00:00:00Z",
+      "ddns_pending": false
+    },
+    {
+      "id": 9,
+      "name": "Nobrand KFC 1cm",
+      "country_code": "HK",
+      "region": "香港",
+      "ip_address": "192.0.2.9",
+      "domain": "server-9.example.test",
+      "pull_address": "server-9.example.test",
+      "status": "disconnected",
+      "ws_connected": false,
+      "xray_running": false,
+      "xray_mode": "embedded",
+      "agent_version": "v0.5.5",
+      "xray_version": "Xray 26.9.23",
+      "traffic_used": 295279001600,
+      "traffic_limit": 1099511627776,
+      "current_upload_speed": 35500,
+      "current_download_speed": 605000,
+      "traffic_reset_day": 25,
+      "last_traffic_reset_at": "2026-09-25T00:00:00Z",
+      "ddns_pending": false
+    },
+    {
+      "id": 10,
+      "name": "Dmit T1",
+      "ip_address": "192.0.2.10",
+      "domain": "server-10.example.test",
+      "pull_address": "server-10.example.test",
+      "status": "connected",
+      "ws_connected": true,
+      "xray_running": true,
+      "xray_mode": "embedded",
+      "agent_version": "v0.5.5",
+      "xray_version": "Xray 26.9.23",
+      "traffic_used": 328564998144,
+      "traffic_limit": 1099511627776,
+      "current_upload_speed": 37800,
+      "current_download_speed": 618000,
+      "traffic_reset_day": 25,
+      "last_traffic_reset_at": "2026-09-25T00:00:00Z",
+      "ddns_pending": false
+    },
+    {
+      "id": 11,
+      "name": "Breadcloud JP",
+      "country_code": "JP",
+      "region": "日本",
+      "ip_address": "192.0.2.11",
+      "domain": "server-11.example.test",
+      "pull_address": "server-11.example.test",
+      "status": "connected",
+      "ws_connected": true,
+      "xray_running": true,
+      "xray_mode": "embedded",
+      "agent_version": "v0.5.5",
+      "xray_version": "Xray 26.9.23",
+      "traffic_used": 361850994688,
+      "traffic_limit": 1099511627776,
+      "current_upload_speed": 40100,
+      "current_download_speed": 631000,
+      "traffic_reset_day": 25,
+      "last_traffic_reset_at": "2026-09-25T00:00:00Z",
+      "ddns_pending": false
+    },
+    {
+      "id": 12,
+      "name": "Boil Hinet 158",
+      "country_code": "TW",
+      "region": "台湾",
+      "ip_address": "192.0.2.12",
+      "domain": "server-12.example.test",
+      "pull_address": "server-12.example.test",
+      "status": "connected",
+      "ws_connected": true,
+      "xray_running": true,
+      "xray_mode": "external",
+      "agent_version": "v0.5.5",
+      "xray_version": "Xray 26.9.23",
+      "traffic_used": 395136991232,
+      "traffic_limit": 1099511627776,
+      "current_upload_speed": 42400,
+      "current_download_speed": 644000,
+      "traffic_reset_day": 25,
+      "last_traffic_reset_at": "2026-09-25T00:00:00Z",
+      "ddns_pending": true
+    },
+    {
+      "id": 14,
+      "name": "Fachost seednet 黑五",
+      "country_code": "TW",
+      "region": "台湾",
+      "ip_address": "192.0.2.14",
+      "domain": "server-14.example.test",
+      "pull_address": "server-14.example.test",
+      "status": "connected",
+      "ws_connected": true,
+      "xray_running": true,
+      "xray_mode": "external",
+      "agent_version": "v0.5.5",
+      "xray_version": "Xray 26.9.23",
+      "traffic_used": 428422987776,
+      "traffic_limit": 1099511627776,
+      "current_upload_speed": 44700,
+      "current_download_speed": 657000,
+      "traffic_reset_day": 25,
+      "last_traffic_reset_at": "2026-09-25T00:00:00Z",
+      "ddns_pending": false
+    },
+    {
+      "id": 15,
+      "name": "Nobrand KFC 5cm",
+      "country_code": "HK",
+      "region": "香港",
+      "ip_address": "192.0.2.15",
+      "domain": "server-15.example.test",
+      "pull_address": "server-15.example.test",
+      "status": "connected",
+      "ws_connected": true,
+      "xray_running": true,
+      "xray_mode": "embedded",
+      "agent_version": "v0.5.5",
+      "xray_version": "Xray 26.9.23",
+      "traffic_used": 461708984320,
+      "traffic_limit": 1099511627776,
+      "current_upload_speed": 47000,
+      "current_download_speed": 670000,
+      "traffic_reset_day": 25,
+      "last_traffic_reset_at": "2026-09-25T00:00:00Z",
+      "ddns_pending": false
+    },
+    {
+      "id": 16,
+      "name": "PQS TW",
+      "country_code": "TW",
+      "region": "台湾",
+      "ip_address": "192.0.2.16",
+      "domain": "server-16.example.test",
+      "pull_address": "server-16.example.test",
+      "status": "connected",
+      "ws_connected": true,
+      "xray_running": true,
+      "xray_mode": "external",
+      "agent_version": "v0.5.5",
+      "xray_version": "Xray 26.9.23",
+      "traffic_used": 494994980864,
+      "traffic_limit": 1099511627776,
+      "current_upload_speed": 49300,
+      "current_download_speed": 683000,
+      "traffic_reset_day": 25,
+      "last_traffic_reset_at": "2026-09-25T00:00:00Z",
+      "ddns_pending": false
+    },
+    {
+      "id": 17,
+      "name": "Nobrand 沪港IPLC",
+      "country_code": "HK",
+      "region": "香港",
+      "ip_address": "192.0.2.17",
+      "domain": "server-17.example.test",
+      "pull_address": "server-17.example.test",
+      "status": "connected",
+      "ws_connected": true,
+      "xray_running": true,
+      "xray_mode": "embedded",
+      "agent_version": "v0.5.5",
+      "xray_version": "Xray 26.9.23",
+      "traffic_used": 528280977408,
+      "traffic_limit": 1099511627776,
+      "current_upload_speed": 51600,
+      "current_download_speed": 696000,
+      "traffic_reset_day": 25,
+      "last_traffic_reset_at": "2026-09-25T00:00:00Z",
+      "ddns_pending": false
+    }
+  ],
+  "groups": [
+    {
+      "id": "asia",
+      "name": "港台",
+      "server_ids": [
+        1,
+        2,
+        5,
+        9,
+        10,
+        12,
+        14,
+        15,
+        16,
+        17
+      ]
+    },
+    {
+      "id": "overseas",
+      "name": "美日",
+      "server_ids": [
+        3,
+        7,
+        11
+      ]
+    }
+  ],
+  "flvx_shared": [
+    1
+  ],
+  "config": {
+    "log": {
+      "loglevel": "warning"
+    },
+    "inbounds": [
+      {
+        "tag": "api",
+        "listen": "127.0.0.1",
+        "port": 46736,
+        "protocol": "dokodemo-door"
+      },
+      {
+        "tag": "vless-10010",
+        "listen": "0.0.0.0",
+        "port": 10010,
+        "protocol": "vless",
+        "settings": {
+          "clients": [
+            {
+              "id": "00000000-0000-4000-8000-000000000001",
+              "email": "fixture-user",
+              "password": "fixture-password"
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "security": "reality"
+        }
+      },
+      {
+        "tag": "shadowsocks-10011",
+        "listen": "0.0.0.0",
+        "port": 10011,
+        "protocol": "shadowsocks",
+        "settings": {
+          "clients": [
+            {
+              "id": "00000000-0000-4000-8000-000000000001",
+              "email": "fixture-user",
+              "password": "fixture-password"
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "security": "none"
+        }
+      },
+      {
+        "tag": "vmess-10012",
+        "listen": "0.0.0.0",
+        "port": 10012,
+        "protocol": "vmess",
+        "settings": {
+          "clients": [
+            {
+              "id": "00000000-0000-4000-8000-000000000001",
+              "email": "fixture-user",
+              "password": "fixture-password"
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "ws",
+          "security": "tls"
+        }
+      },
+      {
+        "tag": "trojan-10013",
+        "listen": "0.0.0.0",
+        "port": 10013,
+        "protocol": "trojan",
+        "settings": {
+          "clients": [
+            {
+              "id": "00000000-0000-4000-8000-000000000001",
+              "email": "fixture-user",
+              "password": "fixture-password"
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "security": "tls"
+        }
+      },
+      {
+        "tag": "socks-10014",
+        "listen": "0.0.0.0",
+        "port": 10014,
+        "protocol": "socks",
+        "settings": {
+          "clients": [
+            {
+              "id": "00000000-0000-4000-8000-000000000001",
+              "email": "fixture-user",
+              "password": "fixture-password"
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "security": "none"
+        }
+      },
+      {
+        "tag": "vless-10015",
+        "listen": "0.0.0.0",
+        "port": 10015,
+        "protocol": "vless",
+        "settings": {
+          "clients": [
+            {
+              "id": "00000000-0000-4000-8000-000000000001",
+              "email": "fixture-user",
+              "password": "fixture-password"
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "security": "none"
+        }
+      }
+    ],
+    "outbounds": [
+      {
+        "tag": "direct",
+        "protocol": "freedom",
+        "settings": {}
+      },
+      {
+        "tag": "block",
+        "protocol": "blackhole",
+        "settings": {}
+      },
+      {
+        "tag": "warp-v4",
+        "protocol": "wireguard",
+        "settings": {
+          "secretKey": "FAKE-KEY-FOR-LOCAL-FIXTURE",
+          "address": [
+            "192.0.2.99/32"
+          ],
+          "peers": [
+            {
+              "publicKey": "FAKE-PUBLIC-KEY",
+              "endpoint": "warp.example.test:2408"
+            }
+          ]
+        }
+      },
+      {
+        "tag": "warp-v6",
+        "protocol": "wireguard",
+        "settings": {
+          "secretKey": "FAKE-KEY-FOR-LOCAL-FIXTURE",
+          "address": [
+            "192.0.2.99/32"
+          ],
+          "peers": [
+            {
+              "publicKey": "FAKE-PUBLIC-KEY",
+              "endpoint": "warp.example.test:2408"
+            }
+          ]
+        }
+      },
+      {
+        "tag": "routed-hk",
+        "protocol": "vless",
+        "settings": {
+          "vnext": [
+            {
+              "address": "outbound.example.test",
+              "port": 443,
+              "users": [
+                {
+                  "id": "00000000-0000-4000-8000-000000000002"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "tag": "tunnel-forward",
+        "protocol": "freedom",
+        "settings": {
+          "vnext": [
+            {
+              "address": "outbound.example.test",
+              "port": 443,
+              "users": [
+                {
+                  "id": "00000000-0000-4000-8000-000000000002"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "tag": "jp-backup",
+        "protocol": "vmess",
+        "settings": {
+          "vnext": [
+            {
+              "address": "outbound.example.test",
+              "port": 443,
+              "users": [
+                {
+                  "id": "00000000-0000-4000-8000-000000000002"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "tag": "us-proxy",
+        "protocol": "http",
+        "settings": {
+          "vnext": [
+            {
+              "address": "outbound.example.test",
+              "port": 443,
+              "users": [
+                {
+                  "id": "00000000-0000-4000-8000-000000000002"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "routing": {
+      "domainStrategy": "AsIs",
+      "rules": [
+        {
+          "type": "field",
+          "inboundTag": [
+            "api"
+          ],
+          "outboundTag": "api"
+        },
+        {
+          "type": "field",
+          "marktag": "ban-bt",
+          "protocol": [
+            "bittorrent"
+          ],
+          "outboundTag": "block"
+        },
+        {
+          "type": "field",
+          "marktag": "ban-private",
+          "ip": [
+            "geoip:private"
+          ],
+          "outboundTag": "block"
+        },
+        {
+          "type": "field",
+          "marktag": "openai-direct",
+          "domain": [
+            "geosite:openai",
+            "domain:chatgpt.com",
+            "domain:oaistatic.com"
+          ],
+          "outboundTag": "direct"
+        },
+        {
+          "type": "field",
+          "marktag": "anti-cn-warp",
+          "domain": [
+            "geosite:cn"
+          ],
+          "outboundTag": "warp-v4"
+        },
+        {
+          "type": "field",
+          "marktag": "speedtest-warp",
+          "domain": [
+            "geosite:speedtest"
+          ],
+          "outboundTag": "warp-v4"
+        },
+        {
+          "type": "field",
+          "marktag": "home-bypass-warp",
+          "domain": [
+            "geosite:category-pt"
+          ],
+          "outboundTag": "warp-v4"
+        },
+        {
+          "type": "field",
+          "marktag": "tiktok",
+          "domain": [
+            "geosite:tiktok"
+          ],
+          "outboundTag": "warp-v4"
+        },
+        {
+          "type": "field",
+          "marktag": "路由节点 · 香港",
+          "user": [
+            "fixture-user"
+          ],
+          "outboundTag": "routed-hk"
+        },
+        {
+          "type": "field",
+          "marktag": "端口转发",
+          "inboundTag": [
+            "forward-8443"
+          ],
+          "outboundTag": "tunnel-forward"
+        },
+        {
+          "type": "field",
+          "marktag": "日本备用",
+          "domain": [
+            "domain:example.jp"
+          ],
+          "outboundTag": "jp-backup"
+        },
+        {
+          "type": "field",
+          "marktag": "IPv6 优先",
+          "ip": [
+            "2001:db8::/32"
+          ],
+          "outboundTag": "warp-v6"
+        },
+        {
+          "type": "field",
+          "marktag": "自定义端口",
+          "port": "80,443",
+          "outboundTag": "direct"
+        },
+        {
+          "type": "field",
+          "marktag": "媒体均衡",
+          "domain": [
+            "geosite:netflix"
+          ],
+          "balancerTag": "pool"
+        }
+      ],
+      "balancers": [
+        {
+          "tag": "pool",
+          "selector": [
+            "jp-backup",
+            "us-proxy"
+          ],
+          "strategy": {
+            "type": "random"
+          }
+        }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "node_name": "本地路由节点",
+      "node_type": "routed",
+      "routed_outbound_tag": "routed-hk",
+      "protocol": "vless",
+      "original_server": "Boil HKT",
+      "clash_config": "{\"name\": \"fixture\", \"type\": \"vless\", \"server\": \"node.example.test\", \"port\": 443, \"uuid\": \"00000000-0000-4000-8000-000000000003\"}"
+    },
+    {
+      "id": 2,
+      "node_name": "🇭🇰 Boil HKT VLESS",
+      "protocol": "vless",
+      "original_server": "Boil HKT",
+      "inbound_tag": "vless-10010",
+      "tag": "远程:Boil HKT",
+      "enabled": true,
+      "clash_config": "{\"name\": \"🇭🇰 Boil HKT VLESS\", \"type\": \"vless\", \"server\": \"server-1.example.test\", \"port\": 10010, \"uuid\": \"00000000-0000-4000-8000-000000000001\", \"network\": \"tcp\", \"tls\": true}",
+      "parsed_config": "{\"name\": \"🇭🇰 Boil HKT VLESS\", \"type\": \"vless\", \"server\": \"server-1.example.test\", \"port\": 10010, \"uuid\": \"00000000-0000-4000-8000-000000000001\", \"network\": \"tcp\", \"tls\": true}"
+    }
+  ],
+  "presets": [
+    {
+      "id": 1,
+      "name": "OpenAI 分流",
+      "rule": {
+        "type": "field",
+        "marktag": "openai-direct",
+        "domain": [
+          "geosite:openai",
+          "domain:chatgpt.com",
+          "domain:oaistatic.com"
+        ],
+        "outboundTag": "direct"
+      }
+    },
+    {
+      "id": 2,
+      "name": "自定义端口",
+      "rule": {
+        "type": "field",
+        "marktag": "自定义端口",
+        "port": "80,443",
+        "outboundTag": "direct"
+      }
+    }
+  ]
+}

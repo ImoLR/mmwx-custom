@@ -7645,3 +7645,90 @@ button {
 .server-delete-history summary b { color: #b45309; margin-left: auto; }
 .server-delete-history > button { display: flex; justify-content: space-between; gap: 10px; width: 100%; margin-top: 10px; padding: 9px; text-align: left; }
 @media (max-width: 600px) { .server-delete-dialog { width: 100%; } .server-delete-body { padding: 18px; } .server-delete-counts { grid-template-columns: 1fr; } .server-delete-identity { flex-direction: column; } }
+
+/* Shared compact helpers used by Xray 管理. */
+.cx-segments.cx-segments-scroll { display: flex; max-width: none; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.cx-segments-scroll button { flex: 0 0 auto; padding-inline: 10px; white-space: nowrap; }
+.cx-tag.warn { color: #a15c07; background: color-mix(in srgb, #d97706 13%, var(--card)); }
+:root[data-theme="dark"] .cx-tag.warn { color: #f5b552; }
+
+/* Xray 管理 uses the compact sheet shell and the same type scale as the compact pages. */
+.xray-compact { height: 90dvh; }
+.xray-compact .xray-manager { --xray-font-min: 13px; --xray-font-secondary: 14px; --xray-font-body: 15px; --xray-font-heading: 18px; --xray-font-number: 14px; gap: 10px; }
+.xray-compact > .cx-dialog-body { display: block; padding: 10px 12px; }
+.xray-compact .cx-segments { width: 100%; max-width: none; }
+.xray-sheet-heading { display: flex; gap: 8px; align-items: center; }
+.xray-sheet-heading > div { flex: 1; min-width: 0; }
+.xray-sheet-heading p { display: flex; align-items: center; gap: 6px; margin: 2px 0 0; }
+.xray-sheet-heading .xray-status-dot { width: 8px; height: 8px; flex: 0 0 8px; margin: 0; box-shadow: none; }
+.cx-sheet .xray-sheet-heading > button { width: 38px; height: 38px; flex: 0 0 38px; padding: 0; border-radius: 11px; }
+.xray-compact :is(.xray-panel, .xray-routing-base) { border-radius: 12px; padding: 12px; }
+.xray-status-card { display: grid; gap: 10px; }
+.xray-status-line { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.xray-status-line .xray-status-dot { width: 10px; height: 10px; flex: 0 0 10px; margin-top: 6px; }
+.xray-status-line strong { font-size: 16px; font-weight: 600; line-height: 22px; }
+.xray-status-line p { margin: 2px 0 0; color: var(--muted); font-size: 14px; line-height: 20px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.xray-status-line small { display: block; color: var(--muted); font-size: 13px; line-height: 18px; }
+.xray-compact .xray-control-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; }
+.xray-compact .xray-control-row button { min-height: 40px; font-size: 15px; }
+.xray-compact .xray-panel-title h4 { font-size: 16px; font-weight: 650; }
+.xray-compact .xray-panel-title p { font-size: 13px; }
+.xray-compact .xray-panel-title > span { font-size: 13px; padding: 2px 7px; }
+.xray-compact .xray-switch-list { margin-top: 6px; }
+.xray-compact .xray-switch { min-height: 44px; font-size: 15px; }
+.xray-compact .xray-json-editor { font-size: 14px; }
+.xray-compact .xray-editor-actions button { min-height: 40px; font-size: 15px; }
+.xray-compact .xray-list-section { display: grid; gap: 8px; }
+.xray-compact .xray-list-head { gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-start; margin: 4px 0 0; }
+.xray-compact .xray-list-head h4 { flex: 1 0 auto; font-size: 16px; font-weight: 650; white-space: nowrap; }
+.xray-compact .xray-list-head button { min-height: 34px; padding: 0 10px; border-radius: 9px; font-size: 14px; }
+.xray-compact .xray-list-head .xray-check { font-size: 14px; }
+.xray-rows { min-width: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--card); overflow: hidden; }
+.cx-row.xray-row { min-height: 0; padding: 8px 6px 8px 12px; }
+.xray-row:first-child { border-top: 0; }
+.xray-row .cx-row-title { gap: 6px; }
+.cx-sheet .xray-row .cx-row-name { display: block; min-height: 0; border: 0; border-radius: 0; padding: 0; background: none; color: var(--text); text-align: left; font-size: 16px; font-weight: 550; line-height: 22px; }
+.cx-sheet .xray-row .cx-row-more { width: 30px; height: 26px; min-height: 0; flex: 0 0 30px; border: 0; padding: 0; background: transparent; color: var(--muted); }
+.xray-row .cx-row-title > .cx-tag { display: inline-flex; align-items: center; gap: 3px; line-height: 18px; }
+.xray-row .xray-lock-tag svg { width: 13px; height: 13px; }
+.xray-row-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.xray-row-line > .node-row-address { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+.xray-row-line > .cx-tag { flex: 0 0 auto; line-height: 18px; white-space: nowrap; }
+.xray-row .xray-inline-warning { margin: 2px 0 0; font-size: 13px; }
+.xray-order-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 4px; }
+.cx-sheet .xray-order-actions button { min-height: 34px; padding: 0 4px; gap: 3px; border-radius: 9px; font-size: 14px; }
+.xray-order-actions button svg { width: 15px; height: 15px; }
+.xray-order-actions button:disabled { opacity: .35; }
+.xray-order-bar { display: grid; gap: 8px; width: 100%; font-size: 14px; }
+.xray-order-bar > span { overflow-wrap: anywhere; color: var(--muted); }
+.xray-order-bar > span.default-change { color: #a15c07; font-weight: 600; }
+:root[data-theme="dark"] .xray-order-bar > span.default-change { color: #f5b552; }
+.xray-order-bar > div { display: flex; gap: 8px; }
+.xray-order-bar button { flex: 1; font-size: 14px; }
+.xray-compact .primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.xray-compact .xray-routing-base { display: flex; gap: 8px; align-items: center; }
+.xray-compact .xray-routing-base label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+.xray-compact .xray-routing-base label span { flex-shrink: 0; }
+.xray-compact .xray-routing-base select { width: 100%; min-width: 0; min-height: 38px; padding: 0 8px; font-size: 15px; }
+.xray-compact .xray-routing-base button { min-height: 38px; font-size: 15px; }
+.xray-compact .xray-node-import select, .xray-compact .xray-node-import button { min-height: 38px; font-size: 15px; }
+.xray-compact .xray-node-import select { width: 100%; }
+.xray-compact .xray-quick-row { gap: 6px; }
+.xray-compact .xray-quick-row button { min-height: 34px; padding: 0 10px; border-radius: 9px; font-size: 14px; }
+.cx-sheet-section small { display: block; margin-top: 1px; font-size: 13px; font-weight: 400; }
+.xray-preset-list { display: grid; }
+.xray-preset-row { display: flex; align-items: stretch; gap: 6px; min-width: 0; border-bottom: 1px solid var(--line); }
+.cx-sheet .xray-preset-open { flex: 1; min-width: 0; min-height: 50px; display: grid; justify-content: stretch; gap: 1px; border: 0; border-radius: 0; padding: 6px 3px; text-align: left; font-size: 15px; }
+.xray-preset-open small { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.cx-sheet .xray-preset-delete { width: 44px; min-height: 0; flex: 0 0 44px; border: 0; padding: 0; color: var(--danger); background: transparent; }
+.xray-item-note { margin: 0; color: var(--muted); font-size: 13px; }
+.cx-sheet .cx-sheet-items .danger { color: var(--danger); }
+.xray-compact :is(.xray-editor-layer, .xray-picker-layer) { padding: 0; align-items: end; }
+.xray-compact :is(.xray-object-editor, .xray-picker-dialog) { max-height: 90dvh; border-radius: 18px 18px 0 0; width: 100%; }
+.xray-compact .xray-object-editor header p { font-size: 13px; }
+.xray-compact .xray-picker-option em { font-size: 13px; }
+@media (min-width: 900px) {
+  .cx-sheet.xray-compact { width: min(880px, 100vw); height: 100dvh; }
+  .xray-compact :is(.xray-editor-layer, .xray-picker-layer) { justify-content: end; }
+  .xray-compact :is(.xray-object-editor, .xray-picker-dialog) { height: 100dvh; max-height: 100dvh; width: min(780px, 100vw); border-radius: 16px 0 0 16px; }
+}
