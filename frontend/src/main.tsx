@@ -2717,6 +2717,8 @@ function ServiceDialog({
     "batch-agent": "批量升级 Agent",
   }[dialog.kind];
 
+  if (dialog.kind === "xray" && server) return <XrayManager server={server} token={sessionToken} username={sessionUsername} onClose={onClose} />;
+
   return (
     <div className="service-dialog-layer" role="presentation" onClick={onClose}>
       <section className="service-dialog" role="dialog" aria-label={title} onClick={(event) => event.stopPropagation()}>
@@ -2733,10 +2735,6 @@ function ServiceDialog({
           <AddSharedServerDialog sessionToken={sessionToken} servers={servers} onChanged={onChanged} onClose={onClose} />
         ) : dialog.kind === "edit" && server ? (
           <EditRemoteServerDialog server={server} sessionToken={sessionToken} onChanged={onChanged} onClose={onClose} />
-        ) : dialog.kind === "xray" && server ? (
-          <div className="service-dialog-body">
-            <XrayManager server={server} token={sessionToken} username={sessionUsername} />
-          </div>
         ) : dialog.kind === "agent" && server ? (
           <div className="service-dialog-body">
             <AgentManager server={server} sessionToken={sessionToken} />
