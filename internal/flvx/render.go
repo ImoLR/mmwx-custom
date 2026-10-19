@@ -2,15 +2,23 @@ package flvx
 
 import "strconv"
 
+// BaseConfig is read only when the Core starts. RoutingService enables hot
+// rule replacement for landing egress plans; IPOnDemand resolves a domain at
+// the first IP condition (the safety rule), so no later domain rule can route
+// a name that resolves to a private address. Policy timeouts are the Core
+// defaults, stated explicitly so half-open connections are reaped.
 func BaseConfig(apiPort int) map[string]any {
 	return map[string]any{
-		"log":       map[string]any{"loglevel": "warning", "access": "none"},
-		"api":       map[string]any{"tag": "flvx-api", "listen": "127.0.0.1:" + strconv.Itoa(apiPort), "services": []string{"HandlerService", "StatsService"}},
-		"stats":     map[string]any{},
-		"policy":    map[string]any{"system": map[string]any{"statsInboundUplink": true, "statsInboundDownlink": true}},
+		"log":   map[string]any{"loglevel": "warning", "access": "none"},
+		"api":   map[string]any{"tag": "flvx-api", "listen": "127.0.0.1:" + strconv.Itoa(apiPort), "services": []string{"HandlerService", "StatsService", "RoutingService"}},
+		"stats": map[string]any{},
+		"policy": map[string]any{
+			"levels": map[string]any{"0": map[string]any{"handshake": 4, "connIdle": 300, "uplinkOnly": 2, "downlinkOnly": 5}},
+			"system": map[string]any{"statsInboundUplink": true, "statsInboundDownlink": true},
+		},
 		"inbounds":  []any{},
 		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{"domainStrategy": "UseIP"}}, map[string]any{"tag": "block", "protocol": "blackhole"}},
-		"routing":   map[string]any{"domainStrategy": "IPOnDemand", "rules": []any{map[string]any{"type": "field", "ip": BlockCIDRs, "outboundTag": "block"}}},
+		"routing":   map[string]any{"domainStrategy": "IPOnDemand", "rules": []any{SafetyRule()}},
 	}
 }
 

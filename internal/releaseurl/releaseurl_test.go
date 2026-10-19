@@ -44,3 +44,23 @@ func TestCandidatesOnlyAcceleratesReleaseAssetsAndFallsBack(t *testing.T) {
 		}
 	}
 }
+
+func TestPinnedGeoAssetsOnly(t *testing.T) {
+	geo := "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202610182205/geoip.dat"
+	got, err := Candidates("https://ghfast.top/", geo)
+	if err != nil || len(got) != 2 || got[0] != "https://ghfast.top/"+geo || got[1] != geo {
+		t.Fatalf("pinned geo candidates = %v, %v", got, err)
+	}
+	if IsPublicAsset(geo) {
+		t.Fatal("geo data must not pass as a Custom release artifact")
+	}
+	for _, other := range []string{
+		"https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202610182205/geoip.dat.sha256sum",
+		"https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
+		"https://github.com/evil/v2ray-rules-dat/releases/download/202610182205/geoip.dat",
+	} {
+		if _, err := Candidates("", other); err == nil {
+			t.Fatalf("unpinned asset accepted: %s", other)
+		}
+	}
+}

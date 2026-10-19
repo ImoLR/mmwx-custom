@@ -41,8 +41,16 @@ func IsPublicAsset(value string) bool {
 
 // Candidates returns the accelerator URL first and the official URL second.
 // The official URL is the sole candidate when acceleration is disabled.
+// IsPinnedGeoAsset accepts exactly the geo data files pinned by the FLVX
+// landing-egress contract (SHA-256 verified by the Helper). They are fetched
+// through the same accelerator path as release assets.
+func IsPinnedGeoAsset(value string) bool {
+	return value == "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202610182205/geoip.dat" ||
+		value == "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202610182205/geosite.dat"
+}
+
 func Candidates(accelerator, original string) ([]string, error) {
-	if !IsPublicAsset(original) {
+	if !IsPublicAsset(original) && !IsPinnedGeoAsset(original) {
 		return nil, errors.New("URL is not a public mmwx-custom Release asset")
 	}
 	normalized, err := NormalizeAccelerator(accelerator)

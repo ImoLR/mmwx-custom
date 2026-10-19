@@ -1,0 +1,389 @@
+{
+  "outbounds": {
+    "flvxo-direct4": {
+      "config": {
+        "protocol": "freedom",
+        "sendThrough": "203.0.113.1",
+        "settings": {
+          "domainStrategy": "ForceIPv4"
+        },
+        "streamSettings": {
+          "sockopt": {
+            "customSockopt": [
+              {
+                "level": "0",
+                "network": "tcp",
+                "opt": "24",
+                "system": "linux",
+                "type": "int",
+                "value": "1"
+              }
+            ]
+          }
+        },
+        "tag": "flvxo-direct4"
+      },
+      "warning": ""
+    },
+    "flvxo-direct6": {
+      "config": {
+        "protocol": "freedom",
+        "sendThrough": "2001:db8:1::1",
+        "settings": {
+          "domainStrategy": "ForceIPv6"
+        },
+        "streamSettings": {
+          "sockopt": {
+            "customSockopt": [
+              {
+                "level": "0",
+                "network": "tcp",
+                "opt": "24",
+                "system": "linux",
+                "type": "int",
+                "value": "1"
+              }
+            ]
+          }
+        },
+        "tag": "flvxo-direct6"
+      },
+      "warning": ""
+    },
+    "flvxo-http": {
+      "config": {
+        "protocol": "http",
+        "settings": {
+          "servers": [
+            {
+              "address": "203.0.113.10",
+              "port": 8080
+            }
+          ]
+        },
+        "tag": "flvxo-http"
+      },
+      "warning": ""
+    },
+    "flvxo-pref4": {
+      "config": {
+        "protocol": "freedom",
+        "settings": {
+          "domainStrategy": "UseIPv4v6"
+        },
+        "tag": "flvxo-pref4"
+      },
+      "warning": ""
+    },
+    "flvxo-socks": {
+      "config": {
+        "protocol": "socks",
+        "settings": {
+          "servers": [
+            {
+              "address": "proxy.example.com",
+              "port": 1080,
+              "users": [
+                {
+                  "pass": "p",
+                  "user": "u"
+                }
+              ]
+            }
+          ]
+        },
+        "streamSettings": {
+          "sockopt": {
+            "domainStrategy": "UseIPv6v4"
+          }
+        },
+        "tag": "flvxo-socks"
+      },
+      "warning": ""
+    },
+    "flvxo-ss": {
+      "config": {
+        "protocol": "shadowsocks",
+        "sendThrough": "2001:db8:1::1",
+        "settings": {
+          "servers": [
+            {
+              "address": "2001:db8::10",
+              "method": "2022-blake3-aes-128-gcm",
+              "password": "AAAAAAAAAAAAAAAAAAAAAA==:AAAAAAAAAAAAAAAAAAAAAA==",
+              "port": 8388
+            }
+          ]
+        },
+        "streamSettings": {
+          "sockopt": {
+            "customSockopt": [
+              {
+                "level": "0",
+                "network": "tcp",
+                "opt": "24",
+                "system": "linux",
+                "type": "int",
+                "value": "1"
+              }
+            ],
+            "domainStrategy": "ForceIPv6"
+          }
+        },
+        "tag": "flvxo-ss"
+      },
+      "warning": ""
+    },
+    "flvxo-vless": {
+      "config": {
+        "protocol": "vless",
+        "sendThrough": "203.0.113.1",
+        "settings": {
+          "vnext": [
+            {
+              "address": "198.51.100.7",
+              "port": 443,
+              "users": [
+                {
+                  "encryption": "none",
+                  "flow": "xtls-rprx-vision",
+                  "id": "d77c8b43-40ed-42cd-9150-f3f47d0f534d"
+                }
+              ]
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "realitySettings": {
+            "fingerprint": "chrome",
+            "publicKey": "Ak6Ci7Ogvl2t29y1MUSF4fuAtoXtt4EnCyU_cdhn4Ws",
+            "serverName": "www.example.com",
+            "shortId": "0a1b"
+          },
+          "security": "reality",
+          "sockopt": {
+            "customSockopt": [
+              {
+                "level": "0",
+                "network": "tcp",
+                "opt": "24",
+                "system": "linux",
+                "type": "int",
+                "value": "1"
+              }
+            ],
+            "domainStrategy": "ForceIPv4"
+          }
+        },
+        "tag": "flvxo-vless"
+      },
+      "warning": ""
+    },
+    "flvxo-warp": {
+      "config": {
+        "protocol": "wireguard",
+        "settings": {
+          "address": [
+            "172.16.0.2/32"
+          ],
+          "domainStrategy": "ForceIPv4",
+          "mtu": 1280,
+          "noKernelTun": true,
+          "peers": [
+            {
+              "allowedIPs": [
+                "0.0.0.0/0",
+                "::/0"
+              ],
+              "endpoint": "162.159.192.1:2408",
+              "publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+            }
+          ],
+          "reserved": [
+            1,
+            2,
+            3
+          ],
+          "secretKey": "YFYOAdbw1bKTHlNNi+aEjBM3BO7unuFC5rOkMRAz9XY="
+        },
+        "tag": "flvxo-warp"
+      },
+      "warning": ""
+    }
+  },
+  "outbounds_no_local": {
+    "flvxo-direct4": {
+      "config": {
+        "protocol": "blackhole",
+        "tag": "flvxo-direct4"
+      },
+      "warning": "flvxo-direct4: 服务器没有可用的 IPv4 地址，强制 IPv4 的连接会失败"
+    },
+    "flvxo-direct6": {
+      "config": {
+        "protocol": "blackhole",
+        "tag": "flvxo-direct6"
+      },
+      "warning": "flvxo-direct6: 服务器没有可用的 IPv6 地址，强制 IPv6 的连接会失败"
+    },
+    "flvxo-http": {
+      "config": {
+        "protocol": "http",
+        "settings": {
+          "servers": [
+            {
+              "address": "203.0.113.10",
+              "port": 8080
+            }
+          ]
+        },
+        "tag": "flvxo-http"
+      },
+      "warning": ""
+    },
+    "flvxo-pref4": {
+      "config": {
+        "protocol": "freedom",
+        "settings": {
+          "domainStrategy": "UseIPv4v6"
+        },
+        "tag": "flvxo-pref4"
+      },
+      "warning": ""
+    },
+    "flvxo-socks": {
+      "config": {
+        "protocol": "socks",
+        "settings": {
+          "servers": [
+            {
+              "address": "proxy.example.com",
+              "port": 1080,
+              "users": [
+                {
+                  "pass": "p",
+                  "user": "u"
+                }
+              ]
+            }
+          ]
+        },
+        "streamSettings": {
+          "sockopt": {
+            "domainStrategy": "UseIPv6v4"
+          }
+        },
+        "tag": "flvxo-socks"
+      },
+      "warning": ""
+    },
+    "flvxo-ss": {
+      "config": {
+        "protocol": "blackhole",
+        "tag": "flvxo-ss"
+      },
+      "warning": "flvxo-ss: 服务器没有可用的 IPv6 地址，强制 IPv6 的连接会失败"
+    },
+    "flvxo-vless": {
+      "config": {
+        "protocol": "blackhole",
+        "tag": "flvxo-vless"
+      },
+      "warning": "flvxo-vless: 服务器没有可用的 IPv4 地址，强制 IPv4 的连接会失败"
+    },
+    "flvxo-warp": {
+      "config": {
+        "protocol": "blackhole",
+        "tag": "flvxo-warp"
+      },
+      "warning": "flvxo-warp: 服务器没有可用的公网地址连接 WARP"
+    }
+  },
+  "rules": [
+    {
+      "ip": [
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+        "ff00::/8"
+      ],
+      "outboundTag": "block",
+      "ruleTag": "flvx-safety",
+      "type": "field"
+    },
+    {
+      "domain": [
+        "geosite:openai",
+        "domain:claude.ai",
+        "full:x.ai",
+        "keyword:gemini",
+        "regexp:^chat\\."
+      ],
+      "inboundTag": [
+        "flvxl-1",
+        "flvxl-2"
+      ],
+      "outboundTag": "flvxo-warp",
+      "ruleTag": "flvxr-1",
+      "type": "field"
+    },
+    {
+      "inboundTag": [
+        "flvxl-1"
+      ],
+      "ip": [
+        "geoip:cn",
+        "203.0.113.0/24",
+        "2001:db8::/32"
+      ],
+      "network": "tcp",
+      "outboundTag": "block",
+      "port": "443,8000-9000",
+      "ruleTag": "flvxr-2",
+      "type": "field"
+    },
+    {
+      "inboundTag": [
+        "flvxl-1"
+      ],
+      "outboundTag": "block",
+      "protocol": [
+        "bittorrent"
+      ],
+      "ruleTag": "flvxr-3",
+      "sourcePort": "1024-65535",
+      "type": "field"
+    },
+    {
+      "inboundTag": [
+        "flvxl-1"
+      ],
+      "outboundTag": "flvxo-direct4",
+      "ruleTag": "flvxr-4",
+      "sourceIP": [
+        "198.51.100.0/24"
+      ],
+      "type": "field"
+    },
+    {
+      "inboundTag": [
+        "flvxl-1",
+        "flvxl-2"
+      ],
+      "outboundTag": "flvxo-socks",
+      "ruleTag": "flvxr-5",
+      "type": "field"
+    }
+  ]
+}

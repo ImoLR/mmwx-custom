@@ -68,9 +68,13 @@ type Node struct {
 
 func (n Node) Tag() string { return "flvxl-" + n.ID }
 
+// Desired is FLVX's complete replacement state. Egress is omitted when absent
+// so the signed Helper payload stays byte-identical for Helpers without
+// landing-egress support.
 type Desired struct {
-	Revision int64  `json:"revision"`
-	Nodes    []Node `json:"nodes"`
+	Revision int64   `json:"revision"`
+	Nodes    []Node  `json:"nodes"`
+	Egress   *Egress `json:"egress,omitempty"`
 }
 
 type Config struct {
@@ -116,6 +120,8 @@ type Status struct {
 	Nodes            []NodeStatus `json:"nodes"`
 	TrafficUsedBytes int64        `json:"share_traffic_used_bytes"`
 	CollectedAt      int64        `json:"collected_at"`
+	// Reported only by Helpers with landing-egress support.
+	Egress *EgressStatus `json:"egress,omitempty"`
 }
 
 // Report sequence and generation belong only to the authenticated Helper channel.
