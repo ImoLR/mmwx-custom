@@ -460,27 +460,31 @@ func TestFLVXEgressStaleCleanupRetry(t *testing.T) {
 	}
 }
 
-func TestFLVXEgressAcceptRevalidates(t *testing.T) {
-	m, _ := fakeEgressManager(t)
-	sign := func(plan *flvx.Egress, version int64) flvx.Envelope {
-		p := m.state.Payload
-		p.ServerID, p.Version = "7", version
-		p.Desired.Egress = plan
-		e := flvx.Envelope{Payload: p, ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
-		e.Sign("helper")
-		return e
-	}
-	if err := m.accept(sign(egressPlan(), 2)); err != nil {
-		t.Fatal(err)
-	}
+func TestFLVXEgressRevalidatesFailClosed(t *testing.T) {
+	m, f := fakeEgressManager(t)
 	bad := egressPlan()
 	bad.Outbounds[0].Server = "169.254.169.254"
-	if err := m.accept(sign(bad, 3)); err == nil {
-		t.Fatal("Helper accepted a plan with a private upstream")
+	m.state.Payload.Desired.Egress = bad
+	if err := m.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	foreign := egressPlan()
-	foreign.Rules[0].InboundTags = []string{"flvxl-other"}
-	if err := m.accept(sign(foreign, 3)); err == nil || m.state.Payload.Version != 2 {
-		t.Fatal("Helper accepted a rule for a node outside this share")
+	// The plan is refused, its node stays offline, the other node and later
+	// node updates keep working.
+	if e := m.state.Report.Egress; e.State != "error" || !strings.Contains(e.Error, "egress.outbounds[0].server") || f.present["flvxl-one"] || !f.present["flvxl-two"] || len(f.rules) != 0 {
+		t.Fatalf("invalid plan: %+v present=%v", e, f.present)
+	}
+	f.log = nil
+	for i := 0; i < 3; i++ {
+		m.reconcile(context.Background())
+	}
+	for _, c := range f.log {
+		if c != "adi" {
+			t.Fatalf("an invalid plan must not cause routing calls: %v", f.log)
+		}
+	}
+	m.state.Payload.Desired.Revision = 2
+	m.state.Payload.Desired.Egress = egressPlan()
+	if err := m.reconcile(context.Background()); err != nil || !f.present["flvxl-one"] || m.state.Report.Egress.State != "applied" {
+		t.Fatalf("valid plan after an invalid one: %v %+v", err, m.state.Report.Egress)
 	}
 }

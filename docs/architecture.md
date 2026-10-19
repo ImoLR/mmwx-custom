@@ -481,9 +481,9 @@ or replaced. Responses disable caching. The v1 wire contract is plan 101 §H:
 
 | Method and relative path | Request / response |
 | --- | --- |
-| `GET /shares` | `{shares:[{server_id,name,hosts,status,port_min,port_max,traffic_limit_bytes,traffic_used_bytes,reset_day,max_connections,connections,share_until,core,protocols,dual_install}]}` |
-| `PUT /shares/{server_id}/desired` | `{revision,nodes:[{id,owner,name,protocol,port,enabled,max_connections,max_online_ips,expires_at,ss2022?,vless?}]}` → `{accepted_revision}` |
-| `GET /shares/{server_id}/status` | `{applied_revision,core:{state,epoch},nodes:[{id,state,error?,up_bytes,down_bytes,connections}],share_traffic_used_bytes,collected_at}` |
+| `GET /shares` | `{shares:[{server_id,name,hosts,status,port_min,port_max,traffic_limit_bytes,traffic_used_bytes,reset_day,max_connections,connections,share_until,core,protocols,dual_install,egress?}]}` |
+| `PUT /shares/{server_id}/desired` | `{revision,nodes:[{id,owner,name,protocol,port,enabled,max_connections,max_online_ips,expires_at,ss2022?,vless?}],egress?}` → `{accepted_revision}` |
+| `GET /shares/{server_id}/status` | `{applied_revision,core:{state,epoch},nodes:[{id,state,error?,up_bytes,down_bytes,connections}],share_traffic_used_bytes,collected_at,egress?}` |
 | `PUT /landing-hosts` | `{native_landing_hosts:[],flvx_node_hosts:[]}` → `{}` |
 
 Desired state is a complete replacement. An identical revision retry is
@@ -533,7 +533,8 @@ The unit defaults to `MemoryMax=256M`, `CPUQuota=50%`, and uses
 `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, an empty capability
 set and a private runtime directory. Access logs are disabled; systemd and
 Helper error messages are rate limited. Resource changes use systemd properties
-without restarting Core. Only a binary replacement restarts this instance.
+without restarting Core. Only a binary replacement (and, once, the switch to
+the RoutingService base config for landing egress) restarts this instance.
 
 The Helper renders the fixed base config and structured inbound templates.
 Its first routing rule blocks every explicit §D private/loopback/link-local/
@@ -591,3 +592,27 @@ check hot updates, statistics, private-address blocks and unchanged official
 process/port ownership. Systemd installation and real-server integration require
 the separately approved release/canary task. Cancel and await cleanup before
 downgrading Helper, so an older Helper cannot leave an unmanaged FLVX unit.
+
+### Landing egress (outbounds and routing)
+
+FLVX contract `landing-egress-v1` adds an optional `egress` plan to desired
+state: typed outbounds (direct, WireGuard/WARP, SOCKS5, HTTP, Shadowsocks,
+VLESS Reality, each with 跟随系统 / IPv4 优先 / IPv6 优先 / 强制 IPv4 / 强制 IPv6)
+and routing rules scoped to FLVX node inbound tags. `GET /shares` advertises
+`egress:{versions:[1],allowed,geoip,geosite}` only after the share's Helper
+(v0.7.6+, capability `flvx.egress.v1`) reported support; the sharing page's
+「允许自定义出站与路由」 policy (default on) sets `allowed`. Custom validates
+every plan again (422 with field paths such as `egress.rules[3].source_ip[0]`)
+and rejects plans when the policy is off or the Helper is too old. Payloads
+without a plan stay byte-identical for older Helpers; a Helper that lost
+support receives no plan and the covered nodes disabled.
+
+The Helper renders the plan behind the fixed safety rule and applies it hot
+(add outbounds, replace the rule set atomically, remove stale outbounds)
+before admitting inbounds, without Core API calls in steady state. A Core
+started from the pre-egress base config (no RoutingService) is restarted once
+for the first non-default plan and reports it. Plans that cannot be applied
+keep the nodes they newly cover offline. Pinned geo data is downloaded only
+when referenced. Connection caps and traffic accounting stay keyed by inbound
+and apply to every outbound. Details, deviations and measurements:
+[flvx-landing-egress.md](flvx-landing-egress.md).

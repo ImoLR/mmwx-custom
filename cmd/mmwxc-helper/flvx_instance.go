@@ -84,6 +84,8 @@ type flvxManager struct {
 	capability                [2]bool
 	capabilityAt              time.Time
 	pins                      map[string]netip.Addr
+	egressValidKey            string
+	egressInvalid             string
 	detectLocal               func() flvx.LocalAddrs
 	lookupIP                  func(context.Context, string) ([]netip.Addr, error)
 	geoDownload               func(context.Context, string, string) error
@@ -381,15 +383,6 @@ func (m *flvxManager) accept(e flvx.Envelope) error {
 	if p.Desired.Revision > 0 {
 		if len(flvx.ValidateDesired(p.Desired, p.Config, p.OfficialPorts)) > 0 && p.Status == "active" {
 			return errors.New("invalid FLVX structured desired state")
-		}
-		// Geo availability is checked when rendering; tags and every other
-		// contract rule are checked again here.
-		tags := map[string]bool{}
-		for _, n := range p.Desired.Nodes {
-			tags[n.Tag()] = true
-		}
-		if len(flvx.ValidateEgress(p.Desired.Egress, tags, true, true)) > 0 {
-			return errors.New("invalid FLVX landing egress plan")
 		}
 	}
 	if p.Desired.Revision < m.state.Payload.Desired.Revision {

@@ -322,7 +322,7 @@ func detectLocalAddrs() flvx.LocalAddrs {
 // otherwise resolve again at dial time, and a rebinding answer could reach a
 // private address. Any private answer disables the outbound; an unresolvable
 // name blocks it until the next render (1 minute).
-func (m *flvxManager) pinUpstream(ctx context.Context, o flvx.EgressOutbound, local flvx.LocalAddrs) (flvx.EgressOutbound, string, bool) {
+func (m *flvxManager) pinUpstream(ctx context.Context, o flvx.EgressOutbound, local flvx.LocalAddrs, previous map[string]netip.Addr) (flvx.EgressOutbound, string, bool) {
 	host, port := o.Server, ""
 	if o.Type == "wireguard" {
 		if o.WireGuard == nil || o.WireGuard.Endpoint == "" {
@@ -389,7 +389,7 @@ func (m *flvxManager) pinUpstream(ctx context.Context, o flvx.EgressOutbound, lo
 		}
 		pick = list[0]
 		for _, a := range list {
-			if a == m.pins[key] { // sticky while the answer still contains it
+			if a == previous[key] { // sticky while the answer still contains it
 				pick = a
 			}
 		}
@@ -397,9 +397,6 @@ func (m *flvxManager) pinUpstream(ctx context.Context, o flvx.EgressOutbound, lo
 	}
 	if !pick.IsValid() {
 		return o, o.Tag + ": 上游域名没有强制 IP 版本对应的地址，已封锁", false
-	}
-	if m.pins == nil {
-		m.pins = map[string]netip.Addr{}
 	}
 	m.pins[key] = pick
 	if o.Type == "wireguard" {
@@ -428,8 +425,10 @@ func (m *flvxManager) renderEgress(ctx context.Context, plan *flvx.Egress) (flvx
 	}
 	local := m.localAddrs()
 	tagMap := map[string]string{"direct": "direct", "block": "block"}
+	previousPins := m.pins
+	m.pins = map[string]netip.Addr{}
 	for _, o := range plan.Outbounds {
-		pinned, warning, transient := m.pinUpstream(ctx, o, local)
+		pinned, warning, transient := m.pinUpstream(ctx, o, local, previousPins)
 		var cfg map[string]any
 		if warning != "" {
 			cfg = flvx.Blackhole(o.Tag)
@@ -702,6 +701,25 @@ func (m *flvxManager) applyEgress(ctx context.Context, epoch string) {
 			m.withhold(plan, reason)
 		}
 	}
+	// Custom validated and signed the plan; check again once per plan, and
+	// fail closed for its nodes only so node updates keep flowing even if a
+	// newer Custom sent something this Helper cannot render.
+	key := flvxHash(plan)
+	if active && m.egressValidKey != key {
+		tags := map[string]bool{}
+		for _, n := range p.Desired.Nodes {
+			tags[n.Tag()] = true
+		}
+		m.egressInvalid = ""
+		if problems := flvx.ValidateEgress(plan, tags, true, true); len(problems) > 0 {
+			m.egressInvalid = "出站与路由方案无效（" + problems[0].Field + "）：" + problems[0].Message
+		}
+		m.egressValidKey = key
+	}
+	if active && m.egressInvalid != "" {
+		fail(m.egressInvalid)
+		return
+	}
 	ready, _ := m.routingReady(ctx, epoch)
 	if !ready {
 		if !active {
@@ -713,7 +731,6 @@ func (m *flvxManager) applyEgress(ctx context.Context, epoch string) {
 		fail("FLVX Core 的路由 API 暂不可用")
 		return
 	}
-	key := flvxHash(plan)
 	now := m.now()
 	c := &m.egress
 	wait := flvxEgressRefresh

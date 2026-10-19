@@ -336,3 +336,76 @@ func flvxSOCKSPort(t *testing.T, port int, target string, targetPort int) net.Co
 	io.ReadFull(c, header)
 	return c
 }
+
+// TestFLVXEgressE2EEnvelopeRealCore takes the signed envelope Custom produced
+// for a plan compiled by FLVX's own code (TestFLVXEgressE2EWithFLVXClient,
+// MMWXC_TEST_FLVX_ENVELOPE), verifies it with the Helper's types and applies
+// it on a real Core: every preset geo list, the exemption and all outbound
+// kinds must load hot.
+func TestFLVXEgressE2EEnvelopeRealCore(t *testing.T) {
+	path := os.Getenv("MMWXC_TEST_FLVX_ENVELOPE")
+	if path == "" {
+		t.Skip("MMWXC_TEST_FLVX_ENVELOPE not configured")
+	}
+	bin := realEgressCore(t)
+	dir := t.TempDir()
+	if !realGeo(t, filepath.Join(dir, "state")) {
+		t.Skip("MMWXC_TEST_GEO_DIR not supplied")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope flvx.Envelope
+	if err = json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	apiPort := flvxFreePort(t)
+	socket := filepath.Join(dir, "control.sock")
+	stopCore := flvxStartCore(t, bin, filepath.Join(dir, "core.json"), socket, flvx.BaseConfig(apiPort))
+	core := newCoreClient(socket)
+	flvxWait(t, func() bool { _, err := core.snapshot(ctx); return err == nil })
+	m := &flvxManager{dir: filepath.Join(dir, "state"), binary: bin, core: core, config: config{Token: "helper-e2e-token", ServerID: "7"}, logs: newPeriodicLogLimiter()}
+	m.state = flvxLocalState{APIPort: apiPort, Counters: map[string]*flvx.Counter{}, Applied: map[string]string{}, Report: flvx.Report{Generation: "e2e"}}
+	m.apiCall = func(ctx context.Context, command string, args ...string) ([]byte, error) {
+		if command == "adi" {
+			raw, _ := os.ReadFile(args[0])
+			os.WriteFile(args[0], []byte(strings.ReplaceAll(string(raw), `"listen":"0.0.0.0"`, `"listen":"127.0.0.1"`)), 0600)
+		}
+		return m.api(ctx, command, args...)
+	}
+	m.setup = func(context.Context) error { return nil }
+	m.stop = func(context.Context) error { stopCore(); return nil }
+	m.readOfficial = func() ([]int, error) { return nil, nil }
+	m.restartCore = func(context.Context) error { t.Fatal("unexpected Core restart"); return nil }
+	m.memory = func() (int64, int64, bool) { return 30 << 20, 1 << 30, true }
+	m.detectLocal = func() flvx.LocalAddrs {
+		return flvx.LocalAddrs{V4: netip.MustParseAddr("127.0.0.1"), V6: netip.MustParseAddr("::1")}
+	}
+	m.lookupIP = func(_ context.Context, host string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("203.0.113.9")}, nil
+	}
+	if err = m.accept(envelope); err != nil {
+		t.Fatal("Helper rejected Custom's signed envelope:", err)
+	}
+	started := time.Now()
+	if err = m.reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	e := m.state.Report.Egress
+	if e == nil || e.State != "applied" || len(m.state.Applied) != len(envelope.Payload.Desired.Nodes) {
+		t.Fatalf("FLVX plan not applied: %+v applied=%d", e, len(m.state.Applied))
+	}
+	listed, err := m.api(ctx, "lsrules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range envelope.Payload.Desired.Egress.Rules {
+		if !strings.Contains(string(listed), `"flvxr-`+strconv.Itoa(i+1)+`"`) {
+			t.Fatalf("rule %d missing in the Core: %s", i+1, listed)
+		}
+	}
+	t.Logf("FLVX-compiled plan (%d rules, %d outbounds, %d exempt) accepted with the Helper's signature check and applied hot in %s; geo payload %d bytes; warnings %v",
+		len(envelope.Payload.Desired.Egress.Rules), len(envelope.Payload.Desired.Egress.Outbounds), len(envelope.Payload.Desired.Egress.ExemptSources), time.Since(started).Round(time.Millisecond), m.state.EgressGeoBytes, e.Warnings)
+}
