@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/user"
@@ -39,6 +40,13 @@ type flvxLocalState struct {
 	AppliedEpoch string                    `json:"applied_epoch"`
 	RealityPins  map[string]flvxRealityPin `json:"reality_pins,omitempty"`
 	Report       flvx.Report               `json:"report"`
+	// Landing egress plan applied in AppliedEpoch ("" = built-in default).
+	EgressApplied    string   `json:"egress_applied,omitempty"`
+	EgressCovered    []string `json:"egress_covered,omitempty"`
+	EgressRevision   int64    `json:"egress_revision,omitempty"`
+	EgressGeoBytes   int64    `json:"egress_geo_bytes,omitempty"`
+	EgressStale      bool     `json:"egress_stale,omitempty"`
+	RoutingRestartAt int64    `json:"routing_restart_at,omitempty"`
 }
 
 type flvxRealityPin struct {
@@ -64,6 +72,24 @@ type flvxManager struct {
 	reportedMaterial                [32]byte
 	reconciledPayload               [32]byte
 	removed                         bool
+	// Landing egress caches; see flvx_egress.go.
+	egress                    flvxEgressCache
+	egressSources             flvx.SourceMemo
+	egressCleanupAt           time.Time
+	routingEpoch              string
+	routingOK, routingMissing bool
+	withheld                  map[string]string
+	geoStamps                 map[string]flvxFileStamp
+	geoRetry                  map[string]*flvxRetry
+	capability                [2]bool
+	capabilityAt              time.Time
+	pins                      map[string]netip.Addr
+	detectLocal               func() flvx.LocalAddrs
+	lookupIP                  func(context.Context, string) ([]netip.Addr, error)
+	geoDownload               func(context.Context, string, string) error
+	diskFree                  func(string) (int64, error)
+	restartCore               func(context.Context) error
+	memory                    func() (current, available int64, availableOK bool)
 	// The real transport is the fixed Core CLI's gRPC client; tests inject a fake.
 	apiCall      func(context.Context, string, ...string) ([]byte, error)
 	lookupHost   func(context.Context, string) ([]string, error)
@@ -355,6 +381,15 @@ func (m *flvxManager) accept(e flvx.Envelope) error {
 	if p.Desired.Revision > 0 {
 		if len(flvx.ValidateDesired(p.Desired, p.Config, p.OfficialPorts)) > 0 && p.Status == "active" {
 			return errors.New("invalid FLVX structured desired state")
+		}
+		// Geo availability is checked when rendering; tags and every other
+		// contract rule are checked again here.
+		tags := map[string]bool{}
+		for _, n := range p.Desired.Nodes {
+			tags[n.Tag()] = true
+		}
+		if len(flvx.ValidateEgress(p.Desired.Egress, tags, true, true)) > 0 {
+			return errors.New("invalid FLVX landing egress plan")
 		}
 	}
 	if p.Desired.Revision < m.state.Payload.Desired.Revision {

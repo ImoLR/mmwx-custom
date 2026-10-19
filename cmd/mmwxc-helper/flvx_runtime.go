@@ -20,13 +20,23 @@ import (
 )
 
 func (m *flvxManager) api(ctx context.Context, command string, args ...string) ([]byte, error) {
-	child, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// Rule replacement builds geo matchers inside the CPU-capped Core.
+	limit, rpc := 5*time.Second, "3"
+	if command == "adrules" {
+		limit, rpc = 30*time.Second, "25"
+	}
+	child, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
-	argv := []string{"api", command, "--server=127.0.0.1:" + strconv.Itoa(m.state.APIPort), "--timeout=3"}
+	argv := []string{"api", command, "--server=127.0.0.1:" + strconv.Itoa(m.state.APIPort), "--timeout=" + rpc}
 	argv = append(argv, args...)
-	raw, err := exec.CommandContext(child, m.binary, argv...).Output()
+	cmd := exec.CommandContext(child, m.binary, argv...)
+	// The CLI (not the Core) reads the pinned geo files for rules it builds.
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+m.geoDir())
+	raw, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("FLVX gRPC %s failed", command)
+		var exit *exec.ExitError
+		missing := errors.As(err, &exit) && strings.Contains(string(exit.Stderr)+string(raw), "code = Unimplemented")
+		return nil, flvxCLIError{command: command, unimplemented: missing}
 	}
 	if len(raw) > 4<<20 {
 		return nil, errors.New("FLVX gRPC response too large")
@@ -168,6 +178,10 @@ func (m *flvxManager) wanted(ctx context.Context) (map[string]string, map[string
 		}
 		if n.Port == m.state.APIPort {
 			problems[n.ID] = "port collides with FLVX control API"
+			continue
+		}
+		if reason := m.withheld[n.Tag()]; reason != "" {
+			problems[n.ID] = reason
 			continue
 		}
 		node, err := m.pinnedReality(ctx, n)
@@ -363,15 +377,22 @@ func (m *flvxManager) reconcile(ctx context.Context) (result error) {
 	if snapshot.Version < 7 || snapshot.StartedAt.IsZero() {
 		return errors.New("FLVX Core requires control API v7")
 	}
+	if snapshot, err = m.ensureRouting(ctx, snapshot); err != nil {
+		return err
+	}
 	if err = m.collect(ctx, snapshot); err != nil {
 		return err
 	}
-	epoch := snapshot.StartedAt.UTC().Format(time.RFC3339Nano)
+	epoch := flvxEpoch(snapshot)
 	if m.state.AppliedEpoch != epoch {
 		checkInbounds = true
 		m.state.Applied = map[string]string{}
 		m.state.AppliedEpoch = epoch
+		// A new Core lost every plan outbound and rule as well.
+		m.state.EgressApplied, m.state.EgressCovered, m.state.EgressGeoBytes, m.state.EgressStale = "", nil, 0, false
 	}
+	// Outbounds and rules first: a node never serves before its plan applies.
+	m.applyEgress(ctx, epoch)
 	wanted, problems := m.wanted(ctx)
 	if !checkInbounds && reflect.DeepEqual(wanted, m.state.Applied) {
 		if err = m.limits(ctx, snapshot, wanted, nil); err != nil {
