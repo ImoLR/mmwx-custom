@@ -15,14 +15,16 @@ const { PNG } = require("pngjs");
 const run = process.env.FLVX_EVIDENCE || "/root/mmwx-workers/runs/flvx-share";
 const screens = path.join(run, "screens"); mkdirSync(screens, { recursive: true });
 const now = Date.parse("2026-10-18T12:00:00Z"), GB = 2 ** 30;
-const serverNames = ["US 年付 · 共享演示", "香港 · 备用共享", "东京 · 待共享", "新加坡 · 双装演示", "日本 · 原生落地"];
-const servers = serverNames.map((name, i) => ({ id: i + 7, name, ip_address: `203.0.113.${i + 7}`, status: "connected", xray_mode: "external", xray_running: true, xray_version: "8f5b614", agent_version: "v0.5.5", country_code: ["US", "HK", "JP", "SG", "JP"][i], flag: ["🇺🇸", "🇭🇰", "🇯🇵", "🇸🇬", "🇯🇵"][i], traffic_limit: 2 * 1024 * GB, traffic_used: 320 * GB, current_upload_speed: 123456, current_download_speed: 234567, last_heartbeat: new Date(now).toISOString(), boot_time: new Date(now - 86400_000).toISOString(), traffic_reset_day: 1 }));
-const available = servers.map((s, i) => ({ server_id: s.id, name: s.name, hosts: { ipv4: s.ip_address, ipv6: "", domain: "" }, official_ports: i === 2 ? [30000, 30001] : [10001, 10002], ports_known: true, dual_install: i === 0 || i === 3, native_landing: i === 4, detection_error: false }));
+const serverNames = ["US 年付 · 共享演示", "香港 · 备用共享", "东京 · 待共享", "新加坡 · 双装演示", "日本 · 原生落地", "台北 · 旧 Helper", "高雄 · 旧 Helper 待共享"];
+const servers = serverNames.map((name, i) => ({ id: i + 7, name, ip_address: `203.0.113.${i + 7}`, status: "connected", xray_mode: "external", xray_running: true, xray_version: "8f5b614", agent_version: "v0.5.5", country_code: ["US", "HK", "JP", "SG", "JP", "TW", "TW"][i], flag: ["🇺🇸", "🇭🇰", "🇯🇵", "🇸🇬", "🇯🇵", "🇹🇼", "🇹🇼"][i], traffic_limit: 2 * 1024 * GB, traffic_used: 320 * GB, current_upload_speed: 123456, current_download_speed: 234567, last_heartbeat: new Date(now).toISOString(), boot_time: new Date(now - 86400_000).toISOString(), traffic_reset_day: 1 }));
+const available = servers.map((s, i) => ({ server_id: s.id, name: s.name, hosts: { ipv4: s.ip_address, ipv6: "", domain: "" }, official_ports: i === 2 ? [30000, 30001] : [10001, 10002], ports_known: true, dual_install: i === 0 || i === 3, native_landing: i === 4, detection_error: false, helper: { installed: true, version: i >= 5 ? "v0.7.4" : "v0.7.5", architecture: "amd64", flvx_ready: i < 5, upgrading: false } }));
+available[5].hosts = { ipv4: "203.0.113.12", ipv6: "", domain: "ddns-tw.example" };
 const cfg = { port_min: 30000, port_max: 30999, traffic_limit_bytes: 500 * GB, reset_day: 1, max_connections: 100, share_until: null, memory_mb: 256, cpu_percent: 50 };
 const node = (id, owner, protocol, port, used, state = "active") => ({ id, owner: { id: owner === "小林" ? "21" : "22", name: owner }, name: `${owner} · ${protocol === "ss2022" ? "高速 SS" : "Reality 专线"}`, protocol, port, max_connections: 20, expires_at: Date.parse("2026-11-18T15:59:59Z"), status: { id, state, up_bytes: used * GB * .2, down_bytes: used * GB * .8, connections: state === "active" ? 4 : 0 } });
 const fixture = () => ({ shares: [
-  { server_id: 7, name: servers[0].name, hosts: available[0].hosts, status: "active", config: { ...cfg }, traffic_used_bytes: 186.4 * GB, traffic_limit_bytes: 500 * GB, connections: 12, max_connections: 100, core: { state: "running", version: "8f5b614" }, dual_install: true, nodes: [node("101", "小林", "ss2022", 30001, 68.2), node("102", "小林", "vless_reality_vision", 30002, 45.3), node("103", "Alex", "ss2022", 30003, 72.9)], report: { collected_at: now, applied_revision: 12 } },
-  { server_id: 8, name: servers[1].name, hosts: available[1].hosts, status: "paused", config: { ...cfg, share_until: Date.parse("2026-12-31T15:59:59Z"), traffic_limit_bytes: 200 * GB, max_connections: 50 }, traffic_used_bytes: 42.6 * GB, traffic_limit_bytes: 200 * GB, connections: 0, max_connections: 50, core: { state: "running", version: "8f5b614" }, dual_install: false, nodes: [node("104", "Alex", "vless_reality_vision", 30001, 42.6, "removed")], report: { collected_at: now, applied_revision: 5 } },
+  { server_id: 7, name: servers[0].name, hosts: available[0].hosts, status: "active", config: { ...cfg }, traffic_used_bytes: 186.4 * GB, traffic_limit_bytes: 500 * GB, connections: 12, max_connections: 100, core: { state: "running", version: "8f5b614" }, dual_install: true, nodes: [node("101", "小林", "ss2022", 30001, 68.2), node("102", "小林", "vless_reality_vision", 30002, 45.3), node("103", "Alex", "ss2022", 30003, 72.9), node("105", "Alex", "ss2022", 30004, 0, "pending")], report: { collected_at: now, applied_revision: 12 }, helper: available[0].helper },
+  { server_id: 8, name: servers[1].name, hosts: available[1].hosts, status: "paused", config: { ...cfg, share_until: Date.parse("2026-12-31T15:59:59Z"), traffic_limit_bytes: 200 * GB, max_connections: 50 }, traffic_used_bytes: 42.6 * GB, traffic_limit_bytes: 200 * GB, connections: 0, max_connections: 50, core: { state: "running", version: "8f5b614" }, dual_install: false, nodes: [node("104", "Alex", "vless_reality_vision", 30001, 42.6, "removed")], report: { collected_at: now, applied_revision: 5 }, helper: available[1].helper },
+  { server_id: 12, name: servers[5].name, hosts: available[5].hosts, status: "active", config: { ...cfg }, traffic_used_bytes: 0, traffic_limit_bytes: 500 * GB, connections: 0, max_connections: 100, core: { state: "helper_outdated", version: "" }, dual_install: false, nodes: [node("10", "小林", "ss2022", 30000, 0, "pending")], report: { collected_at: 0, applied_revision: 0 }, helper: available[5].helper },
 ], servers: structuredClone(available), integration: { token_configured: true, last_api_at: now - 20_000 } });
 
 function serve(dist) {
@@ -37,7 +39,7 @@ function serve(dist) {
 }
 const baseline = await serve(path.join(run, "baseline-dist")), current = await serve(process.env.FLVX_DIST || path.join(root, "frontend/dist"));
 let browser;
-const captures = [], errors = [], checks = [], mutations = [];
+const captures = [], errors = [], checks = [], mutations = [], agentActions = [];
 const chromiumPath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || (existsSync("/root/.cache/ms-playwright/chromium-1124/chrome-linux/chrome") ? "/root/.cache/ms-playwright/chromium-1124/chrome-linux/chrome" : undefined);
 
 async function contextFor(origin, width) {
@@ -59,6 +61,11 @@ async function contextFor(origin, width) {
       if (url.pathname.endsWith("/token")) { data.integration.token_configured = req.method() === "POST"; response = { token: req.method() === "POST" ? "flvx_local_preview_token_shown_once_only_0123456789" : "" }; }
       else if (req.method() === "PUT") { const id = Number(url.pathname.split("/").pop()); const share = data.shares.find((s) => s.server_id === id); if (share) { share.status = body.status; if (body.port_min) share.config = { ...body }; } response = { success: true }; }
       else response = data;
+    } else if (url.pathname === "/api/custom/releases") response = { success: true, current_custom_version: "v1.4.65", cached: true, release: { latest_helper_version: "v0.7.5", helper_artifacts: { amd64: { url: "https://github.com/ImoLR/mmwx-custom/releases/download/v1.4.64/mmwxc-helper-linux-amd64", sha256: "e2bd7940f560197cbf2f03f0af164d7f3b72cdf598867622fdfe1abf21613cc3" } } } };
+    else if (/^\/api\/custom\/servers\/\d+\/agent$/.test(url.pathname) && req.method() === "POST") {
+      const id = Number(url.pathname.split("/")[4]); agentActions.push({ id, action: body.action, version: body.payload?.version });
+      for (const s of [...data.servers, ...data.shares]) if (s.server_id === id && s.helper) s.helper.upgrading = true;
+      response = { success: true, command: { id: "fixture-command", action: body.action } };
     } else if (url.pathname === "/api/v3") response = body.op === "034e094d05aa3f83" ? { servers } : { nodes: [], users: [], packages: [] };
     else if (url.pathname === "/api/traffic/summary") response = { metrics: { total_limit_gb: 10240, total_used_gb: 1600, total_remaining_gb: 8640, usage_percentage: 15.625, unlimited_used_gb: 0 }, history: [{ date: "2026-10-17", used_gb: 1510 }, { date: "2026-10-18", used_gb: 1600 }] };
     else if (url.pathname === "/api/admin/traffic/period") response = { items: [], servers: [], range: "today", total_traffic: 0 };
@@ -103,6 +110,15 @@ try {
     await shot(page, `navigation-${width}`); await page.getByRole("button", { name: "FLVX 共享", exact: true }).click();
     await page.getByRole("heading", { name: /US 年付/ }).waitFor(); await shot(page, `servers-${width}`);
     await page.locator(".flvx-nodes > summary").first().click(); await shot(page, `nodes-expanded-${width}`);
+    assert.equal(await page.getByText("待应用", { exact: true }).count(), 1);
+    const outdated = page.locator(".flvx-card", { has: page.getByRole("heading", { name: "台北 · 旧 Helper" }) });
+    assert.equal(await outdated.getByText("ddns-tw.example", { exact: true }).count(), 1);
+    await outdated.getByText("Helper 需升级：当前 v0.7.4 不支持 FLVX 共享，FLVX 节点不会生效。", { exact: true }).waitFor();
+    assert.equal(await outdated.locator(".flvx-metrics small").last().textContent(), "Helper 需升级");
+    await outdated.locator(".flvx-nodes > summary").click(); await outdated.getByText("等待 Helper", { exact: true }).waitFor();
+    assert.equal(await outdated.getByText("已移除", { exact: true }).count(), 0, "unreported nodes must never read 已移除");
+    await outdated.scrollIntoViewIfNeeded(); await shot(page, `helper-outdated-card-${width}`);
+    checks.push(`${width}: unreported nodes 待应用/等待 Helper, outdated Helper card warning + core state`);
     await page.getByRole("button", { name: "按用户", exact: true }).click(); await shot(page, `users-${width}`);
     await page.getByRole("button", { name: "按服务器", exact: true }).click();
     await page.getByRole("button", { name: "共享一台服务器", exact: true }).click(); await shot(page, `share-dialog-${width}`);
@@ -121,6 +137,16 @@ try {
     assert.equal(await page.getByRole("button", { name: "确认共享", exact: true }).isEnabled(), true);
     await page.getByRole("dialog").locator("select").first().selectOption("11"); await shot(page, `share-native-refused-${width}`);
     assert.equal(await page.getByRole("button", { name: "确认共享", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("dialog").locator("option[value=\"13\"]").textContent(), "高雄 · 旧 Helper 待共享 · Helper 需升级");
+    await page.getByRole("dialog").locator("select").first().selectOption("13");
+    await page.getByRole("dialog").getByText("Helper 需升级：当前 v0.7.4 不支持 FLVX 共享，升级后才能共享。", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "确认共享", exact: true }).isDisabled(), true);
+    await shot(page, `share-helper-outdated-${width}`);
+    await page.getByRole("dialog").getByRole("button", { name: "升级 Helper", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Helper 升级中…", exact: true }).waitFor();
+    assert.equal(await page.getByRole("dialog").getByRole("button", { name: "Helper 升级中…", exact: true }).isDisabled(), true);
+    await shot(page, `share-helper-upgrading-${width}`);
+    checks.push(`${width}: new share on an outdated Helper refused, upgrade dispatched from the dialog`);
     await page.getByRole("button", { name: "关闭面板", exact: true }).click();
     await page.getByRole("button", { name: "设置", exact: true }).first().click(); await page.getByText("高级 · 资源上限", { exact: true }).click(); await shot(page, `settings-${width}`); await page.getByRole("button", { name: "关闭面板", exact: true }).click();
     await page.getByRole("button", { name: "取消共享", exact: true }).first().click();
@@ -139,9 +165,10 @@ try {
   }
   assert.deepEqual(errors, []);
   assert.ok(mutations.every((r) => r.path === "/api/custom/flvx/admin/token" && r.method === "POST"));
+  assert.deepEqual(agentActions, [{ id: 13, action: "helper.update", version: "v0.7.5" }, { id: 13, action: "helper.update", version: "v0.7.5" }]);
 } finally {
   await browser?.close(); await new Promise((r) => baseline.server.close(r)); await new Promise((r) => current.server.close(r));
-  writeFileSync(path.join(screens, "manifest.json"), JSON.stringify({ captures, errors, checks, fontIssues, mutations: mutations.map(({ method, path }) => ({ method, path })), hashes: Object.fromEntries(captures.map((f) => [f, createHash("sha256").update(readFileSync(path.join(screens, f))).digest("hex")])) }, null, 2));
+  writeFileSync(path.join(screens, "manifest.json"), JSON.stringify({ captures, errors, checks, fontIssues, mutations: mutations.map(({ method, path }) => ({ method, path })), agentActions, hashes: Object.fromEntries(captures.map((f) => [f, createHash("sha256").update(readFileSync(path.join(screens, f))).digest("hex")])) }, null, 2));
 }
 writeFileSync(path.join(screens, "index.html"), `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>FLVX 共享 · 截图预览</title><style>body{font:15px system-ui;background:#edf0f4;color:#253247;margin:24px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px}article{background:white;padding:16px;border-radius:14px}img{width:100%;height:auto;border:1px solid #e0e5ed}a{color:#215daa}</style><h1>FLVX 共享 · 桌面与手机预览</h1><p>本机合成数据，未连接生产或真实服务器。概览前后像素完全一致。令牌仅为无效演示文字。</p><main>${captures.map((f) => `<article><h2>${f.replace(".png", "")}</h2><a href="${f}"><img src="${f}" loading="lazy"></a></article>`).join("")}</main></html>`);
 console.log(`${captures.length} screenshots; ${checks.join("; ")}`);
