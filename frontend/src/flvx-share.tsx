@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Copy, KeyRound, Plus, RefreshCw, Server, Users } from "lucide-react";
+import { AlertTriangle, Copy, KeyRound, Plus, RefreshCw, Route, Server, Users } from "lucide-react";
 import { CompactSegments, CompactSheet } from "./compact-ui";
 import { requestFLVXAdmin } from "./api";
 import "./flvx-share.css";
@@ -8,7 +8,9 @@ type ShareConfig = { port_min: number; port_max: number; traffic_limit_bytes: nu
 type ShareStatus = "active" | "paused" | "revoked";
 type NodeStatus = { id: string; state: "active" | "error" | "removed"; error?: string; up_bytes: number; down_bytes: number; connections: number };
 type ShareNode = { id: string; owner: { id: string; name: string }; name: string; protocol: string; port: number; expires_at: number | null; max_connections: number; status: NodeStatus };
-type SharedServer = { server_id: number; name: string; hosts: { ipv4: string; ipv6: string; domain: string }; status: ShareStatus; config: ShareConfig; traffic_used_bytes: number; traffic_limit_bytes: number; connections: number; max_connections: number; core: { state: string; version: string }; dual_install: boolean; native_landing?: boolean; nodes: ShareNode[]; report: { collected_at: number; applied_revision: number } };
+type EgressReport = { state: "none" | "applied" | "error"; error: string; applied_revision: number; warnings: string[] };
+type EgressPlan = { active: boolean; outbounds: number; outbound_types: string[]; rules: number; covered_nodes: number };
+type SharedServer = { server_id: number; name: string; hosts: { ipv4: string; ipv6: string; domain: string }; status: ShareStatus; config: ShareConfig; traffic_used_bytes: number; traffic_limit_bytes: number; connections: number; max_connections: number; core: { state: string; version: string }; dual_install: boolean; native_landing?: boolean; nodes: ShareNode[]; report: { collected_at: number; applied_revision: number; egress?: EgressReport }; allow_egress?: boolean; egress?: { versions: number[]; allowed: boolean; geoip: boolean; geosite: boolean }; egress_plan?: EgressPlan };
 type AvailableServer = { server_id: number; name: string; hosts: SharedServer["hosts"]; official_ports: number[]; ports_known: boolean; dual_install: boolean; native_landing: boolean; detection_error: boolean };
 export type FLVXData = { shares: SharedServer[]; servers: AvailableServer[]; integration: { token_configured: boolean; last_api_at: number } };
 
@@ -18,6 +20,23 @@ const limit = (value: number) => value > 0 ? value.toLocaleString() : "不限";
 const date = (ms: number | null) => ms ? new Date(ms).toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei" }) : "不限";
 const message = (reason: unknown) => reason instanceof Error ? reason.message : "操作失败，请重试";
 const stateText: Record<string, string> = { active: "已启用", error: "异常", removed: "已移除", running: "运行中", stopped: "已停止", installing: "安装中" };
+const outboundText: Record<string, string> = { wireguard: "WARP", socks: "SOCKS5", http: "HTTP", shadowsocks: "Shadowsocks", vless: "VLESS Reality", direct: "指定 IP 版本直连" };
+
+// 出站与路由 (FLVX landing egress): the share policy, the Helper capability and
+// the plan FLVX sent. Upstream addresses and credentials are never shown.
+function EgressLine({ share: s }: { share: SharedServer }) {
+  const plan = s.egress_plan, report = s.report.egress;
+  let text = "默认直连", status: React.ReactNode = null;
+  if (s.allow_egress === false) text = "未允许 · FLVX 节点一律从本机直连";
+  else if (!s.egress) text = "升级 Helper 后可用 · 目前一律直连";
+  else if (plan?.active) {
+    const types = plan.outbound_types.map((type) => outboundText[type] || type).join("、");
+    text = `FLVX 自定义${types ? ` · ${types}` : ""} · ${plan.rules} 条规则 · ${plan.covered_nodes} 个节点`;
+    status = report?.state === "applied" ? <span className="flvx-status online">已生效</span> : report?.state === "error" ? <span className="flvx-status flvx-status-error">应用失败</span> : <span className="flvx-status">等待 Helper 应用</span>;
+  }
+  const notes = [report?.state === "error" && report.error, ...(plan?.active && s.allow_egress !== false ? report?.warnings || [] : [])].filter(Boolean) as string[];
+  return <div className="flvx-egress"><Route /><div><span>出站与路由</span><strong>{text}</strong>{notes.map((note) => <small key={note}>{note}</small>)}</div>{status}</div>;
+}
 
 export function useFLVXSharedServers(token: string, enabled: boolean) {
   const [ids, setIDs] = useState<Set<number>>(new Set());
@@ -85,6 +104,7 @@ function ShareCard({ share: s, busy, onEdit, onStatus, onCancel }: { share: Shar
     {s.native_landing && <p className="flvx-warning">FLVX 已启用原生落地，禁止共享。</p>}
     <div className="flvx-metrics"><div><span>流量</span><strong>{gb(s.traffic_used_bytes)} <small>/ {s.traffic_limit_bytes ? `${gb(s.traffic_limit_bytes)} GB` : "不限 GB"}</small></strong><div className={`flvx-meter ${exhausted ? "exhausted" : ""}`} role="progressbar" aria-label={`${s.name} 共享流量`} aria-valuenow={s.traffic_limit_bytes ? Math.min(100, s.traffic_used_bytes / s.traffic_limit_bytes * 100) : 0} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${s.traffic_limit_bytes ? Math.min(100, s.traffic_used_bytes / s.traffic_limit_bytes * 100) : 0}%` }} /></div><small>每月 {s.config.reset_day} 日重置 · 台湾时间</small></div><div><span>连接</span><strong>{s.connections.toLocaleString()} <small>/ {limit(s.max_connections)}</small></strong><small>{stateText[s.core.state] || s.core.state}{s.core.version && ` · ${s.core.version}`}</small></div></div>
     <div className="flvx-card-facts"><span>端口 {s.config.port_min}–{s.config.port_max} <b>已用 {usedPorts}</b></span><span>{owners.length} 位用户 · {s.nodes.length} 个节点</span><span>共享至 {date(s.config.share_until)}</span></div>
+    {s.status !== "revoked" && <EgressLine share={s} />}
     {pending && <p className="flvx-inline-warning">已提交，等待 Helper 确认停用节点。</p>}
     <div className="flvx-card-actions"><button type="button" disabled={busy || s.status === "revoked"} onClick={onEdit}>设置</button>{s.status !== "revoked" && <><button type="button" disabled={busy || Boolean(s.native_landing)} onClick={() => onStatus(s.status === "paused" ? "active" : "paused")}>{s.status === "paused" ? "恢复" : "暂停共享"}</button><button type="button" className="flvx-text-danger" disabled={busy} onClick={onCancel}>取消共享</button></>}</div>
     {owners.length ? <details className="flvx-nodes"><summary>FLVX 用户与节点 <span>{s.nodes.length}</span></summary>{owners.map((id) => { const nodes = s.nodes.filter((n) => String(n.owner.id) === id); return <details className="flvx-user-group" key={id} open><summary><span className="flvx-avatar">{nodes[0].owner.name.slice(0, 1)}</span>{nodes[0].owner.name}<small>{nodes.length} 个节点</small></summary><NodeTable nodes={nodes} /></details>; })}</details> : <p className="flvx-no-nodes">等待 FLVX 用户创建节点</p>}
@@ -108,12 +128,13 @@ function ShareEditor({ token, share, servers, shares, onClose, onSaved }: { toke
   const [config, setConfig] = useState<ShareConfig>(share?.config || { port_min: 30000, port_max: 30999, traffic_limit_bytes: 0, reset_day: 1, max_connections: 0, share_until: null, memory_mb: 256, cpu_percent: 50 });
   const [trafficGB, setTrafficGB] = useState(share ? share.config.traffic_limit_bytes / GB : 0);
   const [expiry, setExpiry] = useState(share?.config.share_until ? new Date(share.config.share_until + 8 * 3600_000).toISOString().slice(0, 10) : "");
+  const [allowEgress, setAllowEgress] = useState(share?.allow_egress ?? true);
   const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
   const server = servers.find((s) => s.server_id === serverID);
   const unavailable = !server || server.native_landing || server.detection_error || !server.ports_known;
   const select = (id: number) => { setServerID(id); const s = servers.find((s) => s.server_id === id); if (s) { const [port_min, port_max] = availableRange(s.official_ports); setConfig((c) => ({ ...c, port_min, port_max })); } };
   const setNumber = (field: keyof ShareConfig, value: string) => setConfig((c) => ({ ...c, [field]: Number(value) }));
-  const save = async (e: React.FormEvent) => { e.preventDefault(); if (busy || unavailable) return; setBusy(true); setError(""); try { await requestFLVXAdmin(token, `/shares/${serverID}`, "PUT", { ...config, traffic_limit_bytes: Math.floor(trafficGB * GB), share_until: expiry ? Date.parse(`${expiry}T23:59:59+08:00`) : null, status: share?.status || "active" }); await onSaved(); } catch (reason) { setError(message(reason)); } finally { setBusy(false); } };
+  const save = async (e: React.FormEvent) => { e.preventDefault(); if (busy || unavailable) return; setBusy(true); setError(""); try { await requestFLVXAdmin(token, `/shares/${serverID}`, "PUT", { ...config, traffic_limit_bytes: Math.floor(trafficGB * GB), share_until: expiry ? Date.parse(`${expiry}T23:59:59+08:00`) : null, status: share?.status || "active", allow_egress: allowEgress }); await onSaved(); } catch (reason) { setError(message(reason)); } finally { setBusy(false); } };
   const collisions = server?.official_ports.filter((p) => p >= config.port_min && p <= config.port_max) || [];
   return <CompactSheet title={share ? "共享设置" : "共享一台服务器"} subtitle="仅设置 FLVX 的可用资源与共享上限" className="flvx-dialog" onClose={() => !busy && onClose()} closeDisabled={busy}>
     <form className="flvx-form" onSubmit={save}>
@@ -126,6 +147,7 @@ function ShareEditor({ token, share, servers, shares, onClose, onSaved }: { toke
       <label className="flvx-field">总连接数上限<input type="number" min={0} max={10000000} required value={config.max_connections} onChange={(e) => setNumber("max_connections", e.target.value)} /><small>0 表示不限；一个代理会话通常占入站、出站两个 TCP socket</small></label>
       <label className="flvx-field">共享到期<select value={expiry ? "date" : "none"} onChange={(e) => setExpiry(e.target.value === "none" ? "" : new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10))}><option value="none">不限</option><option value="date">指定日期</option></select></label>
       {expiry && <label className="flvx-field">共享截止日期<input type="date" required value={expiry} onChange={(e) => setExpiry(e.target.value)} /><small>当日 23:59:59（台湾时间）</small></label>}
+      <label className="flvx-switch"><span><strong>允许自定义出站与路由</strong><small>{allowEgress ? "FLVX 可为这台服务器上的节点设置出站（如 WARP、代理）和分流规则；共享的内存、CPU、流量和连接上限照常生效。" : "关闭后 FLVX 不能设置出站与路由，节点一律从本机直连。"}</small></span><input type="checkbox" role="switch" checked={allowEgress} onChange={(e) => setAllowEgress(e.target.checked)} /></label>
       <details className="flvx-advanced"><summary>高级 · 资源上限</summary><div className="flvx-form-row"><label className="flvx-field">内存 MB<input type="number" min={64} max={4096} required value={config.memory_mb} onChange={(e) => setNumber("memory_mb", e.target.value)} /></label><label className="flvx-field">CPU %<input type="number" min={1} max={400} required value={config.cpu_percent} onChange={(e) => setNumber("cpu_percent", e.target.value)} /></label></div></details>
       {error && <p className="flvx-warning" role="alert">{error}</p>}<div className="flvx-dialog-actions"><button type="button" disabled={busy} onClick={onClose}>取消</button><button className="flvx-primary" type="submit" disabled={busy || unavailable}>{busy ? "正在保存…" : share ? "保存设置" : "确认共享"}</button></div>
     </form>
