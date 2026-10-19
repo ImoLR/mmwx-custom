@@ -196,7 +196,67 @@ func flvxPublicStatus(s flvx.Status) map[string]any {
 	if s.CollectedAt > 0 && time.Now().UnixMilli()-s.CollectedAt > 60000 && state == "running" {
 		state = "error"
 	}
-	return map[string]any{"applied_revision": s.AppliedRevision, "core": map[string]any{"state": state, "epoch": s.Core.Epoch}, "nodes": s.Nodes, "share_traffic_used_bytes": s.TrafficUsedBytes, "collected_at": s.CollectedAt}
+	result := map[string]any{"applied_revision": s.AppliedRevision, "core": map[string]any{"state": state, "epoch": s.Core.Epoch}, "nodes": s.Nodes, "share_traffic_used_bytes": s.TrafficUsedBytes, "collected_at": s.CollectedAt}
+	if e := s.Egress; e != nil {
+		warnings := e.Warnings
+		if warnings == nil {
+			warnings = []string{}
+		}
+		result["egress"] = map[string]any{"state": e.State, "error": e.Error, "applied_revision": e.AppliedRevision, "warnings": warnings}
+	}
+	return result
+}
+
+// flvxEgressCapability is the landing-egress advertisement (contract §2). It
+// is omitted until the share's Helper reports plan version 1 support, so FLVX
+// keeps sending today's payload to old Helpers.
+func flvxEgressCapability(s flvxShare) map[string]any {
+	e := s.Status.Egress
+	if !e.Supports(flvx.EgressVersion) {
+		return nil
+	}
+	return map[string]any{"versions": []int{flvx.EgressVersion}, "allowed": !s.EgressDenied, "geoip": e.GeoIP, "geosite": e.GeoSite}
+}
+
+// flvxEgressProblems rejects plans the share policy or its Helper cannot
+// take, then repeats every contract §4 check (FLVX is an untrusted tenant).
+func flvxEgressProblems(s flvxShare, d flvx.Desired) []flvx.ValidationError {
+	if d.Egress == nil {
+		return nil
+	}
+	if s.EgressDenied {
+		return []flvx.ValidationError{{Field: "egress", Message: "妙妙屋共享方未允许自定义出站与路由"}}
+	}
+	capability := s.Status.Egress
+	if !capability.Supports(flvx.EgressVersion) {
+		return []flvx.ValidationError{{Field: "egress", Message: "该共享服务器暂不支持自定义出站（Helper 版本过旧）"}}
+	}
+	tags := map[string]bool{}
+	for _, n := range d.Nodes {
+		tags[n.Tag()] = true
+	}
+	return flvx.ValidateEgress(d.Egress, tags, capability.GeoIP, capability.GeoSite)
+}
+
+// flvxEgressSummary describes the stored plan for the operator page without
+// any upstream address or credential.
+func flvxEgressSummary(s flvxShare) map[string]any {
+	e := s.Desired.Egress
+	types := []string{}
+	seen := map[string]bool{}
+	if e.Active() {
+		for _, o := range e.Outbounds {
+			if !seen[o.Type] {
+				seen[o.Type] = true
+				types = append(types, o.Type)
+			}
+		}
+	}
+	rules := 0
+	if e.Active() {
+		rules = len(e.Rules)
+	}
+	return map[string]any{"active": e.Active(), "outbounds": len(types), "outbound_types": types, "rules": rules, "covered_nodes": len(e.CoveredTags())}
 }
 
 func (a *app) putFLVXDesired(ctx context.Context, id int64, d flvx.Desired) error {
@@ -212,7 +272,8 @@ func (a *app) putFLVXDesired(ctx context.Context, id int64, d flvx.Desired) erro
 		if err != nil {
 			return err
 		}
-		if problems := flvx.ValidateDesired(d, s.Config, server.OfficialPorts); len(problems) > 0 {
+		problems := append(flvx.ValidateDesired(d, s.Config, server.OfficialPorts), flvxEgressProblems(s, d)...)
+		if len(problems) > 0 {
 			return flvxValidationErrors(problems)
 		}
 		if d.Revision < s.Desired.Revision || d.Revision == s.Desired.Revision && !reflect.DeepEqual(d, s.Desired) {
@@ -310,11 +371,12 @@ func (a *app) flvxAdminHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		var input struct {
 			flvx.Config
-			Status string `json:"status"`
+			Status      string `json:"status"`
+			AllowEgress *bool  `json:"allow_egress"`
 		}
 		err = decodeFLVX(w, r, &input)
 		if err == nil {
-			err = a.saveFLVXShare(r.Context(), id, input.Config, input.Status)
+			err = a.saveFLVXShare(r.Context(), id, input.Config, input.Status, input.AllowEgress)
 		}
 		result = map[string]bool{"success": true}
 	default:
@@ -327,7 +389,8 @@ func (a *app) flvxAdminHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, result)
 }
 
-func (a *app) saveFLVXShare(ctx context.Context, id int64, c flvx.Config, state string) error {
+// allowEgress nil keeps the current 「允许自定义出站与路由」 policy (default on).
+func (a *app) saveFLVXShare(ctx context.Context, id int64, c flvx.Config, state string, allowEgress *bool) error {
 	if state != "active" && state != "paused" && state != "revoked" {
 		return flvxAPIError{422, "invalid_status", "invalid share status"}
 	}
@@ -377,6 +440,9 @@ func (a *app) saveFLVXShare(ctx context.Context, id int64, c flvx.Config, state 
 		}
 		s.Config = c
 		s.State = state
+		if allowEgress != nil {
+			s.EgressDenied = !*allowEgress
+		}
 		s.Version++
 		flvxReset(&s, time.Now())
 		return writeFLVXShare(ctx, tx, id, s)
@@ -423,6 +489,9 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 		}
 		coreState := flvxPublicStatus(s.Status)["core"].(map[string]any)["state"]
 		item := map[string]any{"server_id": id, "name": server.Name, "hosts": server.Hosts, "status": s.State, "port_min": s.Config.PortMin, "port_max": s.Config.PortMax, "traffic_limit_bytes": s.Config.TrafficLimitBytes, "traffic_used_bytes": s.Status.TrafficUsedBytes, "reset_day": s.Config.ResetDay, "max_connections": s.Config.MaxConnections, "connections": connections, "share_until": s.Config.ShareUntil, "core": map[string]any{"state": coreState, "version": s.Status.Core.Version}, "protocols": []string{"ss2022", "vless_reality_vision"}, "dual_install": server.DualInstall}
+		if capability := flvxEgressCapability(s); capability != nil {
+			item["egress"] = capability
+		}
 		if admin {
 			nodes := []map[string]any{}
 			for _, n := range s.Desired.Nodes {
@@ -437,6 +506,7 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 			}
 			item["nodes"], item["config"], item["report"] = nodes, s.Config, flvxPublicStatus(s.Status)
 			item["native_landing"], item["detection_error"] = server.NativeLanding, server.DetectionError
+			item["allow_egress"], item["egress_plan"] = !s.EgressDenied, flvxEgressSummary(s)
 		}
 		shares = append(shares, item)
 	}

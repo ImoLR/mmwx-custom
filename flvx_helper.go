@@ -10,7 +10,8 @@ import (
 	"github.com/ImoLR/mmwx-custom/internal/flvx"
 )
 
-func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, report *flvx.Report) (*flvx.Envelope, error) {
+// egress reports whether this Helper advertises flvx.egress.v1.
+func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, egress bool, report *flvx.Report) (*flvx.Envelope, error) {
 	if a.flvxDB() == nil {
 		return nil, nil
 	}
@@ -55,9 +56,34 @@ func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, 
 		if a.helperState != nil {
 			artifact.GitHubAccelerator = a.helperState.githubAccelerator()
 		}
-		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: s.Config, Desired: s.Desired, OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
+		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: s.Config, Desired: flvxHelperEgress(s, egress), OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
 		envelope.Sign(token)
 		return nil
 	})
 	return envelope, err
+}
+
+// flvxHelperEgress gates the stored plan per Helper. With the share policy off
+// the nodes leave through the default direct outbound, as the share owner
+// chose. A Helper without egress support (e.g. downgraded after a plan was
+// accepted) would fail the signature on an unknown field and must not route
+// covered nodes around the plan, so those nodes are withheld (fail closed).
+func flvxHelperEgress(s flvxShare, supported bool) flvx.Desired {
+	d := s.Desired
+	if d.Egress == nil || supported && !s.EgressDenied {
+		return d
+	}
+	covered := d.Egress.CoveredTags()
+	d.Egress = nil
+	if s.EgressDenied || len(covered) == 0 {
+		return d
+	}
+	disabled := false
+	d.Nodes = append([]flvx.Node(nil), d.Nodes...)
+	for i := range d.Nodes {
+		if covered[d.Nodes[i].Tag()] {
+			d.Nodes[i].Enabled = &disabled
+		}
+	}
+	return d
 }

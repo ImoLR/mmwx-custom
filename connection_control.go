@@ -479,14 +479,16 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 	settings = a.trafficBlocksForHelper(settings, officialID, request.HelperVersion)
 	response := map[string]any{"success": true, "settings": sortedConnectionSettings(settingsForHelper(settings, request.HelperVersion)), "command": command}
 	if request.Management != nil {
+		share, egress := false, false
 		for _, capability := range request.Management.Status.Capabilities {
-			if capability == "flvx.share" {
-				id, _ := strconv.ParseInt(officialID, 10, 64)
-				desired, flvxErr := a.flvxHelperDesired(r.Context(), id, serverID, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), request.Management.Status.Architecture, request.FLVX)
-				if flvxErr == nil && desired != nil {
-					response["flvx"] = desired
-				}
-				break
+			share = share || capability == "flvx.share"
+			egress = egress || capability == "flvx.egress.v1"
+		}
+		if share {
+			id, _ := strconv.ParseInt(officialID, 10, 64)
+			desired, flvxErr := a.flvxHelperDesired(r.Context(), id, serverID, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), request.Management.Status.Architecture, egress, request.FLVX)
+			if flvxErr == nil && desired != nil {
+				response["flvx"] = desired
 			}
 		}
 	}

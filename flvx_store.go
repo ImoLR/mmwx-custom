@@ -42,6 +42,9 @@ type flvxShare struct {
 	Generation string       `json:"generation"`
 	Sequence   int64        `json:"sequence"`
 	Retired    []string     `json:"retired,omitempty"`
+	// Share policy 「允许自定义出站与路由」, default on. Custom-only: it is
+	// enforced by rejecting/withholding plans and never reaches the Helper.
+	EgressDenied bool `json:"egress_denied,omitempty"`
 }
 
 type flvxLedger struct {
@@ -236,7 +239,7 @@ func flvxReset(s *flvxShare, now time.Time) {
 }
 
 func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r flvx.Report, now time.Time) error {
-	if r.Generation == "" || len(r.Generation) > 64 || r.Sequence < 1 || r.AppliedRevision > s.Desired.Revision {
+	if r.Generation == "" || len(r.Generation) > 64 || r.Sequence < 1 || r.AppliedRevision > s.Desired.Revision || !r.Egress.Valid() || r.Egress != nil && r.Egress.AppliedRevision > s.Desired.Revision {
 		return errors.New("invalid FLVX report")
 	}
 	if r.Generation == s.Generation && r.Sequence <= s.Sequence {

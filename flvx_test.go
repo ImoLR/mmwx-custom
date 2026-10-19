@@ -103,7 +103,7 @@ func TestFLVXAPIContractPostgres(t *testing.T) {
 		t.Fatal("integration token authorized as operator")
 	}
 	c := flvx.Config{PortMin: 30000, PortMax: 30100, ResetDay: 1, MemoryMB: 256, CPUPercent: 50, TrafficLimitBytes: 100, MaxConnections: 10}
-	if err := a.saveFLVXShare(ctx, 7, c, "active"); err != nil {
+	if err := a.saveFLVXShare(ctx, 7, c, "active", nil); err != nil {
 		t.Fatal(err)
 	}
 	d := flvxTestDesired()
@@ -134,7 +134,7 @@ func TestFLVXAPIContractPostgres(t *testing.T) {
 		t.Fatal("admin credentials leaked")
 	}
 	for _, state := range []string{"paused", "active", "revoked"} {
-		if err := a.saveFLVXShare(ctx, 7, c, state); err != nil {
+		if err := a.saveFLVXShare(ctx, 7, c, state, nil); err != nil {
 			t.Fatal(err)
 		}
 		err := a.putFLVXDesired(ctx, 7, flvxTestDesired())
@@ -144,7 +144,7 @@ func TestFLVXAPIContractPostgres(t *testing.T) {
 		if state == "paused" {
 			narrow := c
 			narrow.PortMax = 30000
-			if err := a.saveFLVXShare(ctx, 7, narrow, "paused"); err == nil {
+			if err := a.saveFLVXShare(ctx, 7, narrow, "paused", nil); err == nil {
 				t.Fatal("paused port edit would strand desired state and prevent resume")
 			}
 		}
@@ -166,7 +166,7 @@ func TestFLVXHelperChannelPostgres(t *testing.T) {
 	a := flvxTestApp(t)
 	ctx := context.Background()
 	c := flvx.Config{PortMin: 30000, PortMax: 30100, ResetDay: 1, MemoryMB: 256, CPUPercent: 50}
-	if err := a.saveFLVXShare(ctx, 7, c, "active"); err != nil {
+	if err := a.saveFLVXShare(ctx, 7, c, "active", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.putFLVXDesired(ctx, 7, flvxTestDesired()); err != nil {
@@ -175,7 +175,7 @@ func TestFLVXHelperChannelPostgres(t *testing.T) {
 	asset := releaseArtifact{URL: "https://github.com/ImoLR/mmwx-custom/releases/download/v1.4.59/mmwxc-core-linux-amd64", SHA256: strings.Repeat("a", 64)}
 	a.releaseCache = &releaseCache{info: cachedReleaseInfo{CoreVersion: "8f5b614", CoreArtifacts: map[string]releaseArtifact{"amd64": asset}}}
 	r := flvx.Report{Generation: "helper-one", Sequence: 1, Period: flvx.Period(time.Now(), 1), Status: flvx.Status{AppliedRevision: 1, Core: flvx.Core{State: "running", Epoch: "core-one"}, Nodes: []flvx.NodeStatus{{ID: "11", State: "active", UpBytes: 100, DownBytes: 20, Connections: 2}}, TrafficUsedBytes: 120, CollectedAt: time.Now().UnixMilli()}}
-	e, err := a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", &r)
+	e, err := a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", true, &r)
 	if err != nil || e == nil {
 		t.Fatal("helper desired", err)
 	}
@@ -197,10 +197,10 @@ func TestFLVXHelperChannelPostgres(t *testing.T) {
 	// A broken unrelated snapshot must not be read for this Helper's report.
 	auditDeleteExec(t, a.flvxDB(), `UPDATE server_xray_config_snapshots SET config_json='invalid fixture' WHERE server_id=8`)
 	for i := 0; i < 10; i++ {
-		if _, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", &r); err != nil {
+		if _, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", true, &r); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", nil); err != nil {
+		if _, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", true, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -214,7 +214,7 @@ func TestFLVXHelperChannelPostgres(t *testing.T) {
 	r.Nodes[0].Connections = 0
 	r.Nodes[0].UpBytes = 110
 	r.TrafficUsedBytes = 130
-	if _, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", &r); err != nil {
+	if _, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", true, &r); err != nil {
 		t.Fatal(err)
 	}
 	if version() == previous {
@@ -222,7 +222,7 @@ func TestFLVXHelperChannelPostgres(t *testing.T) {
 	}
 	r.Sequence++
 	r.Nodes = []flvx.NodeStatus{}
-	if _, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", &r); err != nil {
+	if _, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", true, &r); err != nil {
 		t.Fatal(err)
 	}
 	s, err := readFLVXShare(ctx, a.flvxDB(), 7, false)
@@ -230,7 +230,7 @@ func TestFLVXHelperChannelPostgres(t *testing.T) {
 		t.Fatalf("final counters not retained: %+v %v", s, err)
 	}
 	auditDeleteExec(t, a.flvxDB(), `DELETE FROM server_xray_config_snapshots WHERE server_id=7`)
-	e, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", nil)
+	e, err = a.flvxHelperDesired(ctx, 7, "helper-custom-uuid", "helper-secret", "amd64", true, nil)
 	if err != nil || e.Payload.Status != "paused" {
 		t.Fatal("missing official inventory must prevent admission", err)
 	}
@@ -240,7 +240,7 @@ func TestFLVXCountersPostgres(t *testing.T) {
 	a := flvxTestApp(t)
 	ctx := context.Background()
 	c := flvx.Config{PortMin: 30000, PortMax: 30100, ResetDay: 1, MemoryMB: 256, CPUPercent: 50}
-	if err := a.saveFLVXShare(ctx, 7, c, "active"); err != nil {
+	if err := a.saveFLVXShare(ctx, 7, c, "active", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.putFLVXDesired(ctx, 7, flvxTestDesired()); err != nil {
@@ -275,12 +275,12 @@ func TestFLVXRetiredGenerationsPostgres(t *testing.T) {
 	a := flvxTestApp(t)
 	ctx := context.Background()
 	c := flvx.Config{PortMin: 30000, PortMax: 30100, ResetDay: 1, MemoryMB: 256, CPUPercent: 50}
-	if err := a.saveFLVXShare(ctx, 7, c, "active"); err != nil {
+	if err := a.saveFLVXShare(ctx, 7, c, "active", nil); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 40; i++ {
 		r := flvx.Report{Generation: fmt.Sprintf("reset-%02d", i), Sequence: 1, Period: flvx.Period(time.Now(), 1)}
-		if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", &r); err != nil {
+		if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, &r); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -289,7 +289,7 @@ func TestFLVXRetiredGenerationsPostgres(t *testing.T) {
 		t.Fatalf("retired generations not bounded/newest: %+v %v", s, err)
 	}
 	r := flvx.Report{Generation: "reset-38", Sequence: 2}
-	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", &r); err != nil {
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, &r); err != nil {
 		t.Fatal(err)
 	}
 	s, err = readFLVXShare(ctx, a.flvxDB(), 7, false)
@@ -306,10 +306,10 @@ func TestFLVXDualInstallPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := flvx.Config{PortMin: 30000, PortMax: 30100, ResetDay: 1, MemoryMB: 256, CPUPercent: 50}
-	if err := a.saveFLVXShare(ctx, 7, c, "active"); err != nil {
+	if err := a.saveFLVXShare(ctx, 7, c, "active", nil); err != nil {
 		t.Fatal("dual install must warn only", err)
 	}
-	if err := a.saveFLVXShare(ctx, 8, c, "active"); err == nil {
+	if err := a.saveFLVXShare(ctx, 8, c, "active", nil); err == nil {
 		t.Fatal("native landing accepted")
 	}
 	resolver := net.DefaultResolver
@@ -336,7 +336,7 @@ func TestFLVXDualInstallPostgres(t *testing.T) {
 	if w.Code != 409 || !strings.Contains(w.Body.String(), `"code":"host_resolution"`) {
 		t.Fatal("DNS failure no longer rejects desired pushes", w.Body.String())
 	}
-	if err := a.saveFLVXShare(ctx, 7, c, "active"); err == nil {
+	if err := a.saveFLVXShare(ctx, 7, c, "active", nil); err == nil {
 		t.Fatal("DNS failure no longer rejects activation")
 	}
 	auditDeleteExec(t, a.flvxDB(), `UPDATE remote_servers SET domain='' WHERE id=7`)
