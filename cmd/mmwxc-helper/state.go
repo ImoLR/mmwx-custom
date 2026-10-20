@@ -22,6 +22,9 @@ type localState struct {
 	Takeover              takeoverState           `json:"takeover,omitempty"`
 	MachineID             string                  `json:"machine_id,omitempty"`
 	MachineProtection     machineProtectionStatus `json:"machine_protection,omitempty"`
+	// The kernel tcp_max_tw_buckets value before machine protection first
+	// changed it; restored when protection stops owning the setting.
+	MachineTW *machineTWSaved `json:"machine_tw,omitempty"`
 }
 
 type takeoverState struct {

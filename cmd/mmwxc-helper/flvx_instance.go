@@ -63,6 +63,8 @@ type flvxManager struct {
 	incoming                        chan flvx.Envelope
 	mu                              sync.Mutex
 	report                          *flvx.Report
+	machinePorts                    machinePorts
+	machineCloseWait                *int64
 	logs                            *periodicLogLimiter
 	verifiedHash                    string
 	verifiedMTime                   time.Time
@@ -260,6 +262,57 @@ func (m *flvxManager) publish() {
 	r.Nodes = append([]flvx.NodeStatus{}, r.Nodes...)
 	m.report = &r
 	m.reportedMaterial = m.materialHash()
+	m.machinePorts = m.appliedPorts()
+}
+
+// appliedPorts are the shared Core's live inbound ports for machine
+// protection: SS2022 listens on TCP and UDP, VLESS Reality on TCP only.
+func (m *flvxManager) appliedPorts() machinePorts {
+	var ports machinePorts
+	for _, n := range m.state.Payload.Desired.Nodes {
+		if m.state.Applied[n.Tag()] == "" || n.Port <= 0 || n.Port > 65535 {
+			continue
+		}
+		ports.TCP = append(ports.TCP, uint32(n.Port))
+		if n.Protocol == "ss2022" {
+			ports.UDP = append(ports.UDP, uint32(n.Port))
+		}
+	}
+	return ports.normalized()
+}
+
+func (m *flvxManager) businessPorts() machinePorts {
+	if m == nil {
+		return machinePorts{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return machinePorts{TCP: append([]uint32(nil), m.machinePorts.TCP...), UDP: append([]uint32(nil), m.machinePorts.UDP...)}
+}
+
+// setMachineCloseWait hands the machine owner's CLOSE_WAIT timeout to the
+// shared Core; it is applied with the next limits update.
+func (m *flvxManager) setMachineCloseWait(settings *machineProtectionSettings) {
+	if m == nil {
+		return
+	}
+	var value *int64
+	if settings != nil {
+		value = settings.closeWaitSeconds()
+	}
+	m.mu.Lock()
+	m.machineCloseWait = value
+	m.mu.Unlock()
+}
+
+func (m *flvxManager) machineCloseWaitSeconds() *int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.machineCloseWait == nil {
+		return nil
+	}
+	value := *m.machineCloseWait
+	return &value
 }
 
 func (m *flvxManager) snapshotReport() *flvx.Report {

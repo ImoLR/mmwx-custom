@@ -157,13 +157,21 @@ type userConnectionSettings struct {
 	CloseWaitTimeoutSeconds    *int64       `json:"close_wait_timeout_seconds"`
 }
 
+// TWBuckets and CloseWaitSeconds: nil = the default (500 / 10 s) while
+// enabled, 0 = leave that control off.
 type machineProtectionSettings struct {
-	Enabled   bool   `json:"enabled"`
-	MaxActive *int64 `json:"max_active"`
-	MaxTotal  *int64 `json:"max_total"`
+	Enabled          bool   `json:"enabled"`
+	MaxActive        *int64 `json:"max_active"`
+	MaxTotal         *int64 `json:"max_total"`
+	TWBuckets        *int64 `json:"tw_buckets,omitempty"`
+	CloseWaitSeconds *int64 `json:"close_wait_seconds,omitempty"`
 }
 
 type machineProtectionStatus struct {
+	// Version 2 = whole-machine TCP+UDP total, prerouting guard over mmwx and
+	// FLVX ports, TIME_WAIT and CLOSE_WAIT controls. Absent = older Helper.
+	Version          int                       `json:"version,omitempty"`
+	Owner            string                    `json:"owner,omitempty"`
 	Supported        bool                      `json:"supported"`
 	Configured       machineProtectionSettings `json:"configured"`
 	Effective        bool                      `json:"effective"`
@@ -174,6 +182,37 @@ type machineProtectionStatus struct {
 	ControlledPorts  []uint32                  `json:"controlled_ports"`
 	LastReconciledAt time.Time                 `json:"last_reconciled_at,omitempty"`
 	LastError        string                    `json:"last_error,omitempty"`
+
+	Connections      *machineConnectionCounts `json:"connections,omitempty"`
+	MaxTotal         *int64                   `json:"max_total,omitempty"`
+	ReleaseBelow     *int64                   `json:"release_below,omitempty"`
+	TCPPorts         []uint32                 `json:"tcp_ports,omitempty"`
+	UDPPorts         []uint32                 `json:"udp_ports,omitempty"`
+	Sources          *machinePortSources      `json:"port_sources,omitempty"`
+	IdleReason       string                   `json:"idle_reason,omitempty"`
+	WarmingUp        bool                     `json:"warming_up,omitempty"`
+	DroppedTotal     int64                    `json:"dropped_total"`
+	TWBuckets        *machineTWStatus         `json:"tw_buckets,omitempty"`
+	CloseWaitSeconds *int64                   `json:"close_wait_seconds,omitempty"`
+	StatusFileError  string                   `json:"status_file_error,omitempty"`
+}
+
+// machinePortSources says where the controlled ports came from; FLVX is the
+// /run/flvx/business-ports.json state: absent, fresh, stale or malformed.
+type machinePortSources struct {
+	Core          int    `json:"core"`
+	FLVXShared    int    `json:"flvx_shared_core"`
+	FLVXFile      string `json:"flvx_file"`
+	FLVXFileTCP   int    `json:"flvx_file_tcp"`
+	FLVXFileUDP   int    `json:"flvx_file_udp"`
+	FLVXUpdatedAt string `json:"flvx_file_updated_at,omitempty"`
+}
+
+type machineTWStatus struct {
+	Target   *int64 `json:"target"`
+	Current  *int64 `json:"current"`
+	Original *int64 `json:"original"`
+	Error    string `json:"error,omitempty"`
 }
 
 type connectionSettings struct {
@@ -366,6 +405,8 @@ type detailedConnectionSnapshot struct {
 	Core              coreStatus                `json:"core"`
 	MachineProtection *machineProtectionStatus  `json:"machine_protection,omitempty"`
 	SampledAt         time.Time                 `json:"sampled_at"`
+	// The whole-machine TCP+UDP rows read in the same pass as System.
+	machine *machineConnectionCounts
 }
 
 type detailedMetricsPayload struct {
@@ -394,7 +435,7 @@ func (settings connectionSettings) coreConfig() coreConfig {
 	blockedIdentities := append([]coreIdentity{}, settings.BlockedIdentities...)
 	config := coreConfig{
 		BlockedIdentities:              &blockedIdentities,
-		DefaultCloseWaitTimeoutSeconds: settings.DefaultCloseWaitTimeoutSeconds,
+		DefaultCloseWaitTimeoutSeconds: settings.effectiveDefaultCloseWait(),
 		OnlineIPGracePeriodSeconds:     settings.OnlineIPGracePeriodSeconds,
 		MaxGlobalInboundConnections:    settings.MaxGlobalInboundConnections,
 		PortLimits:                     append([]portConnectionSettings(nil), settings.Ports...),

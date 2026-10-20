@@ -276,5 +276,5 @@ func effectiveCloseWait(settings connectionSettings, user userConnectionSettings
 	if user.CloseWaitTimeoutSeconds != nil {
 		return user.CloseWaitTimeoutSeconds
 	}
-	return settings.DefaultCloseWaitTimeoutSeconds
+	return settings.effectiveDefaultCloseWait()
 }

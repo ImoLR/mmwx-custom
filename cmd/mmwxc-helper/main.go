@@ -112,7 +112,18 @@ func main() {
 	nftables := newNftablesManager(cfg.EnableNft)
 	machineProtection := newMachineProtectionManager()
 	lifecycle := newLifecycleManager(core)
-	executor := &commandExecutor{lifecycle: lifecycle, core: core, state: &state, client: client, config: cfg}
+	executor := &commandExecutor{lifecycle: lifecycle, core: core, state: &state, client: client, config: cfg, machine: machineProtection}
+	machineProtection.tw = state.MachineTW
+	machineProtection.saveTW = func(saved *machineTWSaved) error {
+		// Persist the original before the kernel value is ever changed.
+		previous := executor.state.MachineTW
+		executor.state.MachineTW = saved
+		if err := saveLocalState(cfg.StatePath, *executor.state); err != nil {
+			executor.state.MachineTW = previous
+			return err
+		}
+		return nil
+	}
 	executor.progressReporter = newUpdateProgressReporter(client, cfg)
 	defer executor.progressReporter.close()
 	executor.startupUpdate = state.HelperVersion != "" && state.HelperVersion != helperVersion
@@ -242,12 +253,13 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 	logs.report("external ownership reconcile failed", lifecycle.reconcileExternalOwnership(reconcileCtx, &state.ExternalOwnership))
 	logs.report("external control config reconcile failed", ensureExternalControlConfig(reconcileCtx, client, cfg, state, false))
 	cancelReconcile()
+	executor.flvx.setMachineCloseWait(state.Settings.MachineProtection)
 	applyCtx, cancelApply := context.WithTimeout(context.Background(), 5*time.Second)
 	logs.report("core config unavailable", executor.applyCoreSettings(applyCtx))
 	cancelApply()
 	snapshot := collectDetailedSnapshot(context.Background(), core, onlineTracker, state.Settings)
 	machineCtx, cancelMachine := context.WithTimeout(context.Background(), 5*time.Second)
-	machineStatus := machineProtection.reconcile(machineCtx, state.Settings.MachineProtection, snapshot.System, machineControlledPorts(snapshot))
+	machineStatus := machineProtection.reconcile(machineCtx, state.Settings.MachineProtection, executor.machineInput(snapshot))
 	cancelMachine()
 	snapshot.MachineProtection = &machineStatus
 	state.MachineProtection = machineStatus
@@ -285,6 +297,7 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 	if state.UninstallPending {
 		return
 	}
+	executor.flvx.setMachineCloseWait(state.Settings.MachineProtection)
 	applyCtx, cancelApply = context.WithTimeout(context.Background(), 5*time.Second)
 	logs.report("apply updated core config failed", executor.applyCoreSettings(applyCtx))
 	cancelApply()
@@ -292,7 +305,7 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 		applyNftables(nftables, snapshot, state.Settings, logs)
 	}
 	machineCtx, cancelMachine = context.WithTimeout(context.Background(), 5*time.Second)
-	machineStatus = machineProtection.reconcile(machineCtx, state.Settings.MachineProtection, snapshot.System, machineControlledPorts(snapshot))
+	machineStatus = machineProtection.reconcile(machineCtx, state.Settings.MachineProtection, executor.machineInput(snapshot))
 	cancelMachine()
 	state.MachineProtection = machineStatus
 	logs.report("save machine protection state failed", saveLocalState(cfg.StatePath, *state))
@@ -423,9 +436,14 @@ func parseInterval(raw string) (time.Duration, error) {
 
 func collectDetailedSnapshot(ctx context.Context, core *coreClient, tracker *onlineIPTracker, settings connectionSettings) detailedConnectionSnapshot {
 	snapshot := detailedConnectionSnapshot{SampledAt: time.Now().UTC()}
-	sockets, socketErr := readTCPSockets()
-	if socketErr == nil {
+	tables := readSocketTables(procSocketTables)
+	sockets := tables.TCP
+	if tables.TCPErr == nil {
 		snapshot.System = summarizeTCP(sockets)
+	}
+	if tables.MachineErr == nil {
+		machine := tables.Machine
+		snapshot.machine = &machine
 	}
 	coreSnapshot, coreErr := core.snapshot(ctx)
 	if coreErr != nil {
@@ -437,6 +455,10 @@ func collectDetailedSnapshot(ctx context.Context, core *coreClient, tracker *onl
 	snapshot.ManagementGroups = append([]managementGroupSnapshot(nil), coreSnapshot.ManagementGroups...)
 	snapshot.Inbounds, snapshot.ProxyUsers = tracker.aggregate(sockets, coreSnapshot, settings)
 	return snapshot
+}
+
+func (executor *commandExecutor) machineInput(snapshot detailedConnectionSnapshot) machineProtectionInput {
+	return machineProtectionInput{System: snapshot.System, Machine: snapshot.machine, CorePorts: machineControlledPorts(snapshot), FLVXShared: executor.flvx.businessPorts()}
 }
 
 func coreSnapshotFromDetailed(snapshot detailedConnectionSnapshot) coreSnapshotResponse {
@@ -485,8 +507,12 @@ func uploadMetrics(ctx context.Context, client *http.Client, cfg config, snapsho
 }
 
 func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config, snapshot detailedConnectionSnapshot, management *managementReport, flvxReport ...*flvx.Report) (detailedMetricsResponse, error) {
-	legacy, err := readConnections()
-	if err != nil {
+	var legacy connectionSnapshot
+	var err error
+	if machine := snapshot.machine; machine != nil {
+		// The same pass as the machine protection total, so card and cap agree.
+		legacy = connectionSnapshot{TCPCount: machine.TCP, UDPCount: machine.UDP, ConnectionCount: machine.Total, SampledAt: snapshot.SampledAt}
+	} else if legacy, err = readConnections(); err != nil {
 		legacy = connectionSnapshot{TCPCount: snapshot.System.Total, ConnectionCount: snapshot.System.Total, SampledAt: snapshot.SampledAt}
 	}
 	payload := detailedMetricsPayload{

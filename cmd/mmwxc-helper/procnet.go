@@ -72,6 +72,137 @@ func readConnections() (connectionSnapshot, error) {
 	return connectionSnapshot{TCPCount: tcpCount, UDPCount: udpCount, ConnectionCount: tcpCount + udpCount, SampledAt: time.Now().UTC()}, nil
 }
 
+// machineConnectionCounts is the whole-machine 连接数 (contract
+// machine-protect-v1 §1): every socket row of tcp, tcp6, udp and udp6, all
+// states, exactly readConnections(); the TCP breakdown comes from the same pass.
+type machineConnectionCounts struct {
+	Total       int64 `json:"total"`
+	TCP         int64 `json:"tcp"`
+	UDP         int64 `json:"udp"`
+	Established int64 `json:"established"`
+	TimeWait    int64 `json:"time_wait"`
+	CloseWait   int64 `json:"close_wait"`
+	OtherTCP    int64 `json:"other_tcp"`
+}
+
+type socketTablePaths struct{ TCP, TCP6, UDP, UDP6 string }
+
+var procSocketTables = socketTablePaths{TCP: "/proc/net/tcp", TCP6: "/proc/net/tcp6", UDP: "/proc/net/udp", UDP6: "/proc/net/udp6"}
+
+// socketTables is one read of the four socket tables. TCP holds the parsed
+// TCP rows for per-inbound attribution; TCPErr reports when they are unusable
+// while the row counts stay exact.
+type socketTables struct {
+	TCP        []socketEntry
+	TCPErr     error
+	Machine    machineConnectionCounts
+	MachineErr error
+}
+
+func readSocketTables(paths socketTablePaths) socketTables {
+	var result socketTables
+	readableTCP, readableAny := 0, false
+	var established, timeWait, closeWait int64
+	for _, source := range []struct {
+		path string
+		ipv6 bool
+	}{{paths.TCP, false}, {paths.TCP6, true}} {
+		rows, entries, states, ok, parseErr := scanProcNetTCP(source.path, source.ipv6)
+		if !ok {
+			continue
+		}
+		readableAny = true
+		result.Machine.TCP += rows
+		established += states[0]
+		timeWait += states[1]
+		closeWait += states[2]
+		if parseErr != nil {
+			if result.TCPErr == nil {
+				result.TCPErr = fmt.Errorf("parse %s: %w", source.path, parseErr)
+			}
+			continue
+		}
+		readableTCP++
+		result.TCP = append(result.TCP, entries...)
+	}
+	if readableTCP == 0 && result.TCPErr == nil {
+		result.TCPErr = fmt.Errorf("no /proc/net TCP tables are readable")
+	}
+	if result.TCPErr != nil {
+		result.TCP = nil
+	}
+	for _, path := range []string{paths.UDP, paths.UDP6} {
+		rows, ok := countProcNetRows(path)
+		readableAny = readableAny || ok
+		result.Machine.UDP += rows
+	}
+	if !readableAny {
+		result.MachineErr = fmt.Errorf("no /proc/net socket tables are readable")
+		result.Machine = machineConnectionCounts{}
+		return result
+	}
+	result.Machine.Total = result.Machine.TCP + result.Machine.UDP
+	result.Machine.Established, result.Machine.TimeWait, result.Machine.CloseWait = established, timeWait, closeWait
+	result.Machine.OtherTCP = result.Machine.TCP - established - timeWait - closeWait
+	return result
+}
+
+// scanProcNetTCP counts rows like countProcNetRows (an unreadable table counts
+// 0) and parses them in the same pass. states = ESTABLISHED, TIME_WAIT,
+// CLOSE_WAIT. A malformed row keeps the counts but invalidates the entries.
+func scanProcNetTCP(path string, ipv6 bool) (int64, []socketEntry, [3]int64, bool, error) {
+	var states [3]int64
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, nil, states, false, nil
+	}
+	defer file.Close()
+	var lines int64
+	var entries []socketEntry
+	var parseErr error
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		lines++
+		if lines == 1 {
+			continue
+		}
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 4 {
+			continue
+		}
+		state := strings.ToUpper(fields[3])
+		switch state {
+		case tcpEstablished:
+			states[0]++
+		case tcpTimeWait:
+			states[1]++
+		case tcpCloseWait:
+			states[2]++
+		}
+		if parseErr != nil {
+			continue
+		}
+		localIP, localPort, err := parseProcAddress(fields[1], ipv6)
+		if err != nil {
+			parseErr = err
+			continue
+		}
+		remoteIP, _, err := parseProcAddress(fields[2], ipv6)
+		if err != nil {
+			parseErr = err
+			continue
+		}
+		entries = append(entries, socketEntry{LocalIP: localIP, LocalPort: localPort, RemoteIP: remoteIP, State: state})
+	}
+	if scanner.Err() != nil {
+		return 0, nil, [3]int64{}, false, nil
+	}
+	if lines == 0 {
+		return 0, nil, states, true, parseErr
+	}
+	return lines - 1, entries, states, true, parseErr
+}
+
 func countProcNetRows(path string) (int64, bool) {
 	file, err := os.Open(path)
 	if err != nil {

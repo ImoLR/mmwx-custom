@@ -95,6 +95,7 @@ var helperCapabilities = []string{
 	"core.mode.apply",
 	"connection.status", "connection.settings",
 	"flvx.share", "flvx.egress.v1",
+	"machine.protection.v2",
 }
 
 func helperTokenHash(token string) string {
@@ -150,6 +151,7 @@ func signManagementResult(result *managementResult, token string) error {
 
 type commandExecutor struct {
 	flvx             *flvxManager
+	machine          *machineProtectionManager
 	lifecycle        *lifecycleManager
 	core             *coreClient
 	state            *localState
@@ -219,6 +221,8 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 	var err error
 	switch command.Action {
 	case "helper.uninstall":
+		// Hand the machine back first: restore TIME_WAIT and drop the guard.
+		executor.machine.release(ctx)
 		err = prepareHelperUninstall(ctx)
 		if err == nil {
 			executor.state.UninstallPending = true

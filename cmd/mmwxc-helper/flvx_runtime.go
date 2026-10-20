@@ -202,6 +202,9 @@ func (m *flvxManager) wanted(ctx context.Context) (map[string]string, map[string
 
 func (m *flvxManager) limits(ctx context.Context, snapshot coreSnapshotResponse, wanted map[string]string, changing map[string]bool) error {
 	settings := defaultConnectionSettings()
+	// The machine owner's CLOSE_WAIT timeout (machine protection) is a plain
+	// Core default here; FLVX itself sends none.
+	settings.DefaultCloseWaitTimeoutSeconds = m.machineCloseWaitSeconds()
 	p := m.state.Payload
 	if p.Config.MaxConnections > 0 {
 		v := p.Config.MaxConnections
