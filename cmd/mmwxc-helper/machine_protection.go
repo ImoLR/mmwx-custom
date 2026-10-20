@@ -299,10 +299,10 @@ type machineTWSaved struct {
 
 // flvxBusinessPortsFile is contract §3, written by the FLVX agent.
 type flvxBusinessPortsFile struct {
-	Version   int     `json:"version"`
-	UpdatedAt string  `json:"updated_at"`
-	TCP       *[]int  `json:"tcp"`
-	UDP       *[]int  `json:"udp"`
+	Version   int    `json:"version"`
+	UpdatedAt string `json:"updated_at"`
+	TCP       *[]int `json:"tcp"`
+	UDP       *[]int `json:"udp"`
 	updated   time.Time
 	ports     machinePorts
 	malformed bool
