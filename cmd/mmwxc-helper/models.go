@@ -76,12 +76,10 @@ type coreUserSnapshot struct {
 }
 
 type coreInboundSnapshot struct {
-	InboundTag    string        `json:"inbound_tag"`
-	InboundName   string        `json:"inbound_name,omitempty"`
-	InboundPort   uint32        `json:"inbound_port"`
-	Users         []string      `json:"users"`
-	OnlineIPCount *int          `json:"online_ip_count,omitempty"`
-	OnlineIPs     coreOnlineIPs `json:"online_ips,omitempty"`
+	InboundTag  string   `json:"inbound_tag"`
+	InboundName string   `json:"inbound_name,omitempty"`
+	InboundPort uint32   `json:"inbound_port"`
+	Users       []string `json:"users"`
 }
 
 // The Core emits null for a known empty list; nil means the field was absent.

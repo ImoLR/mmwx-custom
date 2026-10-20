@@ -60,8 +60,10 @@ type flvxOnlineSnapshot struct {
 	Nodes       map[string]flvx.NodeStatus
 }
 
-// Called with flvxOnlineMu held, after the report transaction commits.
+// Called after the report transaction commits.
 func (a *app) cacheFLVXOnlineIPs(id int64, r flvx.Report) {
+	a.flvxOnlineMu.Lock()
+	defer a.flvxOnlineMu.Unlock()
 	now := time.Now().UnixMilli()
 	for serverID, snapshot := range a.flvxOnline {
 		if now-snapshot.CollectedAt > 60000 {

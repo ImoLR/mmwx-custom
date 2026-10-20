@@ -15,8 +15,6 @@ func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, 
 	if a.flvxDB() == nil {
 		return nil, nil
 	}
-	a.flvxOnlineMu.Lock()
-	defer a.flvxOnlineMu.Unlock()
 	var envelope *flvx.Envelope
 	accepted := false
 	err := flvxTransaction(ctx, a.flvxDB(), func(tx *sql.Tx) error {

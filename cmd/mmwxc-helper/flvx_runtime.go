@@ -301,7 +301,6 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 
 func flvxSnapshotOnlineIPs(snapshot coreSnapshotResponse) map[string]flvx.NodeStatus {
 	type sample struct {
-		count   *int
 		ips     map[string]int
 		unknown bool
 	}
@@ -313,40 +312,25 @@ func flvxSnapshotOnlineIPs(snapshot coreSnapshotResponse) map[string]flvx.NodeSt
 			}
 		}
 	}
-	for _, inbound := range snapshot.Inbounds {
-		if !strings.HasPrefix(inbound.InboundTag, "flvxl-") || inbound.OnlineIPCount == nil && inbound.OnlineIPs == nil {
-			continue
-		}
-		s := &sample{count: inbound.OnlineIPCount, ips: map[string]int{}}
-		add(s, inbound.OnlineIPs)
-		samples[inbound.InboundTag] = s
-	}
-	users := map[string]*sample{}
 	for _, user := range snapshot.Users {
 		tag := user.Identity.InboundTag
-		if !strings.HasPrefix(tag, "flvxl-") || samples[tag] != nil {
+		if !strings.HasPrefix(tag, "flvxl-") {
 			continue
 		}
-		s := users[tag]
+		s := samples[tag]
 		if s == nil {
 			s = &sample{ips: map[string]int{}}
-			users[tag] = s
+			samples[tag] = s
 		}
 		s.unknown = s.unknown || user.InboundOnlineIPs == nil
 		add(s, user.InboundOnlineIPs)
 	}
-	for tag, s := range users {
-		samples[tag] = s
-	}
 	result := map[string]flvx.NodeStatus{}
 	for tag, s := range samples {
-		if s.unknown || s.count != nil && *s.count < 0 {
+		if s.unknown {
 			continue
 		}
 		count := len(s.ips)
-		if s.count != nil {
-			count = *s.count
-		}
 		ips := make([]flvx.OnlineIP, 0, len(s.ips))
 		for ip, connections := range s.ips {
 			ips = append(ips, flvx.OnlineIP{IP: ip, Connections: connections})
@@ -358,7 +342,9 @@ func flvxSnapshotOnlineIPs(snapshot coreSnapshotResponse) map[string]flvx.NodeSt
 			return ips[i].IP < ips[j].IP
 		})
 		if len(ips) > 64 {
-			ips = ips[:64]
+			limited := make([]flvx.OnlineIP, 64)
+			copy(limited, ips)
+			ips = limited
 		}
 		result[tag] = flvx.NodeStatus{OnlineIPCount: &count, OnlineIPs: &ips}
 	}
