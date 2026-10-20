@@ -586,10 +586,7 @@ func preserveValidOfficialConfig(ctx context.Context) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(ownershipConfigBackup), 0700); err != nil {
 		return "", err
 	}
-	if err := copyFile(officialConfigPath, ownershipConfigBackup+".new", 0600); err != nil {
-		return "", err
-	}
-	if err := os.Rename(ownershipConfigBackup+".new", ownershipConfigBackup); err != nil {
+	if err := durableCopyFile(officialConfigPath, ownershipConfigBackup, 0600); err != nil {
 		return "", err
 	}
 	return hash, nil
@@ -686,18 +683,7 @@ func writeExactFile(path, contents string, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	temporary := path + ".new"
-	if err := os.WriteFile(temporary, []byte(contents), mode); err != nil {
-		return err
-	}
-	if err := os.Chmod(temporary, mode); err != nil {
-		return err
-	}
-	if err := os.Rename(temporary, path); err != nil {
-		_ = os.Remove(temporary)
-		return err
-	}
-	return nil
+	return durableWriteFile(path, []byte(contents), mode)
 }
 
 func exactFileContents(path, contents string) bool {

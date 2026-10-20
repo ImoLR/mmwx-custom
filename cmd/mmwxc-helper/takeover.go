@@ -383,15 +383,7 @@ func writeAgentXrayMode(path, mode string) error {
 	if err != nil {
 		return err
 	}
-	temporary := path + ".mmwxc-new"
-	if err := os.WriteFile(temporary, updated, info.Mode().Perm()); err != nil {
-		return err
-	}
-	if err := os.Rename(temporary, path); err != nil {
-		_ = os.Remove(temporary)
-		return err
-	}
-	return nil
+	return durableWriteFile(path, updated, info.Mode().Perm())
 }
 
 func replaceAgentXrayMode(data []byte, replacement string) (string, []byte, error) {

@@ -91,7 +91,8 @@ func TestOwnershipRollbackOnlyRestoresAgentMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(source, []byte("token: rotated-token\nlisten_port: 12345\nmaster_url: https://new.example\nxray_mode: external\n"), 0600); err != nil {
+	current := []byte("token: rotated-token\nlisten_port: 12345\nmaster_url: https://new.example\nxray_mode: external\n")
+	if err := os.WriteFile(source, current, 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := restoreAgentModeFromBackup(source, backupDirectory, backup); err != nil {
@@ -100,6 +101,10 @@ func TestOwnershipRollbackOnlyRestoresAgentMode(t *testing.T) {
 	restored, err := os.ReadFile(source)
 	if err != nil || string(restored) != "token: rotated-token\nlisten_port: 12345\nmaster_url: https://new.example\nxray_mode: embedded\n" {
 		t.Fatalf("rollback lost current Agent settings: %q err=%v", restored, err)
+	}
+	previous, err := os.ReadFile(source + ".bak")
+	if err != nil || string(previous) != string(current) {
+		t.Fatal("mode rollback did not retain the previous Agent configuration")
 	}
 }
 

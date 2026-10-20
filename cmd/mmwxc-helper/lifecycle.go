@@ -311,6 +311,14 @@ func copyFile(source, destination string, mode os.FileMode) error {
 	return closeErr
 }
 
+func durableCopyFile(source, destination string, mode os.FileMode) error {
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	return durableWriteFile(destination, data, mode)
+}
+
 func pruneRollback(directory string, keep int) error {
 	entries, err := os.ReadDir(directory)
 	if err != nil {
@@ -405,15 +413,7 @@ func writeCoreService() error {
 	if err := os.MkdirAll(filepath.Dir(coreServicePath), 0755); err != nil {
 		return err
 	}
-	temporary := coreServicePath + ".new"
-	if err := os.WriteFile(temporary, []byte(coreServiceUnit), 0644); err != nil {
-		return err
-	}
-	if err := os.Chmod(temporary, 0644); err != nil {
-		return err
-	}
-	if err := os.Rename(temporary, coreServicePath); err != nil {
-		os.Remove(temporary)
+	if err := durableWriteFile(coreServicePath, []byte(coreServiceUnit), 0644); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -476,10 +476,7 @@ func (manager *lifecycleManager) applyCoreConfig(ctx context.Context, config jso
 			return err
 		}
 	}
-	if err := copyFile(stagedPath, coreConfigPath+".new", 0600); err != nil {
-		return err
-	}
-	if err := os.Rename(coreConfigPath+".new", coreConfigPath); err != nil {
+	if err := durableWriteFile(coreConfigPath, config, 0600); err != nil {
 		return err
 	}
 	if !wasActive && !activate {
@@ -622,10 +619,7 @@ func (manager *lifecycleManager) restoreConfigAfterFailure(ctx context.Context, 
 		}
 		return fmt.Errorf("Custom Core config activation failed and no previous config is available: %w", cause)
 	}
-	if err := copyFile(backup, coreConfigPath+".new", 0600); err != nil {
-		return fmt.Errorf("Custom Core config activation failed (%v); rollback copy failed: %w", cause, err)
-	}
-	if err := os.Rename(coreConfigPath+".new", coreConfigPath); err != nil {
+	if err := durableCopyFile(backup, coreConfigPath, 0600); err != nil {
 		return fmt.Errorf("Custom Core config activation failed (%v); rollback replace failed: %w", cause, err)
 	}
 	if wasActive {

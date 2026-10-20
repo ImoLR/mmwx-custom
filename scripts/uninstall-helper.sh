@@ -35,9 +35,9 @@ if [[ "${1:-}" != "--finish" ]]; then
   fi
   if $owned_external; then
     stop_owned_unit xray.service
-    rm -f /etc/systemd/system/xray.service.d/90-mmwxc-owner.conf
+    rm -f /etc/systemd/system/xray.service.d/90-mmwxc-owner.conf /etc/systemd/system/xray.service.d/90-mmwxc-owner.conf.bak
     if [[ -f /etc/systemd/system/xray.service ]] && grep -q '^ExecStart=/opt/mmwxc/core/xray ' /etc/systemd/system/xray.service; then
-      rm -f /etc/systemd/system/xray.service
+      rm -f /etc/systemd/system/xray.service /etc/systemd/system/xray.service.bak
     fi
   fi
   if [[ -L /usr/local/bin/xray ]] && [[ "$(readlink /usr/local/bin/xray)" == /opt/mmwxc/core/xray ]]; then
@@ -57,7 +57,7 @@ if [[ "${1:-}" != "--finish" ]]; then
       if nft list table inet "$table" >/dev/null 2>&1; then nft delete table inet "$table"; fi
     done
   fi
-  rm -f /etc/systemd/system/mmwxc-core.service
+  rm -f /etc/systemd/system/mmwxc-core.service /etc/systemd/system/mmwxc-core.service.bak
   systemctl daemon-reload
   [[ "${1:-}" == "--prepare" ]] && exit 0
 fi
@@ -65,7 +65,7 @@ fi
 # The signed action runs this phase in a separate transient unit, after its
 # stopped-Core result is acknowledged by the controller.
 systemctl disable mmwxc-helper.service 2>/dev/null || true
-rm -f /etc/systemd/system/mmwxc-helper.service /usr/local/bin/mmwxc-helper /etc/mmwxc-helper.env
+rm -f /etc/systemd/system/mmwxc-helper.service /etc/systemd/system/mmwxc-helper.service.bak /usr/local/bin/mmwxc-helper /etc/mmwxc-helper.env
 rm -f /etc/systemd/journald.conf.d/90-mmwxc-cap.conf
 rm -rf /opt/mmwxc/core /etc/mmwxc /var/lib/mmwxc /var/lib/mmwxc-helper /run/mmwxc
 systemctl daemon-reload

@@ -58,6 +58,9 @@ func TestOwnedServiceFileRejectsSymlink(t *testing.T) {
 
 func TestWriteUnitCorrectsExistingTemporaryMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "unit")
+	if err := os.WriteFile(path, []byte("previous unit"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path+".new", []byte("old"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +70,9 @@ func TestWriteUnitCorrectsExistingTemporaryMode(t *testing.T) {
 	info, _ := os.Stat(path)
 	if info.Mode().Perm() != 0644 {
 		t.Fatalf("written unit mode=%o", info.Mode().Perm())
+	}
+	if !exactFileContents(path+".bak", "previous unit") {
+		t.Fatal("previous unit was not retained")
 	}
 }
 

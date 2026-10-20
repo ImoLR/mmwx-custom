@@ -172,30 +172,7 @@ func writeFLVXFile(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path+".tmp", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	defer os.Remove(path + ".tmp")
-	if _, err = f.Write(data); err == nil {
-		err = f.Sync()
-	}
-	closeErr := f.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	if err = os.Rename(path+".tmp", path); err != nil {
-		return err
-	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return durableWriteFile(path, data, mode)
 }
 
 func (m *flvxManager) persist() error {
@@ -647,7 +624,7 @@ func (m *flvxManager) removeInstance(ctx context.Context) error {
 			return err
 		}
 	}
-	for _, path := range []string{flvxUnitPath, flvxUnitPath + ".d", "/run/systemd/system.control/" + flvxServiceName + ".d", filepath.Dir(flvxConfigPath), filepath.Dir(flvxBinaryPath), filepath.Dir(flvxSocketPath)} {
+	for _, path := range []string{flvxUnitPath, flvxUnitPath + ".bak", flvxUnitPath + ".d", "/run/systemd/system.control/" + flvxServiceName + ".d", filepath.Dir(flvxConfigPath), filepath.Dir(flvxBinaryPath), filepath.Dir(flvxSocketPath)} {
 		if err := os.RemoveAll(path); err != nil {
 			return err
 		}
