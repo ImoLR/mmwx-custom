@@ -112,6 +112,8 @@ type app struct {
 	helperTokens           map[string]string
 	helperState            *helperState
 	releaseCache           *releaseCache
+	flvxOnlineMu           sync.Mutex
+	flvxOnline             map[int64]flvxOnlineSnapshot
 	mmwxAPITarget          *url.URL
 	officialInternalTarget *url.URL
 	publicURL              string

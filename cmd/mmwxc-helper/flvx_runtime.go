@@ -253,6 +253,7 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 	for _, u := range snapshot.Users {
 		connections[strings.TrimPrefix(u.Identity.InboundTag, "flvxl-")] += u.CurrentTotal
 	}
+	online := flvxSnapshotOnlineIPs(snapshot)
 	statuses := map[string]flvx.NodeStatus{}
 	acknowledged := m.state.Payload.AckGeneration == m.state.Report.Generation && m.state.Payload.AckSequence >= m.state.Report.Sequence
 	for _, old := range m.state.Report.Nodes {
@@ -265,6 +266,7 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 		old.State = "removed"
 		old.Connections = connections[old.ID]
 		old.Error = ""
+		old.OnlineIPCount, old.OnlineIPs = nil, nil
 		statuses[old.ID] = old
 	}
 	for _, n := range m.state.Payload.Desired.Nodes {
@@ -275,6 +277,9 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 		if problems[n.ID] != "" {
 			s.State = "error"
 			s.Error = problems[n.ID]
+		}
+		if s.State == "active" {
+			s.OnlineIPCount, s.OnlineIPs = online[n.Tag()].OnlineIPCount, online[n.Tag()].OnlineIPs
 		}
 		statuses[n.ID] = s
 	}
@@ -292,6 +297,72 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 		m.state.Report.Nodes = append(m.state.Report.Nodes, s)
 	}
 	return m.persistReport(m.reconciledPayload == [32]byte{})
+}
+
+func flvxSnapshotOnlineIPs(snapshot coreSnapshotResponse) map[string]flvx.NodeStatus {
+	type sample struct {
+		count   *int
+		ips     map[string]int
+		unknown bool
+	}
+	samples := map[string]*sample{}
+	add := func(s *sample, entries coreOnlineIPs) {
+		for _, entry := range entries {
+			if entry.IP != "" && entry.Connections >= 0 {
+				s.ips[entry.IP] += int(entry.Connections)
+			}
+		}
+	}
+	for _, inbound := range snapshot.Inbounds {
+		if !strings.HasPrefix(inbound.InboundTag, "flvxl-") || inbound.OnlineIPCount == nil && inbound.OnlineIPs == nil {
+			continue
+		}
+		s := &sample{count: inbound.OnlineIPCount, ips: map[string]int{}}
+		add(s, inbound.OnlineIPs)
+		samples[inbound.InboundTag] = s
+	}
+	users := map[string]*sample{}
+	for _, user := range snapshot.Users {
+		tag := user.Identity.InboundTag
+		if !strings.HasPrefix(tag, "flvxl-") || samples[tag] != nil {
+			continue
+		}
+		s := users[tag]
+		if s == nil {
+			s = &sample{ips: map[string]int{}}
+			users[tag] = s
+		}
+		s.unknown = s.unknown || user.InboundOnlineIPs == nil
+		add(s, user.InboundOnlineIPs)
+	}
+	for tag, s := range users {
+		samples[tag] = s
+	}
+	result := map[string]flvx.NodeStatus{}
+	for tag, s := range samples {
+		if s.unknown || s.count != nil && *s.count < 0 {
+			continue
+		}
+		count := len(s.ips)
+		if s.count != nil {
+			count = *s.count
+		}
+		ips := make([]flvx.OnlineIP, 0, len(s.ips))
+		for ip, connections := range s.ips {
+			ips = append(ips, flvx.OnlineIP{IP: ip, Connections: connections})
+		}
+		sort.Slice(ips, func(i, j int) bool {
+			if ips[i].Connections != ips[j].Connections {
+				return ips[i].Connections > ips[j].Connections
+			}
+			return ips[i].IP < ips[j].IP
+		})
+		if len(ips) > 64 {
+			ips = ips[:64]
+		}
+		result[tag] = flvx.NodeStatus{OnlineIPCount: &count, OnlineIPs: &ips}
+	}
+	return result
 }
 
 func (m *flvxManager) reconcile(ctx context.Context) (result error) {

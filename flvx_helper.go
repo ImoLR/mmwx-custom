@@ -15,7 +15,10 @@ func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, 
 	if a.flvxDB() == nil {
 		return nil, nil
 	}
+	a.flvxOnlineMu.Lock()
+	defer a.flvxOnlineMu.Unlock()
 	var envelope *flvx.Envelope
+	accepted := false
 	err := flvxTransaction(ctx, a.flvxDB(), func(tx *sql.Tx) error {
 		s, err := readFLVXShare(ctx, tx, id, true)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -29,6 +32,7 @@ func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, 
 			if err = mergeFLVXReport(ctx, tx, id, &s, *report, time.Now()); err != nil {
 				return err
 			}
+			accepted = report.Generation == s.Generation && report.Sequence == s.Sequence && report.CollectedAt == s.Status.CollectedAt
 		}
 		flvxReset(&s, time.Now())
 		current, _ := json.Marshal(s)
@@ -60,6 +64,9 @@ func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, 
 		envelope.Sign(token)
 		return nil
 	})
+	if err == nil && accepted {
+		a.cacheFLVXOnlineIPs(id, *report)
+	}
 	return envelope, err
 }
 

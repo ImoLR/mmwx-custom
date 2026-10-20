@@ -52,6 +52,76 @@ type flvxLedger struct {
 	Status  flvx.NodeStatus `json:"status"`
 }
 
+// Online IPs are transient observations, never part of the durable traffic ledger.
+type flvxOnlineSnapshot struct {
+	Generation  string
+	Sequence    int64
+	CollectedAt int64
+	Nodes       map[string]flvx.NodeStatus
+}
+
+// Called with flvxOnlineMu held, after the report transaction commits.
+func (a *app) cacheFLVXOnlineIPs(id int64, r flvx.Report) {
+	now := time.Now().UnixMilli()
+	for serverID, snapshot := range a.flvxOnline {
+		if now-snapshot.CollectedAt > 60000 {
+			delete(a.flvxOnline, serverID)
+		}
+	}
+	delete(a.flvxOnline, id)
+	if r.Core.State != "running" || r.CollectedAt <= 0 || now-r.CollectedAt > 60000 {
+		return
+	}
+	snapshot := flvxOnlineSnapshot{Generation: r.Generation, Sequence: r.Sequence, CollectedAt: r.CollectedAt, Nodes: map[string]flvx.NodeStatus{}}
+	for _, n := range r.Nodes {
+		if n.State != "active" || n.OnlineIPCount == nil || *n.OnlineIPCount < 0 {
+			continue
+		}
+		count := *n.OnlineIPCount
+		ips := []flvx.OnlineIP{}
+		if n.OnlineIPs != nil {
+			ips = append(ips, (*n.OnlineIPs)...)
+		}
+		sort.Slice(ips, func(i, j int) bool {
+			if ips[i].Connections != ips[j].Connections {
+				return ips[i].Connections > ips[j].Connections
+			}
+			return ips[i].IP < ips[j].IP
+		})
+		if len(ips) > 64 {
+			ips = append([]flvx.OnlineIP(nil), ips[:64]...)
+		}
+		snapshot.Nodes[n.ID] = flvx.NodeStatus{OnlineIPCount: &count, OnlineIPs: &ips}
+	}
+	if len(snapshot.Nodes) > 0 {
+		if a.flvxOnline == nil {
+			a.flvxOnline = map[int64]flvxOnlineSnapshot{}
+		}
+		a.flvxOnline[id] = snapshot
+	}
+}
+
+func (a *app) flvxStatusWithOnlineIPs(id int64, s flvxShare) flvx.Status {
+	a.flvxOnlineMu.Lock()
+	defer a.flvxOnlineMu.Unlock()
+	status := s.Status
+	status.Nodes = append([]flvx.NodeStatus{}, status.Nodes...)
+	snapshot, ok := a.flvxOnline[id]
+	fresh := ok && snapshot.Generation == s.Generation && snapshot.Sequence == s.Sequence &&
+		snapshot.CollectedAt == status.CollectedAt && time.Now().UnixMilli()-snapshot.CollectedAt <= 60000 &&
+		status.Core.State == "running"
+	for i := range status.Nodes {
+		n := &status.Nodes[i]
+		n.OnlineIPCount, n.OnlineIPs = nil, nil
+		if online, exists := snapshot.Nodes[n.ID]; fresh && exists && n.State == "active" {
+			count := *online.OnlineIPCount
+			ips := append([]flvx.OnlineIP{}, (*online.OnlineIPs)...)
+			n.OnlineIPCount, n.OnlineIPs = &count, &ips
+		}
+	}
+	return status
+}
+
 type flvxServer struct {
 	ID             int64      `json:"server_id"`
 	Name           string     `json:"name"`
@@ -337,6 +407,7 @@ func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r 
 			s.Status.TrafficUsedBytes = flvx.AddBytes(s.Status.TrafficUsedBytes, delta)
 		}
 		n.UpBytes, n.DownBytes = ledger.Counter.Up, ledger.Counter.Down
+		n.OnlineIPCount, n.OnlineIPs = nil, nil
 		ledger.Status = n
 		raw, _ = json.Marshal(ledger)
 		if _, err = tx.ExecContext(ctx, `INSERT INTO mmwxc_flvx_counters(server_id,node_id,data_json) VALUES($1,$2,$3) ON CONFLICT(server_id,node_id) DO UPDATE SET data_json=EXCLUDED.data_json`, id, n.ID, string(raw)); err != nil {

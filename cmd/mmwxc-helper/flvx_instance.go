@@ -199,7 +199,12 @@ func writeFLVXFile(path string, data []byte, mode os.FileMode) error {
 }
 
 func (m *flvxManager) persist() error {
-	raw, err := json.Marshal(m.state)
+	state := m.state
+	state.Report.Nodes = append([]flvx.NodeStatus{}, state.Report.Nodes...)
+	for i := range state.Report.Nodes {
+		state.Report.Nodes[i].OnlineIPCount, state.Report.Nodes[i].OnlineIPs = nil, nil
+	}
+	raw, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
@@ -231,6 +236,7 @@ func (m *flvxManager) materialHash() [32]byte {
 		s.Report.Nodes[i].UpBytes = 0
 		s.Report.Nodes[i].DownBytes = 0
 		s.Report.Nodes[i].Connections = 0
+		s.Report.Nodes[i].OnlineIPCount, s.Report.Nodes[i].OnlineIPs = nil, nil
 	}
 	s.Report.Sequence, s.Report.CollectedAt = 0, 0
 	s.Report.TrafficUsedBytes = 0
@@ -346,6 +352,7 @@ func (m *flvxManager) run(ctx context.Context) {
 			stopCancel()
 			m.state.Report.Core.State = "error"
 			for i := range m.state.Report.Nodes {
+				m.state.Report.Nodes[i].OnlineIPCount, m.state.Report.Nodes[i].OnlineIPs = nil, nil
 				if m.state.Report.Nodes[i].State != "removed" {
 					m.state.Report.Nodes[i].State = "error"
 					m.state.Report.Nodes[i].Error = "FLVX Core reconciliation failed"

@@ -105,13 +105,20 @@ type Core struct {
 	Epoch   string `json:"epoch,omitempty"`
 }
 
+type OnlineIP struct {
+	IP          string `json:"ip"`
+	Connections int    `json:"connections"`
+}
+
 type NodeStatus struct {
-	ID          string `json:"id"`
-	State       string `json:"state"`
-	Error       string `json:"error,omitempty"`
-	UpBytes     int64  `json:"up_bytes"`
-	DownBytes   int64  `json:"down_bytes"`
-	Connections int64  `json:"connections"`
+	ID            string      `json:"id"`
+	State         string      `json:"state"`
+	Error         string      `json:"error,omitempty"`
+	UpBytes       int64       `json:"up_bytes"`
+	DownBytes     int64       `json:"down_bytes"`
+	Connections   int64       `json:"connections"`
+	OnlineIPCount *int        `json:"online_ip_count,omitempty"`
+	OnlineIPs     *[]OnlineIP `json:"online_ips,omitempty"`
 }
 
 type Status struct {

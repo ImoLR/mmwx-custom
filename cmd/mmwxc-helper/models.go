@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"github.com/ImoLR/mmwx-custom/internal/flvx"
 	"time"
 )
@@ -39,7 +40,7 @@ type coreUserSnapshot struct {
 	InboundTotal                   uint64         `json:"inbound_total"`
 	CurrentTotal                   int64          `json:"current_total"`
 	InboundTCP                     tcpStateCounts `json:"inbound_tcp"`
-	InboundOnlineIPs               []onlineIP     `json:"inbound_online_ips"`
+	InboundOnlineIPs               coreOnlineIPs  `json:"inbound_online_ips"`
 	OutboundActive                 int64          `json:"outbound_active"`
 	OutboundPending                int64          `json:"outbound_pending"`
 	OutboundTCP                    tcpStateCounts `json:"outbound_tcp"`
@@ -75,10 +76,27 @@ type coreUserSnapshot struct {
 }
 
 type coreInboundSnapshot struct {
-	InboundTag  string   `json:"inbound_tag"`
-	InboundName string   `json:"inbound_name,omitempty"`
-	InboundPort uint32   `json:"inbound_port"`
-	Users       []string `json:"users"`
+	InboundTag    string        `json:"inbound_tag"`
+	InboundName   string        `json:"inbound_name,omitempty"`
+	InboundPort   uint32        `json:"inbound_port"`
+	Users         []string      `json:"users"`
+	OnlineIPCount *int          `json:"online_ip_count,omitempty"`
+	OnlineIPs     coreOnlineIPs `json:"online_ips,omitempty"`
+}
+
+// The Core emits null for a known empty list; nil means the field was absent.
+type coreOnlineIPs []onlineIP
+
+func (ips *coreOnlineIPs) UnmarshalJSON(raw []byte) error {
+	var entries []onlineIP
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return err
+	}
+	if entries == nil {
+		entries = []onlineIP{}
+	}
+	*ips = entries
+	return nil
 }
 
 type coreSnapshotResponse struct {
