@@ -271,28 +271,53 @@ func (manager *lifecycleManager) rollbackExternalOwnership(ctx context.Context, 
 	return nil
 }
 
+type ownershipReconcileDependencies struct {
+	core           string
+	image          string
+	config         string
+	configBackup   string
+	baseUnit       string
+	dropIn         string
+	officialBinary string
+	run            systemctlRunner
+	active         serviceActiveProbe
+	status         func(context.Context, *externalOwnershipState) externalOwnershipStatus
+	validateConfig func(context.Context) (string, error)
+	waitReady      func(context.Context, time.Duration, ...func()) error
+}
+
 func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context, state *externalOwnershipState) error {
+	return reconcileExternalOwnershipWith(ctx, state, ownershipReconcileDependencies{
+		core: coreBinaryPath, image: ownershipImagePath, config: officialConfigPath,
+		configBackup: ownershipConfigBackup, baseUnit: officialXrayPath,
+		dropIn: ownershipDropInPath, officialBinary: officialXrayBinaryPath,
+		run: systemctl, active: serviceActive, status: manager.externalOwnershipStatus,
+		validateConfig: validateAndHashOfficialConfig, waitReady: manager.waitOwnedCoreReady,
+	})
+}
+
+func reconcileExternalOwnershipWith(ctx context.Context, state *externalOwnershipState, dependencies ownershipReconcileDependencies) error {
 	if !state.Enabled {
 		return nil
 	}
 	reasons := make([]string, 0, 4)
 	restartRequired := false
-	coreHash, err := sha256File(coreBinaryPath)
+	coreHash, err := sha256File(dependencies.core)
 	if err != nil || coreHash != state.ExpectedCoreSHA {
-		imageHash, imageErr := sha256File(ownershipImagePath)
+		imageHash, imageErr := sha256File(dependencies.image)
 		if imageErr != nil || imageHash != state.ExpectedCoreSHA {
 			return errors.New("owned Core binary drifted and the protected image is unavailable")
 		}
-		if err := copyFile(ownershipImagePath, coreBinaryPath+".new", 0755); err != nil {
+		if err := copyFile(dependencies.image, dependencies.core+".new", 0755); err != nil {
 			return fmt.Errorf("restore owned Core binary: %w", err)
 		}
-		if err := os.Rename(coreBinaryPath+".new", coreBinaryPath); err != nil {
+		if err := os.Rename(dependencies.core+".new", dependencies.core); err != nil {
 			return fmt.Errorf("replace owned Core binary: %w", err)
 		}
 		reasons = append(reasons, "core binary restored")
 		restartRequired = true
 	}
-	baseChanged, dropInChanged, err := ensureOwnershipFiles()
+	baseChanged, dropInChanged, err := ensureOwnershipFilesAt(dependencies.baseUnit, dependencies.dropIn)
 	if err != nil {
 		return err
 	}
@@ -304,7 +329,7 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 		reasons = append(reasons, "service ownership restored")
 		restartRequired = true
 	}
-	linkChanged, linkOwned, err := ensureAgentXrayCompatibilityLinkAt(officialXrayBinaryPath, coreBinaryPath)
+	linkChanged, linkOwned, err := ensureAgentXrayCompatibilityLinkAt(dependencies.officialBinary, dependencies.core)
 	if err != nil {
 		return err
 	}
@@ -312,40 +337,39 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 	if linkChanged {
 		reasons = append(reasons, "official Agent Xray path linked to owned Core")
 	}
-	if serviceActive(ctx, coreServiceName) {
-		if err := systemctl(ctx, "disable", "--now", coreServiceName); err != nil {
+	if dependencies.active(ctx, coreServiceName) {
+		if err := dependencies.run(ctx, "disable", "--now", coreServiceName); err != nil {
 			return fmt.Errorf("stop duplicate Custom Core service: %w", err)
 		}
 		reasons = append(reasons, "duplicate service stopped")
 	}
-	configHash, configErr := hashValidJSONFile(officialConfigPath)
+	configHash, configErr := hashValidJSONFile(dependencies.config)
 	if configErr == nil && configHash != state.LastGoodConfigSHA {
-		configHash, configErr = validateAndHashOfficialConfig(ctx)
+		configHash, configErr = dependencies.validateConfig(ctx)
 	}
 	if configErr == nil {
 		state.InvalidConfigAt = time.Time{}
 		if configHash != state.LastGoodConfigSHA {
-			if err := copyFile(officialConfigPath, ownershipConfigBackup+".new", 0600); err != nil {
-				return err
-			}
-			if err := os.Rename(ownershipConfigBackup+".new", ownershipConfigBackup); err != nil {
+			if err := durableCopyFile(dependencies.config, dependencies.configBackup, 0600); err != nil {
 				return err
 			}
 			state.LastGoodConfigSHA = configHash
 			state.RejectedConfigSHA = ""
 		}
-	} else if rejectedHash := sha256FileOrMissing(officialConfigPath); state.RejectedConfigSHA == rejectedHash {
+	} else if rejectedHash := sha256FileOrMissing(dependencies.config); state.RejectedConfigSHA == rejectedHash {
 		state.InvalidConfigAt = time.Time{}
 	} else if state.InvalidConfigAt.IsZero() {
 		state.InvalidConfigAt = time.Now().UTC()
 	} else if time.Since(state.InvalidConfigAt) >= invalidConfigGrace {
-		if _, err := os.Stat(ownershipConfigBackup); err != nil {
+		if _, err := os.Stat(dependencies.configBackup); err != nil {
 			return fmt.Errorf("official config is invalid and no last-good backup is available: %w", configErr)
 		}
-		if err := copyFile(ownershipConfigBackup, officialConfigPath+".new", 0600); err != nil {
+		data, err := os.ReadFile(dependencies.configBackup)
+		if err != nil {
 			return err
 		}
-		if err := os.Rename(officialConfigPath+".new", officialConfigPath); err != nil {
+		// The live config is known to be invalid; preserve its last good .bak.
+		if err := durableReplaceFile(dependencies.config, data, 0600); err != nil {
 			return err
 		}
 		state.InvalidConfigAt = time.Time{}
@@ -353,7 +377,7 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 		reasons = append(reasons, "last-good official config restored")
 		restartRequired = true
 	}
-	status := manager.externalOwnershipStatus(ctx, state)
+	status := dependencies.status(ctx, state)
 	if state.Armed && status.ServiceActive && status.RuntimeOwned && status.SingleCore && status.CoreReady {
 		state.Armed = false
 		state.LastRepairAt = time.Now().UTC()
@@ -367,16 +391,16 @@ func (manager *lifecycleManager) reconcileExternalOwnership(ctx context.Context,
 	if len(reasons) == 0 {
 		return nil
 	}
-	if err := systemctl(ctx, "daemon-reload"); err != nil {
+	if err := dependencies.run(ctx, "daemon-reload"); err != nil {
 		return err
 	}
 	// Only restart after ownership drift. Ordinary Agent-driven configuration
 	// writes and restarts never enter this branch.
 	if restartRequired {
-		if err := systemctl(ctx, "restart", "xray.service"); err != nil {
+		if err := dependencies.run(ctx, "restart", "xray.service"); err != nil {
 			return err
 		}
-		if err := manager.waitOwnedCoreReady(ctx, 25*time.Second); err != nil {
+		if err := dependencies.waitReady(ctx, 25*time.Second); err != nil {
 			return err
 		}
 	}

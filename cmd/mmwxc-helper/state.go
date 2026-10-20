@@ -32,16 +32,19 @@ type takeoverState struct {
 }
 
 func loadLocalState(path string) (localState, error) {
+	state, _, err := loadLocalStateWithRecovery(path, defaultStateRecoveryPaths())
+	return state, err
+}
+
+func readLocalState(path string) (localState, error) {
 	state := localState{Settings: defaultConnectionSettings()}
 	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return state, nil
-	}
 	if err != nil {
 		return localState{}, err
 	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return state, nil
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || data[0] != '{' || bytes.IndexByte(data, 0) >= 0 {
+		return localState{}, errors.New("state must be a JSON object without NUL bytes")
 	}
 	if err := json.Unmarshal(data, &state); err != nil {
 		return localState{}, err
@@ -84,9 +87,5 @@ func saveLocalState(path string, state localState) error {
 	if err != nil {
 		return err
 	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, data, 0600); err != nil {
-		return err
-	}
-	return os.Rename(temporary, path)
+	return durableWriteFile(path, data, 0600)
 }

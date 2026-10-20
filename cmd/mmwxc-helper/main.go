@@ -93,9 +93,15 @@ func main() {
 
 	client := &http.Client{Timeout: 8 * time.Second}
 	core := newCoreClient(cfg.CoreSocket)
-	state, err := loadLocalState(cfg.StatePath)
-	if err != nil {
-		log.Fatalf("[mmwxc-helper] state error: %v", err)
+	recoveryPaths := defaultStateRecoveryPaths()
+	recoveryPaths.machineID = cfg.MachineIDPath
+	state, recovery, err := loadLocalStateWithRecovery(cfg.StatePath, recoveryPaths)
+	if recovery != "" || err != nil {
+		if err != nil {
+			log.Printf("[mmwxc-helper] state recovery: %s; persistence warning: %v", recovery, err)
+		} else {
+			log.Printf("[mmwxc-helper] state recovery: %s", recovery)
+		}
 	}
 	machineID, err := loadOrCreateMachineID(cfg.MachineIDPath, cfg.ServerID)
 	if err != nil {

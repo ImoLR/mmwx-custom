@@ -30,12 +30,7 @@ func loadOrCreateMachineID(path, fallback string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return "", err
 	}
-	temporary := path + ".new"
-	if err := os.WriteFile(temporary, []byte(value+"\n"), 0600); err != nil {
-		return "", err
-	}
-	if err := os.Rename(temporary, path); err != nil {
-		_ = os.Remove(temporary)
+	if err := durableWriteFile(path, []byte(value+"\n"), 0600); err != nil {
 		return "", err
 	}
 	return value, nil
