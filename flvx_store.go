@@ -62,6 +62,37 @@ type flvxServer struct {
 	DualInstall    bool       `json:"dual_install"`
 	NativeLanding  bool       `json:"native_landing"`
 	DetectionError bool       `json:"detection_error"`
+	Helper         flvxHelper `json:"helper"`
+}
+
+// flvxHelper is the server's last Helper report as FLVX sharing sees it. Only
+// Helpers advertising "flvx.share" (v0.7.5+) run the FLVX Core; older ones
+// ignore the share, so its desired nodes would never apply.
+type flvxHelper struct {
+	Installed    bool   `json:"installed"`
+	Version      string `json:"version"`
+	Architecture string `json:"architecture"`
+	Ready        bool   `json:"flvx_ready"`
+	Upgrading    bool   `json:"upgrading"`
+}
+
+func (a *app) flvxHelpers() map[int64]flvxHelper {
+	result := map[int64]flvxHelper{}
+	if a.helperState == nil {
+		return result
+	}
+	s, now := a.helperState, time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, status := range s.data.AgentStatuses {
+		n, err := strconv.ParseInt(id, 10, 64)
+		if err != nil {
+			continue
+		}
+		installed := status.Helper.Installed && s.data.Servers[id].HelperTokenHash != ""
+		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id)}
+	}
+	return result
 }
 
 type flvxQuery interface {
@@ -146,7 +177,7 @@ func flvxServers(ctx context.Context, q flvxQuery) ([]flvxServer, error) {
 			rows.Close()
 			return nil, err
 		}
-		s := flvxServer{ID: deletionID(data["id"]), Name: deletionText(data["name"]), Hosts: flvx.Hosts{IPv4: deletionText(data["ip_address"]), IPv6: deletionText(data["ip_address_v6"]), Domain: deletionText(data["domain"])}}
+		s := flvxServer{ID: deletionID(data["id"]), Name: deletionText(data["name"]), Hosts: flvxLinkHosts(data)}
 		for h := range deletionServerHosts(data) {
 			s.Addresses = append(s.Addresses, h)
 		}
@@ -173,6 +204,33 @@ func flvxServers(ctx context.Context, q flvxQuery) ([]flvxServer, error) {
 		servers[i].PortsKnown = true
 	}
 	return servers, nil
+}
+
+// flvxLinkHosts gives FLVX the address official node links use: 服务器域名
+// (domain), else 服务器地址 (pull_address: the DDNS name or a NAT host's entry
+// IP), else the reported IP. FLVX prefers Domain, so it stays empty when the
+// link address is an IP literal; ip_address is then only the IPv4 fallback.
+func flvxLinkHosts(data map[string]any) flvx.Hosts {
+	h := flvx.Hosts{}
+	for i, key := range []string{"domain", "pull_address", "ip_address", "domain_v6", "pull_address_v6", "ip_address_v6"} {
+		v := strings.TrimSpace(deletionText(data[key]))
+		ip := net.ParseIP(v)
+		switch {
+		case v == "":
+			continue
+		case ip == nil:
+			if h.Domain == "" && h.IPv4 == "" && i < 3 {
+				h.Domain = v
+			}
+		case ip.To4() != nil:
+			if h.IPv4 == "" && i < 3 {
+				h.IPv4 = ip.String()
+			}
+		case h.IPv6 == "":
+			h.IPv6 = ip.String()
+		}
+	}
+	return h
 }
 
 func flvxServerSnapshot(ctx context.Context, q flvxQuery, id int64) (flvxServer, error) {

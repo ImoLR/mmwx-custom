@@ -73,6 +73,9 @@
 .flvx-warning, .flvx-inline-warning { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.6; color: #996c30; }
 .flvx-warning { background: #fff7e9; border-radius: 10px; padding: 11px 12px; }
 .flvx-inline-warning { margin: 12px 0 0; }
+.flvx-helper-warning { flex-wrap: wrap; align-items: center; }
+.flvx-helper-warning > span:first-of-type { flex: 1 1 220px; min-width: 0; }
+.flvx-helper-warning > button { margin-left: auto; padding: 7px 12px; }
 .flvx-empty { text-align: center; padding: 54px 20px; border: 1px dashed #d7dee7; border-radius: 16px; color: #8590a0; font-size: 14px; }
 .flvx-empty h2 { font-size: 20px; color: #50627a; }
 .flvx-dialog.cx-sheet { width: min(560px, calc(100vw - 24px)); }

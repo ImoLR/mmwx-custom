@@ -174,7 +174,7 @@ func (a *app) flvxV1Handler(w http.ResponseWriter, r *http.Request) {
 			var s flvxShare
 			s, err = readFLVXShare(r.Context(), a.flvxDB(), id, false)
 			flvxReset(&s, time.Now())
-			result = flvxPublicStatus(s.Status)
+			result = flvxPublicStatus(s.Status, a.flvxHelpers()[id].Ready)
 		} else {
 			err = flvxAPIError{405, "method_not_allowed", "method not allowed"}
 		}
@@ -188,13 +188,17 @@ func (a *app) flvxV1Handler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, result)
 }
 
-func flvxPublicStatus(s flvx.Status) map[string]any {
+func flvxPublicStatus(s flvx.Status, helperReady bool) map[string]any {
 	state := s.Core.State
 	if state == "" {
 		state = "stopped"
 	}
 	if s.CollectedAt > 0 && time.Now().UnixMilli()-s.CollectedAt > 60000 && state == "running" {
 		state = "error"
+	}
+	// An old Helper never reports FLVX, so its stored "stopped" would look idle.
+	if !helperReady {
+		state = "helper_outdated"
 	}
 	result := map[string]any{"applied_revision": s.AppliedRevision, "core": map[string]any{"state": state, "epoch": s.Core.Epoch}, "nodes": s.Nodes, "share_traffic_used_bytes": s.TrafficUsedBytes, "collected_at": s.CollectedAt}
 	if e := s.Egress; e != nil {
@@ -394,11 +398,15 @@ func (a *app) saveFLVXShare(ctx context.Context, id int64, c flvx.Config, state 
 	if state != "active" && state != "paused" && state != "revoked" {
 		return flvxAPIError{422, "invalid_status", "invalid share status"}
 	}
+	helper := a.flvxHelpers()[id]
 	return flvxTransaction(ctx, a.flvxDB(), func(tx *sql.Tx) error {
 		s, err := readFLVXShare(ctx, tx, id, true)
 		if errors.Is(err, sql.ErrNoRows) {
 			if state != "active" {
 				return sql.ErrNoRows
+			}
+			if !helper.Ready {
+				return flvxAPIError{409, "helper_outdated", "Helper 不支持 FLVX 共享，请先升级 Helper"}
 			}
 			s = flvxShare{Desired: flvx.Desired{Nodes: []flvx.Node{}}, Status: flvx.Status{Core: flvx.Core{State: "stopped"}, Nodes: []flvx.NodeStatus{}}, Version: 0}
 		} else if err != nil {
@@ -459,10 +467,11 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 	if err != nil {
 		return nil, err
 	}
-	lookup := flvxResolver()
+	lookup, helpers := flvxResolver(), a.flvxHelpers()
 	for i := range servers {
 		detectFLVXDual(ctx, &servers[i], h, lookup)
 		flvxSortedPorts(servers[i].OfficialPorts)
+		servers[i].Helper = helpers[servers[i].ID]
 	}
 	rows, err := db.QueryContext(ctx, `SELECT server_id,data_json FROM mmwxc_flvx_shares ORDER BY server_id`)
 	if err != nil {
@@ -487,7 +496,8 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 		for _, n := range s.Status.Nodes {
 			connections += n.Connections
 		}
-		coreState := flvxPublicStatus(s.Status)["core"].(map[string]any)["state"]
+		report := flvxPublicStatus(s.Status, server.Helper.Ready)
+		coreState := report["core"].(map[string]any)["state"]
 		item := map[string]any{"server_id": id, "name": server.Name, "hosts": server.Hosts, "status": s.State, "port_min": s.Config.PortMin, "port_max": s.Config.PortMax, "traffic_limit_bytes": s.Config.TrafficLimitBytes, "traffic_used_bytes": s.Status.TrafficUsedBytes, "reset_day": s.Config.ResetDay, "max_connections": s.Config.MaxConnections, "connections": connections, "share_until": s.Config.ShareUntil, "core": map[string]any{"state": coreState, "version": s.Status.Core.Version}, "protocols": []string{"ss2022", "vless_reality_vision"}, "dual_install": server.DualInstall}
 		if capability := flvxEgressCapability(s); capability != nil {
 			item["egress"] = capability
@@ -495,7 +505,9 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 		if admin {
 			nodes := []map[string]any{}
 			for _, n := range s.Desired.Nodes {
-				status := flvx.NodeStatus{ID: n.ID, State: "removed"}
+				// Desired but never reported means the Helper has not applied it
+				// yet; only a Helper report can mark a node removed.
+				status := flvx.NodeStatus{ID: n.ID, State: "pending"}
 				for _, v := range s.Status.Nodes {
 					if v.ID == n.ID {
 						status = v
@@ -504,8 +516,8 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 				}
 				nodes = append(nodes, map[string]any{"id": n.ID, "owner": n.Owner, "name": n.Name, "protocol": n.Protocol, "port": n.Port, "max_connections": n.MaxConnections, "max_online_ips": n.MaxOnlineIPs, "expires_at": n.ExpiresAt, "status": status})
 			}
-			item["nodes"], item["config"], item["report"] = nodes, s.Config, flvxPublicStatus(s.Status)
-			item["native_landing"], item["detection_error"] = server.NativeLanding, server.DetectionError
+			item["nodes"], item["config"], item["report"] = nodes, s.Config, report
+			item["native_landing"], item["detection_error"], item["helper"] = server.NativeLanding, server.DetectionError, server.Helper
 			item["allow_egress"], item["egress_plan"] = !s.EgressDenied, flvxEgressSummary(s)
 		}
 		shares = append(shares, item)

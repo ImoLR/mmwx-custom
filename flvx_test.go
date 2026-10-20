@@ -26,7 +26,27 @@ func flvxTestApp(t *testing.T) *app {
 	} {
 		auditDeleteExec(t, db, s)
 	}
-	return &app{apiToken: "operator-token", adminStore: &postgresAdminSessionStore{db: db}}
+	a := &app{apiToken: "operator-token", adminStore: &postgresAdminSessionStore{db: db}}
+	state, err := openHelperState(t.TempDir()+"/helper-state.json", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.helperState = state
+	flvxTestHelper(a, 7, "v0.7.5", true)
+	flvxTestHelper(a, 8, "v0.7.5", true)
+	return a
+}
+
+func flvxTestHelper(a *app, id int64, version string, flvxShare bool) {
+	key := flvxID(id)
+	status := agentStatus{Helper: componentStatus{Installed: true, Version: version}, Architecture: "amd64", Capabilities: []string{"helper.update"}}
+	if flvxShare {
+		status.Capabilities = append(status.Capabilities, "flvx.share")
+	}
+	a.helperState.mu.Lock()
+	a.helperState.data.Servers[key] = helperServerIdentity{OfficialServerID: key, HelperTokenHash: strings.Repeat("a", 64)}
+	a.helperState.data.AgentStatuses[key] = status
+	a.helperState.mu.Unlock()
 }
 
 func flvxTestRequest(a *app, method, path, token string, body any) *httptest.ResponseRecorder {
@@ -54,10 +74,160 @@ func TestFLVXPersistedReportFreshness(t *testing.T) {
 		want string
 	}{{35 * time.Second, "running"}, {65 * time.Second, "error"}} {
 		s := flvx.Status{Core: flvx.Core{State: "running"}, CollectedAt: time.Now().Add(-check.age).UnixMilli()}
-		if flvxPublicStatus(s)["core"].(map[string]any)["state"] != check.want {
+		if flvxPublicStatus(s, true)["core"].(map[string]any)["state"] != check.want {
 			t.Fatal("freshness does not allow the persisted report cadence")
 		}
+		if flvxPublicStatus(s, false)["core"].(map[string]any)["state"] != "helper_outdated" {
+			t.Fatal("a Helper without the FLVX runtime must not look like a plain stopped/running Core")
+		}
 	}
+}
+
+func TestFLVXLinkHosts(t *testing.T) {
+	for _, check := range []struct {
+		name string
+		row  map[string]any
+		want flvx.Hosts
+	}{
+		// Server 5: DDNS name lives in pull_address, domain is empty.
+		{"ddns", map[string]any{"ip_address": "114.41.205.96", "ip_address_v6": "2001:db8::5", "domain": "", "pull_address": "boilhinet2.imgamer.top"}, flvx.Hosts{IPv4: "114.41.205.96", IPv6: "2001:db8::5", Domain: "boilhinet2.imgamer.top"}},
+		// Servers 9/17: pull_address is the public entry IP, ip_address the egress IP.
+		{"nat", map[string]any{"ip_address": "143.203.126.34", "pull_address": "120.253.251.139"}, flvx.Hosts{IPv4: "120.253.251.139"}},
+		// Server 15: an IP typed into 服务器域名 still wins over pull_address.
+		{"domain-ip", map[string]any{"ip_address": "87.86.22.15", "ip_address_v6": "2001:db8::15", "domain": "120.253.251.132", "pull_address": "nat.example"}, flvx.Hosts{IPv4: "120.253.251.132", IPv6: "2001:db8::15"}},
+		{"domain-first", map[string]any{"ip_address": "203.0.113.7", "domain": "node.example", "pull_address": "ddns.example"}, flvx.Hosts{IPv4: "203.0.113.7", Domain: "node.example"}},
+		{"plain", map[string]any{"ip_address": "143.20.196.111", "ip_address_v6": "2001:db8::db", "pull_address": "143.20.196.111", "domain": nil}, flvx.Hosts{IPv4: "143.20.196.111", IPv6: "2001:db8::db"}},
+		{"v6-entry", map[string]any{"ip_address": "203.0.113.9", "ip_address_v6": "2001:db8::1", "pull_address_v6": "2001:db8::2", "domain_v6": "v6.example"}, flvx.Hosts{IPv4: "203.0.113.9", IPv6: "2001:db8::2"}},
+	} {
+		if got := flvxLinkHosts(check.row); got != check.want {
+			t.Errorf("%s: got %+v want %+v", check.name, got, check.want)
+		}
+	}
+}
+
+func TestFLVXServerHostsPostgres(t *testing.T) {
+	a := flvxTestApp(t)
+	ctx := context.Background()
+	auditDeleteExec(t, a.flvxDB(), `ALTER TABLE remote_servers ADD COLUMN pull_address text, ADD COLUMN ip_address_v6 text`)
+	auditDeleteExec(t, a.flvxDB(), `UPDATE remote_servers SET pull_address='ddns.example', ip_address_v6='2001:db8::7' WHERE id=7`)
+	auditDeleteExec(t, a.flvxDB(), `UPDATE remote_servers SET pull_address='198.51.100.8' WHERE id=8`)
+	servers, err := flvxServers(ctx, a.flvxDB())
+	if err != nil || len(servers) != 2 {
+		t.Fatal(servers, err)
+	}
+	if servers[0].Hosts != (flvx.Hosts{IPv4: "203.0.113.7", IPv6: "2001:db8::7", Domain: "ddns.example"}) || servers[1].Hosts != (flvx.Hosts{IPv4: "198.51.100.8"}) {
+		t.Fatalf("hosts do not follow official node links: %+v %+v", servers[0].Hosts, servers[1].Hosts)
+	}
+	for _, check := range []struct {
+		s     flvxServer
+		hosts []string
+	}{{servers[0], []string{"203.0.113.7", "2001:db8::7", "ddns.example"}}, {servers[1], []string{"203.0.113.8", "198.51.100.8"}}} {
+		for _, h := range check.hosts {
+			found := false
+			for _, v := range check.s.Addresses {
+				found = found || v == h
+			}
+			if !found {
+				t.Fatalf("dual-install detection lost %s: %v", h, check.s.Addresses)
+			}
+		}
+	}
+}
+
+func TestFLVXHelperCapabilityPostgres(t *testing.T) {
+	a := flvxTestApp(t)
+	ctx := context.Background()
+	auditDeleteExec(t, a.flvxDB(), `UPDATE mmwxc_flvx_integration SET token_hash=$1`, flvxTokenHash("flvx_fixture"))
+	c := flvx.Config{PortMin: 30000, PortMax: 30100, ResetDay: 1, MemoryMB: 256, CPUPercent: 50}
+	flvxTestHelper(a, 7, "v0.7.4", false)
+	w := flvxTestRequest(a, "PUT", "/api/custom/flvx/admin/shares/7", "operator-token", map[string]any{"port_min": 30000, "port_max": 30100, "reset_day": 1, "memory_mb": 256, "cpu_percent": 50, "status": "active"})
+	if w.Code != 409 || !strings.Contains(w.Body.String(), `"code":"helper_outdated"`) {
+		t.Fatalf("new share on a Helper without FLVX runtime accepted: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := readFLVXShare(ctx, a.flvxDB(), 7, false); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("refused share was stored", err)
+	}
+	var list struct {
+		Shares []struct {
+			Core   map[string]string `json:"core"`
+			Helper *flvxHelper       `json:"helper"`
+			Nodes  []struct {
+				ID     string          `json:"id"`
+				Status flvx.NodeStatus `json:"status"`
+			} `json:"nodes"`
+		} `json:"shares"`
+		Servers []flvxServer `json:"servers"`
+	}
+	read := func(path, token string) {
+		t.Helper()
+		w := flvxTestRequest(a, "GET", path, token, nil)
+		list.Shares, list.Servers = nil, nil
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &list) != nil {
+			t.Fatalf("list %s: %d %s", path, w.Code, w.Body.String())
+		}
+	}
+	read("/api/custom/flvx/admin", "operator-token")
+	if len(list.Servers) != 2 || list.Servers[0].Helper.Ready || list.Servers[0].Helper.Version != "v0.7.4" || !list.Servers[0].Helper.Installed || !list.Servers[1].Helper.Ready {
+		t.Fatalf("share dialog cannot see Helper capability: %+v", list.Servers)
+	}
+
+	// Existing share whose Helper is (or becomes) too old: shown, not silently stopped.
+	flvxTestHelper(a, 7, "v0.7.5", true)
+	if err := a.saveFLVXShare(ctx, 7, c, "active", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.putFLVXDesired(ctx, 7, flvxTestDesired()); err != nil {
+		t.Fatal(err)
+	}
+	flvxTestHelper(a, 7, "v0.7.4", false)
+	if err := a.saveFLVXShare(ctx, 7, c, "paused", nil); err != nil {
+		t.Fatal("editing an existing share must only warn", err)
+	}
+	if err := a.saveFLVXShare(ctx, 7, c, "active", nil); err != nil {
+		t.Fatal("resuming an existing share must only warn", err)
+	}
+	before := flvxTestXmin(t, a)
+	read("/api/custom/flvx/admin", "operator-token")
+	if len(list.Shares) != 1 || list.Shares[0].Core["state"] != "helper_outdated" || list.Shares[0].Helper == nil || list.Shares[0].Helper.Ready || len(list.Shares[0].Nodes) != 1 || list.Shares[0].Nodes[0].Status.State != "pending" {
+		t.Fatalf("outdated Helper share: %+v", list.Shares)
+	}
+	read("/api/custom/flvx/v1/shares", "flvx_fixture")
+	if len(list.Shares) != 1 || list.Shares[0].Core["state"] != "helper_outdated" || list.Shares[0].Helper != nil {
+		t.Fatalf("FLVX caps must carry helper_outdated and no Helper details: %+v", list.Shares)
+	}
+	w = flvxTestRequest(a, "GET", "/api/custom/flvx/v1/shares/7/status", "flvx_fixture", nil)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"state":"helper_outdated"`) {
+		t.Fatalf("FLVX status: %d %s", w.Code, w.Body.String())
+	}
+	if flvxTestXmin(t, a) != before {
+		t.Fatal("reading share status wrote the share row")
+	}
+
+	// Upgraded Helper: unreported nodes stay pending; only a report marks them.
+	flvxTestHelper(a, 7, "v0.7.5", true)
+	read("/api/custom/flvx/admin", "operator-token")
+	if list.Shares[0].Core["state"] != "stopped" || list.Shares[0].Nodes[0].Status.State != "pending" {
+		t.Fatalf("capable Helper before first report: %+v", list.Shares[0])
+	}
+	for i, state := range []string{"active", "removed"} {
+		r := flvx.Report{Generation: "g", Sequence: int64(i + 1), Period: flvx.Period(time.Now(), 1), Status: flvx.Status{AppliedRevision: 1, Core: flvx.Core{State: "running"}, Nodes: []flvx.NodeStatus{{ID: "11", State: state}}, CollectedAt: time.Now().UnixMilli()}}
+		if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", false, &r); err != nil {
+			t.Fatal(err)
+		}
+		read("/api/custom/flvx/admin", "operator-token")
+		if list.Shares[0].Core["state"] != "running" || list.Shares[0].Nodes[0].Status.State != state {
+			t.Fatalf("reported %s: %+v", state, list.Shares[0])
+		}
+	}
+}
+
+func flvxTestXmin(t *testing.T, a *app) string {
+	t.Helper()
+	var xmin string
+	if err := a.flvxDB().QueryRow(`SELECT xmin::text FROM mmwxc_flvx_shares WHERE server_id=7`).Scan(&xmin); err != nil {
+		t.Fatal(err)
+	}
+	return xmin
 }
 
 func TestFLVXAPIContractPostgres(t *testing.T) {
