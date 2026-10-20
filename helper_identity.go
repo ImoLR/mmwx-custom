@@ -149,19 +149,22 @@ func openHelperState(statePath string, ttl time.Duration) (*helperState, error) 
 }
 
 func (s *helperState) load() error {
-	data, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+	_, loaded, err := readHelperState(s.path)
 	if err != nil {
-		return err
+		backup, recovered, backupErr := readHelperState(s.path + ".bak")
+		if errors.Is(err, os.ErrNotExist) && errors.Is(backupErr, os.ErrNotExist) {
+			return nil
+		}
+		if backupErr != nil {
+			return fmt.Errorf("helper state %s is unreadable or invalid: %v; backup is unreadable or invalid: %w", s.path, err, backupErr)
+		}
+		if restoreErr := durableReplaceFile(s.path, backup, 0600); restoreErr != nil {
+			return fmt.Errorf("restore helper state %s from backup: %w", s.path, restoreErr)
+		}
+		log.Printf("[mmwx-custom] WARNING: helper state %s is unreadable or invalid (%v); recovered from %s.bak", s.path, err, s.path)
+		loaded = recovered
 	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(data, &s.data); err != nil {
-		return err
-	}
+	s.data = loaded
 	if s.data.Servers == nil {
 		s.data.Servers = make(map[string]helperServerIdentity)
 	}
@@ -189,6 +192,22 @@ func (s *helperState) load() error {
 	return nil
 }
 
+func readHelperState(path string) ([]byte, helperStateData, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, helperStateData{}, err
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' || bytes.IndexByte(data, 0) >= 0 {
+		return nil, helperStateData{}, errors.New("expected a non-empty JSON object without NUL bytes")
+	}
+	var state helperStateData
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, helperStateData{}, err
+	}
+	return data, state, nil
+}
+
 // saveLocked durably writes the whole state now. Pending heartbeat data and
 // throttled progress ride along in the same write.
 func (s *helperState) saveLocked() error {
@@ -199,11 +218,7 @@ func (s *helperState) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, s.path); err != nil {
+	if err := durableWriteFile(s.path, data, 0600); err != nil {
 		return err
 	}
 	s.savedAt, s.writes = time.Now(), s.writes+1

@@ -224,15 +224,7 @@ func saveReleaseCache(path string, info cachedReleaseInfo) error {
 	if err != nil {
 		return err
 	}
-	temporary := path + ".new"
-	if err := os.WriteFile(temporary, data, 0600); err != nil {
-		return err
-	}
-	if err := os.Rename(temporary, path); err != nil {
-		_ = os.Remove(temporary)
-		return err
-	}
-	return nil
+	return durableWriteFile(path, data, 0600)
 }
 
 func (a *app) releaseInfoHandler(w http.ResponseWriter, r *http.Request) {
