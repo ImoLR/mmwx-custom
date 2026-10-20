@@ -432,10 +432,13 @@ export function MachineConnectionTag({ metric, onOpen }: { metric?: ConnectionMe
   const machine = metric?.machine;
   const tooltipID = useId();
   // Cards clip their overflow, so the breakdown floats at viewport coordinates.
-  const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
+  const [anchor, setAnchor] = useState<{ top?: number; bottom?: number; left: number } | null>(null);
   const show = (event: SyntheticEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    setAnchor({ top: rect.bottom + 6, left: Math.max(8, Math.min(rect.left, window.innerWidth - 308)) });
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - 328));
+    // Open upwards when the badge sits near the bottom of the screen.
+    const below = window.innerHeight - rect.bottom;
+    setAnchor(below < 250 && rect.top > below ? { bottom: window.innerHeight - rect.top + 6, left } : { top: rect.bottom + 6, left });
   };
   useEffect(() => {
     if (!anchor) return;

@@ -7755,7 +7755,7 @@ button {
   display: none;
   flex-direction: column;
   gap: 8px;
-  width: 300px;
+  width: 320px;
   max-width: calc(100vw - 16px);
   padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
@@ -7804,6 +7804,7 @@ button {
   display: flex;
   justify-content: space-between;
   gap: 8px;
+  white-space: nowrap;
 }
 
 .machine-breakdown-rows em {

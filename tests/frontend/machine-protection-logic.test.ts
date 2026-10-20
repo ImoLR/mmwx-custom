@@ -36,6 +36,8 @@ test("breakdown lists every state, UDP and drops, and says whether FLVX ports ar
   assert.match(machineStateText({ ...summary, blocking: true }), /降到 950 以下恢复/);
   assert.match(machineStateText({ ...summary, warming_up: true }), /即将保护/);
   assert.match(machineStateText({ ...summary, idle_reason: "no_business_ports" }), /没有可保护的业务端口/);
+  assert.match(machineStateText({ ...summary, connections: { total: 846, tcp: 790, udp: 56, established: 214, time_wait: 500, close_wait: 41, other_tcp: 35 } }), /接近上限：到 1,000 时/);
+  assert.equal(machineStateText({ ...summary, connections: { total: 500, tcp: 490, udp: 10, established: 214, time_wait: 200, close_wait: 41, other_tcp: 35 } }), "正常");
 });
 
 test("settings form prefills 1000 / 500 / 10 and old Helpers never get the new fields", () => {

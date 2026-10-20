@@ -51,13 +51,15 @@ export function machineFLVXText(sources?: MachinePortSources) {
   return parts.length ? parts.join("；") : "本机没有 FLVX 端口";
 }
 
-export function machineStateText(machine?: Pick<MachineSummary, "enabled" | "blocking" | "warming_up" | "release_below" | "idle_reason" | "last_error">) {
+export function machineStateText(machine?: Pick<MachineSummary, "enabled" | "blocking" | "warming_up" | "release_below" | "idle_reason" | "last_error"> & { max_total?: number | null; connections?: MachineConnections }) {
   if (!machine) return "助手版本过旧，未启用整机保护";
   if (!machine.enabled) return "未启用";
   if (machine.last_error) return `异常：${machine.last_error}`;
   if (machine.blocking) return machine.release_below ? `保护中：拒绝业务端口的新连接，降到 ${machine.release_below.toLocaleString()} 以下恢复` : "保护中：拒绝业务端口的新连接";
   if (machine.warming_up) return "即将保护（等待连接跟踪就绪，约 5 秒）";
   if (machine.idle_reason === "no_business_ports") return "正常（本机没有可保护的业务端口）";
+  const total = machine.connections?.total, max = machine.max_total;
+  if (total != null && max && total >= max * machineWarningRatio) return `接近上限：到 ${max.toLocaleString()} 时开始拒绝业务端口的新连接`;
   return "正常";
 }
 
