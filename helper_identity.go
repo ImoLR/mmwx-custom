@@ -596,6 +596,10 @@ func (s *helperState) rebindMachine(rawInstallToken, machineID, helperToken, con
 			s.data.ConnectionSettings[targetID] = settings
 			delete(s.data.ConnectionSettings, sourceID)
 		}
+		if appliedAt, exists := s.data.MachineProtectionDefaults[sourceID]; exists {
+			s.data.MachineProtectionDefaults[targetID] = appliedAt
+			delete(s.data.MachineProtectionDefaults, sourceID)
+		}
 		if status, exists := s.data.AgentStatuses[sourceID]; exists {
 			s.data.AgentStatuses[targetID] = status
 			delete(s.data.AgentStatuses, sourceID)

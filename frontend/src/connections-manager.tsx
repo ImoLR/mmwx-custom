@@ -164,7 +164,7 @@ export function ConnectionsManager({ server, token }: Props) {
         </details>
         <div className="connection-protection-block">
           <div className="connection-section-head"><h5>机器连接保护</h5><span className="connection-source">整机一个负责方：妙妙屋助手</span></div>
-          {!machine?.supported ? <div className="connection-message neutral"><AlertTriangle /><span>当前 Helper 不支持机器连接保护，需要升级 Helper；现有 Core 统计和限制不受影响。</span></div> : !machineV2 ? <>
+          {!machine || !machine.supported && !machineV2 ? <div className="connection-message neutral"><AlertTriangle /><span>当前 Helper 不支持机器连接保护，需要升级 Helper；现有 Core 统计和限制不受影响。</span></div> : !machineV2 ? <>
             <div className="connection-message neutral machine-outdated"><AlertTriangle /><span>助手版本过旧：整机连接上限、TIME_WAIT 上限和 CLOSE_WAIT 超时需要升级 Helper 后才能设置和生效。</span></div>
             <div className="connection-effective-grid">
               <span>配置状态 <strong>{settings.machine_protection?.enabled ? "已启用（旧版只算 TCP）" : "未启用"}</strong></span>
@@ -181,10 +181,11 @@ export function ConnectionsManager({ server, token }: Props) {
               {machineBreakdownRows(machine.connections, machine.dropped_total).slice(0, 5).map(([label, value]) => <ConnectionStat key={label} label={label} value={value} />)}
             </div>
             <p className="connection-definition">{machineStateText({ ...machine, enabled: !!machine.configured?.enabled })}。{machineFLVXText(machine.port_sources)}。</p>
-            {machine.last_error && <div className="connection-message error"><AlertTriangle /><span>{machine.last_error}</span></div>}
+            {!machine.supported && <div className="connection-message neutral"><AlertTriangle /><span>本机没有 nftables：超过上限时无法拒绝新连接，TIME_WAIT 上限和 CLOSE_WAIT 超时照常生效。</span></div>}
+            {machine.last_error && machine.supported && <div className="connection-message error"><AlertTriangle /><span>{machine.last_error}</span></div>}
             {machine.tw_buckets?.error && <div className="connection-message error"><AlertTriangle /><span>{machine.tw_buckets.error}</span></div>}
           </>}
-          {machine?.supported && <>
+          {(machine?.supported || machineV2) && <>
             <label className="connection-toggle">
               <input type="checkbox" checked={machineSettings.enabled} disabled={!machineV2} onChange={(event) => patchMachine({ enabled: event.target.checked })} />
               <span><strong>启用机器连接保护</strong><small>超过上限只拒绝业务端口（妙妙屋 + FLVX）的新连接，已有连接不断开；降到上限的 95% 以下自动恢复。不处理 SSH、面板、Agent、Helper 和本机回环。</small></span>
@@ -194,7 +195,7 @@ export function ConnectionsManager({ server, token }: Props) {
               <NullableNumber label="TIME_WAIT 上限" value={machineSettings.tw_buckets ?? null} min={0} placeholder="0 = 不改内核值" disabled={!machineV2} onChange={(value) => patchMachine({ tw_buckets: value })} />
               <NullableNumber label="CLOSE_WAIT 超时（秒）" value={machineSettings.close_wait_seconds ?? null} min={0} placeholder="0 = 不自动关闭" disabled={!machineV2} onChange={(value) => patchMachine({ close_wait_seconds: value })} />
             </div>
-            {machineV2 && <p className="connection-definition machine-field-notes">TIME_WAIT 上限写入内核 tcp_max_tw_buckets，作用于整台机器，关闭保护时恢复原值{machine.tw_buckets?.original != null ? `（原值 ${machine.tw_buckets.original.toLocaleString()}）` : ""}。CLOSE_WAIT 超时作用于妙妙屋 Core 和 FLVX 共享 Core；下方 Core 设置里单独填了「CLOSE_WAIT 超时关闭」时以那里为准。0 表示该项不启用。</p>}
+            {machineV2 && <p className="connection-definition machine-field-notes">TIME_WAIT 上限写入内核 tcp_max_tw_buckets，作用于整台机器，关闭保护时恢复原值{machine?.tw_buckets?.original != null ? `（原值 ${machine.tw_buckets.original.toLocaleString()}）` : ""}。CLOSE_WAIT 超时作用于妙妙屋 Core 和 FLVX 共享 Core；下方 Core 设置里单独填了「CLOSE_WAIT 超时关闭」时以那里为准。0 表示该项不启用。</p>}
           </>}
         </div>
       </section>

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -278,4 +279,27 @@ func mustJSON(t *testing.T, value any) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func TestMachineProtectionV2WithoutNftCanStillBeEnabled(t *testing.T) {
+	a, _ := machineTestApp(t)
+	reportMachine(t, a, "v0.7.9", strings.Replace(machineV2Snapshot, `"supported":true`, `"supported":false`, 1))
+	settings := defaultServerConnectionSettings()
+	settings.MachineProtection = &serverMachineProtectionSettings{Enabled: true, MaxTotal: int64Pointer(1000), TWBuckets: int64Pointer(500)}
+	body, _ := json.Marshal(settings)
+	r := httptest.NewRequest(http.MethodPut, "/api/custom/servers/7/connections", bytes.NewReader(body))
+	r.Header.Set("Authorization", "Bearer operator-token")
+	w := httptest.NewRecorder()
+	a.serverConnectionsHandler(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("v2 Helper without nftables: %d %s", w.Code, w.Body.String())
+	}
+	reportMachine(t, a, "v0.7.8", strings.Replace(machineV1Snapshot, `"supported":true`, `"supported":false`, 1))
+	r = httptest.NewRequest(http.MethodPut, "/api/custom/servers/7/connections", bytes.NewReader(body))
+	r.Header.Set("Authorization", "Bearer operator-token")
+	w = httptest.NewRecorder()
+	a.serverConnectionsHandler(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("old unsupported Helper must still be refused: %d", w.Code)
+	}
 }

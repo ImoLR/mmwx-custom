@@ -518,6 +518,7 @@ func (a *app) retireDeletedServerState(p *serverDeletionPlan) error {
 		delete(a.helperState.data.ManagementCommands, id)
 		delete(a.helperState.data.ManagementResults, id)
 		delete(a.helperState.data.ConnectionSettings, id)
+		delete(a.helperState.data.MachineProtectionDefaults, id)
 		delete(a.helperState.data.ExternalConfigRepairs, id)
 		for key, record := range a.helperState.data.InstallTokens {
 			if record.OfficialServerID == id {

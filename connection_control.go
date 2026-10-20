@@ -734,7 +734,8 @@ func (a *app) serverConnectionsHandler(w http.ResponseWriter, r *http.Request) {
 			a.connectionMu.Lock()
 			record, exists := a.detailedConnections[serverID]
 			a.connectionMu.Unlock()
-			if !exists || record.Snapshot.MachineProtection == nil || !record.Snapshot.MachineProtection.Supported {
+			// v2 Helpers still own TIME_WAIT and CLOSE_WAIT where nftables is missing.
+			if !exists || record.Snapshot.MachineProtection == nil || !record.Snapshot.MachineProtection.Supported && !machineProtectionV2(record.Snapshot.MachineProtection) {
 				writeJSON(w, http.StatusConflict, map[string]any{"success": false, "message": "machine protection is not supported by the current Helper; upgrade Helper first"})
 				return
 			}
