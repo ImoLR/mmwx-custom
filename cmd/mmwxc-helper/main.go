@@ -98,7 +98,7 @@ func main() {
 	state, recovery, err := loadLocalStateWithRecovery(cfg.StatePath, recoveryPaths)
 	if recovery != "" || err != nil {
 		if err != nil {
-			log.Printf("[mmwxc-helper] state recovery: %s; persistence warning: %v", recovery, err)
+			log.Printf("[mmwxc-helper] state recovery: %s; persistence warning: %s", recovery, strings.ReplaceAll(err.Error(), "\n", "; "))
 		} else {
 			log.Printf("[mmwxc-helper] state recovery: %s", recovery)
 		}
