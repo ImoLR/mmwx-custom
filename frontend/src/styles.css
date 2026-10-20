@@ -7732,3 +7732,113 @@ button {
   .xray-compact :is(.xray-editor-layer, .xray-picker-layer) { justify-content: end; }
   .xray-compact :is(.xray-object-editor, .xray-picker-dialog) { height: 100dvh; max-height: 100dvh; width: min(780px, 100vw); border-radius: 16px 0 0 16px; }
 }
+
+/* Machine protection v2: server card badge 「N/上限」 and its breakdown. */
+.connection-tag-wrap {
+  display: inline-flex;
+  max-width: 100%;
+}
+
+.connection-tag.protecting {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.connection-tag-protecting {
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.machine-breakdown {
+  position: fixed;
+  z-index: 60;
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  width: 300px;
+  max-width: calc(100vw - 16px);
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text);
+  box-shadow: var(--shadow-hover);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.45;
+  pointer-events: none;
+}
+
+.machine-breakdown.open {
+  display: flex;
+}
+
+.machine-breakdown-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 15px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.machine-breakdown-title small,
+.machine-breakdown-note {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.machine-breakdown-note.danger {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.machine-breakdown-rows {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 14px;
+}
+
+.machine-breakdown-rows > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.machine-breakdown-rows em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.machine-breakdown-rows strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.machine-protection-grid .machine-state.danger strong {
+  color: var(--danger);
+}
+
+.machine-breakdown-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.machine-limit-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.machine-limit-grid input:disabled,
+.connection-toggle input:disabled + span {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+  .machine-breakdown-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .machine-limit-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -69,6 +69,8 @@ type helperStateData struct {
 	CoreModeIntents       map[string]coreModeIntent           `json:"core_mode_intents,omitempty"`
 	ExternalConfigRepairs map[string]string                   `json:"external_config_repairs,omitempty"`
 	RebindTokens          map[string]helperRebindToken        `json:"rebind_tokens,omitempty"`
+	// When the one-time machine protection defaults were written per server.
+	MachineProtectionDefaults map[string]time.Time `json:"machine_protection_defaults,omitempty"`
 }
 
 type helperServerIdentity struct {

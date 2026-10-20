@@ -174,7 +174,11 @@ func (a *app) flvxV1Handler(w http.ResponseWriter, r *http.Request) {
 			var s flvxShare
 			s, err = readFLVXShare(r.Context(), a.flvxDB(), id, false)
 			flvxReset(&s, time.Now())
-			result = flvxPublicStatus(a.flvxStatusWithOnlineIPs(id, s), a.flvxHelpers()[id].Ready)
+			status := flvxPublicStatus(a.flvxStatusWithOnlineIPs(id, s), a.flvxHelpers()[id].Ready)
+			if machine := a.flvxShareMachine(id); machine != nil {
+				status["machine"] = machine
+			}
+			result = status
 		} else {
 			err = flvxAPIError{405, "method_not_allowed", "method not allowed"}
 		}

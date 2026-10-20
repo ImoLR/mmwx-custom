@@ -43,6 +43,8 @@ type connectionMetricsView struct {
 	UpdatedAt       string `json:"updated_at,omitempty"`
 	HelperVersion   string `json:"helper_version,omitempty"`
 	Available       bool   `json:"available"`
+	// Machine protection v2 state for the card badge; absent = older Helper.
+	Machine *serverMachineSummary `json:"machine,omitempty"`
 }
 
 func parseHelperTokens(raw string) map[string]string {
@@ -191,6 +193,9 @@ func (a *app) listConnectionMetrics(w http.ResponseWriter, r *http.Request) {
 			ConnectionCount: item.ConnectionCount,
 			HelperVersion:   item.HelperVersion,
 			Available:       available,
+		}
+		if record, exists := a.detailedConnections[serverID]; exists && available {
+			view.Machine = machineSummary(record)
 		}
 		if view.ServerUUID == "" {
 			view.ServerUUID = metadata[serverID].CustomServerUUID

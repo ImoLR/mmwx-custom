@@ -111,7 +111,7 @@ import {
   validateRemoteWebsite,
 } from "./api";
 import { formatBytes, formatDurationSince, formatSpeed } from "./format";
-import { ConnectionsManager } from "./connections-manager";
+import { ConnectionsManager, MachineConnectionTag } from "./connections-manager";
 import { editableServerRegions, loadingRegion, lookupServerRegion, serverRegionAddress, serverRegionFromFields, unknownRegion } from "./geo";
 import type {
   AdminTrafficResponse,
@@ -1845,10 +1845,7 @@ function ServiceServerCard({
         <div className="service-badges">
           <CoreModeBadge server={server} coreMode={coreMode} onSwitch={onSwitchCoreMode} />
           <span className="service-badge success">Agent {agentVersion(server)}</span>
-          <button className="service-badge success connection-tag" type="button" onClick={() => onOpenDialog("connections")} aria-label={`查看具体连接数，当前 ${formatConnectionCount(connectionMetric)}`} title="具体连接数">
-            <span className="connection-tag-icon" aria-hidden="true">🔌</span>
-            <span className="connection-tag-value">{formatConnectionCount(connectionMetric)}</span>
-          </button>
+          <MachineConnectionTag metric={connectionMetric} onOpen={() => onOpenDialog("connections")} />
           {server.ddns_pending && <span className="service-badge warning">DDNS 待同步</span>}
           {flvxShared && <button className="service-badge flvx-shared-badge" type="button" onClick={onOpenFLVX}>已共享给 FLVX</button>}
         </div>
@@ -4181,9 +4178,6 @@ function agentVersion(server: RemoteServer) {
   return server.agent_version ? formatXrayVersion(stripVersionPrefix(server.agent_version)) : "--";
 }
 
-function formatConnectionCount(metric?: ConnectionMetric) {
-  return metric?.available && typeof metric.connection_count === "number" ? metric.connection_count.toLocaleString() : "--";
-}
 
 function helperStatus(metric?: ConnectionMetric) {
   if (!metric) return { label: "未安装", version: "", updatedAt: "" };

@@ -215,6 +215,56 @@ export type ConnectionMetric = {
   updated_at?: string;
   helper_version?: string;
   available: boolean;
+  /** Machine protection v2 (Helper); absent = older Helper. */
+  machine?: MachineSummary;
+};
+
+/** tw_buckets / close_wait_seconds: null = Helper default (500 / 10 s), 0 = off. */
+export type MachineProtectionSettings = {
+  enabled: boolean;
+  max_active: number | null;
+  max_total: number | null;
+  tw_buckets?: number | null;
+  close_wait_seconds?: number | null;
+};
+
+/** Whole-machine 连接数: every TCP+UDP socket row, all states (server card number). */
+export type MachineConnections = {
+  total: number;
+  tcp: number;
+  udp: number;
+  established: number;
+  time_wait: number;
+  close_wait: number;
+  other_tcp: number;
+};
+
+export type MachinePortSources = {
+  core: number;
+  flvx_shared_core: number;
+  flvx_file: "absent" | "fresh" | "stale" | "malformed" | string;
+  flvx_file_tcp: number;
+  flvx_file_udp: number;
+  flvx_file_updated_at?: string;
+};
+
+export type MachineSummary = {
+  version: number;
+  enabled: boolean;
+  effective: boolean;
+  max_total: number | null;
+  release_below?: number | null;
+  blocking: boolean;
+  warming_up?: boolean;
+  dropped_total: number;
+  connections?: MachineConnections;
+  tw_buckets: number | null;
+  close_wait_seconds: number | null;
+  tcp_ports: number;
+  udp_ports: number;
+  port_sources?: MachinePortSources;
+  idle_reason?: string;
+  last_error?: string;
 };
 
 export type CoreModeSummary = {
@@ -254,11 +304,7 @@ export type UserConnectionSettings = {
 };
 
 export type ServerConnectionSettings = {
-  machine_protection?: {
-    enabled: boolean;
-    max_active: number | null;
-    max_total: number | null;
-  } | null;
+  machine_protection?: MachineProtectionSettings | null;
   default_close_wait_timeout_seconds: number | null;
   online_ip_grace_period_seconds: number;
   global_total_limit_enabled: boolean;
@@ -440,12 +486,10 @@ export type DetailedConnectionResponse = {
         error?: string;
       };
       machine_protection?: {
+        version?: number;
+        owner?: string;
         supported: boolean;
-        configured: {
-          enabled: boolean;
-          max_active: number | null;
-          max_total: number | null;
-        };
+        configured: MachineProtectionSettings;
         effective: boolean;
         blocking: boolean;
         threshold_reason?: string;
@@ -454,6 +498,18 @@ export type DetailedConnectionResponse = {
         controlled_ports: number[];
         last_reconciled_at?: string;
         last_error?: string;
+        connections?: MachineConnections;
+        max_total?: number | null;
+        release_below?: number | null;
+        tcp_ports?: number[];
+        udp_ports?: number[];
+        port_sources?: MachinePortSources;
+        idle_reason?: string;
+        warming_up?: boolean;
+        dropped_total?: number;
+        tw_buckets?: { target: number | null; current: number | null; original: number | null; error?: string } | null;
+        close_wait_seconds?: number | null;
+        status_file_error?: string;
       };
       sampled_at: string;
     };

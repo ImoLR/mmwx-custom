@@ -40,10 +40,14 @@ type serverPortConnectionSettings struct {
 	MaxOutboundTCPNewPerSecond *int   `json:"max_outbound_tcp_new_per_second"`
 }
 
+// TWBuckets / CloseWaitSeconds need machine protection v2 Helpers; they are
+// never sent to older Helpers. nil = Helper default (500 / 10 s), 0 = off.
 type serverMachineProtectionSettings struct {
-	Enabled   bool   `json:"enabled"`
-	MaxActive *int64 `json:"max_active"`
-	MaxTotal  *int64 `json:"max_total"`
+	Enabled          bool   `json:"enabled"`
+	MaxActive        *int64 `json:"max_active"`
+	MaxTotal         *int64 `json:"max_total"`
+	TWBuckets        *int64 `json:"tw_buckets,omitempty"`
+	CloseWaitSeconds *int64 `json:"close_wait_seconds,omitempty"`
 }
 
 type serverConnectionSettings struct {
@@ -166,6 +170,8 @@ type serverCoreConnectionStatus struct {
 }
 
 type serverMachineProtectionStatus struct {
+	Version          int                             `json:"version,omitempty"`
+	Owner            string                          `json:"owner,omitempty"`
 	Supported        bool                            `json:"supported"`
 	Configured       serverMachineProtectionSettings `json:"configured"`
 	Effective        bool                            `json:"effective"`
@@ -176,6 +182,47 @@ type serverMachineProtectionStatus struct {
 	ControlledPorts  []uint32                        `json:"controlled_ports"`
 	LastReconciledAt time.Time                       `json:"last_reconciled_at,omitempty"`
 	LastError        string                          `json:"last_error,omitempty"`
+
+	Connections      *serverMachineConnections   `json:"connections,omitempty"`
+	MaxTotal         *int64                      `json:"max_total,omitempty"`
+	ReleaseBelow     *int64                      `json:"release_below,omitempty"`
+	TCPPorts         []uint32                    `json:"tcp_ports,omitempty"`
+	UDPPorts         []uint32                    `json:"udp_ports,omitempty"`
+	Sources          *serverMachinePortSources   `json:"port_sources,omitempty"`
+	IdleReason       string                      `json:"idle_reason,omitempty"`
+	WarmingUp        bool                        `json:"warming_up,omitempty"`
+	DroppedTotal     int64                       `json:"dropped_total"`
+	TWBuckets        *serverMachineTWBucketsView `json:"tw_buckets,omitempty"`
+	CloseWaitSeconds *int64                      `json:"close_wait_seconds,omitempty"`
+	StatusFileError  string                      `json:"status_file_error,omitempty"`
+}
+
+// serverMachineConnections is the whole-machine 连接数: every TCP+UDP row,
+// the number on the server card (contract machine-protect-v1 §1).
+type serverMachineConnections struct {
+	Total       int64 `json:"total"`
+	TCP         int64 `json:"tcp"`
+	UDP         int64 `json:"udp"`
+	Established int64 `json:"established"`
+	TimeWait    int64 `json:"time_wait"`
+	CloseWait   int64 `json:"close_wait"`
+	OtherTCP    int64 `json:"other_tcp"`
+}
+
+type serverMachinePortSources struct {
+	Core          int    `json:"core"`
+	FLVXShared    int    `json:"flvx_shared_core"`
+	FLVXFile      string `json:"flvx_file"`
+	FLVXFileTCP   int    `json:"flvx_file_tcp"`
+	FLVXFileUDP   int    `json:"flvx_file_udp"`
+	FLVXUpdatedAt string `json:"flvx_file_updated_at,omitempty"`
+}
+
+type serverMachineTWBucketsView struct {
+	Target   *int64 `json:"target"`
+	Current  *int64 `json:"current"`
+	Original *int64 `json:"original"`
+	Error    string `json:"error,omitempty"`
 }
 
 type serverCoreAccounting struct {
@@ -260,6 +307,12 @@ func validateServerConnectionSettings(settings serverConnectionSettings) error {
 		}
 		if machine.Enabled && machine.MaxActive == nil && machine.MaxTotal == nil {
 			return errors.New("machine protection requires max_active or max_total")
+		}
+		if value := machine.TWBuckets; value != nil && *value != 0 && (*value < 100 || *value > 2000000) {
+			return errors.New("machine tw_buckets must be 0 (off) or between 100 and 2000000")
+		}
+		if value := machine.CloseWaitSeconds; value != nil && (*value < 0 || *value > 3600) {
+			return errors.New("machine close_wait_seconds must be 0 (off) or between 1 and 3600")
 		}
 	}
 	if settings.OnlineIPGracePeriodSeconds < 1 || settings.OnlineIPGracePeriodSeconds > 3600 {
@@ -364,9 +417,18 @@ func helperSupportsMachineProtection(version string) bool {
 }
 
 func settingsForHelper(settings serverConnectionSettings, helperVersion string) serverConnectionSettings {
+	return settingsForHelperMachine(settings, helperVersion, false)
+}
+
+// settingsForHelperMachine strips what the reporting Helper cannot take:
+// TIME_WAIT / CLOSE_WAIT only go to machine protection v2 Helpers.
+func settingsForHelperMachine(settings serverConnectionSettings, helperVersion string, machineV2 bool) serverConnectionSettings {
 	settings = cloneServerConnectionSettings(settings)
 	if !helperSupportsMachineProtection(helperVersion) {
 		settings.MachineProtection = nil
+	}
+	if settings.MachineProtection != nil && !machineV2 {
+		settings.MachineProtection.TWBuckets, settings.MachineProtection.CloseWaitSeconds = nil, nil
 	}
 	if !helperSupportsTrafficBlocks(helperVersion) {
 		settings.BlockedIdentities = nil
@@ -465,6 +527,14 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 			}
 		}
 	}
+	machineV2 := machineProtectionV2(request.Snapshot.MachineProtection)
+	if machineV2 && machineProtectionDefaultsEnabled() {
+		if applied, err := a.helperState.applyMachineProtectionDefaults(officialID); err != nil {
+			log.Printf("[mmwx-custom] machine protection defaults server=%s failed: %v", officialID, err)
+		} else if applied {
+			log.Printf("[mmwx-custom] machine protection defaults enabled server=%s (1000 / TIME_WAIT 500 / CLOSE_WAIT 10 s)", officialID)
+		}
+	}
 	settings := a.helperState.connectionSettings(officialID)
 	if ownership, err := a.connectionOwnership(r.Context(), officialID); err != nil {
 		log.Printf("[mmwx-custom] connection ownership refresh server=%s failed: %v", officialID, err)
@@ -477,7 +547,7 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 		}
 	}
 	settings = a.trafficBlocksForHelper(settings, officialID, request.HelperVersion)
-	response := map[string]any{"success": true, "settings": sortedConnectionSettings(settingsForHelper(settings, request.HelperVersion)), "command": command}
+	response := map[string]any{"success": true, "settings": sortedConnectionSettings(settingsForHelperMachine(settings, request.HelperVersion, machineV2)), "command": command}
 	if request.Management != nil {
 		share, egress := false, false
 		for _, capability := range request.Management.Status.Capabilities {
@@ -512,8 +582,14 @@ func validateDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) error {
 		if machine.Active < 0 || machine.Total < 0 {
 			return errors.New("negative machine protection count")
 		}
-		if len(machine.ControlledPorts) > 10000 {
+		if len(machine.ControlledPorts) > 10000 || len(machine.TCPPorts) > 70000 || len(machine.UDPPorts) > 70000 {
 			return errors.New("too many machine protection ports")
+		}
+		if counts := machine.Connections; counts != nil && (counts.Total < 0 || counts.TCP < 0 || counts.UDP < 0 || counts.Established < 0 || counts.TimeWait < 0 || counts.CloseWait < 0 || counts.OtherTCP < 0) {
+			return errors.New("negative machine connection count")
+		}
+		if machine.DroppedTotal < 0 {
+			return errors.New("negative machine protection drop count")
 		}
 	}
 	for _, inbound := range snapshot.Inbounds {

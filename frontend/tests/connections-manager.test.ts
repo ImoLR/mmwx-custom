@@ -8,6 +8,12 @@ import React from "react";
 
 const require = createRequire(import.meta.url);
 const source = readFileSync(new URL("../src/connections-manager.tsx", import.meta.url), "utf8");
+function machineLogic() {
+  const logic = readFileSync(new URL("../src/machine-protection-logic.ts", import.meta.url), "utf8");
+  const module = { exports: {} as any };
+  vm.runInNewContext(ts.transpileModule(logic, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, { module, exports: module.exports });
+  return module.exports;
+}
 const tcp = (total: number) => ({ tcp_total: total, established: 3, time_wait: total - 3, close_wait: 0 });
 function fixture() {
   const aggregate = { current_total: 38, inbound_current: 6, inbound_tcp: tcp(17), outbound_tcp: tcp(21), inbound_online_ips: [], outbound_new_rate: 2, rejected_user_inbound_limit: 7, rejected_port_inbound_limit: 8, rejected_global_inbound_limit: 9 };
@@ -32,6 +38,7 @@ function dialog(data: any) {
     } };
     if (id === "./api") return { updateDetailedConnectionSettings: async (_token: any, _id: any, settings: any) => { saved = structuredClone(settings); return { ...data, settings }; } };
     if (id === "lucide-react") return new Proxy({}, { get: () => () => null });
+    if (id === "./machine-protection-logic") return machineLogic();
     return require(id);
   } });
   const render = () => { cursor = 0; return expand(module.exports.ConnectionsManager({ server: { id: 5, name: "Boil Hinet 马年" }, token: "test" })); };
@@ -88,19 +95,55 @@ test("Level 1 keeps the original machine TCP fields, all-state total and text", 
   assert.match(text(machine), /Linux 整机所有进程/);
 });
 
-test("server card formatting still uses available connection_count, including its original badge", () => {
+test("server card badge still shows the available connection_count, now as N/上限 once machine protection v2 is on", () => {
   const main = readFileSync(new URL("../src/main.tsx", import.meta.url), "utf8");
-  const ast = ts.createSourceFile("main.tsx", main, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const fn = ast.statements.find(s => ts.isFunctionDeclaration(s) && s.name?.text === "formatConnectionCount")!;
-  const code = ts.transpileModule(fn.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const format = vm.runInNewContext(`${code}; formatConnectionCount`);
-  assert.equal(format({ available: true, connection_count: 396, tcp_count: 392, udp_count: 4 }), "396");
-  assert.equal(format({ available: true, connection_count: 0 }), "0");
-  assert.equal(format({ available: false, connection_count: 396 }), "--");
-  assert.equal(format(), "--");
-  assert.ok(main.includes('className="service-badge success connection-tag"'));
-  assert.ok(main.includes('title="具体连接数"'));
-  assert.ok(main.includes('<span className="connection-tag-value">{formatConnectionCount(connectionMetric)}</span>'));
+  assert.ok(main.includes('<MachineConnectionTag metric={connectionMetric} onOpen={() => onOpenDialog("connections")} />'));
+  const { machineBadge } = machineLogic();
+  assert.equal(machineBadge({ available: true, connection_count: 396, tcp_count: 392, udp_count: 4 }).text, "396");
+  assert.equal(machineBadge({ available: true, connection_count: 0 }).text, "0");
+  assert.equal(machineBadge({ available: false, connection_count: 396 }).text, "--");
+  assert.equal(machineBadge().text, "--");
+  const machine = { version: 2, enabled: true, max_total: 1000, blocking: false };
+  assert.equal(machineBadge({ available: true, connection_count: 396, machine }).text, "396/1,000");
+  assert.ok(source.includes('className={`service-badge ${badge.tone} connection-tag'));
+  assert.ok(source.includes('<span className="connection-tag-value">{badge.text}</span>'));
+});
+
+test("machine protection v2 fields prefill 1000 / 500 / 10, old Helpers see 助手版本过旧 and send only old fields", async () => {
+  const data: any = fixture();
+  data.record.snapshot.machine_protection = { supported: true, configured: { enabled: false, max_active: null, max_total: null }, effective: true, blocking: false, active: 1, total: 10, controlled_ports: [443] };
+  let view = dialog(data);
+  let tree = view.render();
+  assert.match(text(section(tree, "connection-protection-block")), /助手版本过旧/);
+  assert.equal(input(tree, "TIME_WAIT 上限").props.disabled, true);
+  await nodes(tree).find(n => n.type === "button" && n.props.className === "connection-save").props.onClick();
+  assert.equal(view.saved().machine_protection, undefined);
+  data.settings.machine_protection = { enabled: true, max_active: null, max_total: 1000, tw_buckets: 500, close_wait_seconds: 10 };
+  view = dialog(data);
+  await nodes(view.render()).find(n => n.type === "button" && n.props.className === "connection-save").props.onClick();
+  assert.deepEqual(Object.keys(view.saved().machine_protection).sort(), ["enabled", "max_active", "max_total"]);
+
+  data.settings.machine_protection = null;
+  data.record.snapshot.machine_protection = { version: 2, owner: "mmwx", supported: true, configured: { enabled: true, max_active: null, max_total: 1000 }, effective: true, blocking: true, active: 300, total: 1012, controlled_ports: [443, 20001], tcp_ports: [443, 20001], udp_ports: [20001], connections: { total: 1012, tcp: 950, udp: 62, established: 300, time_wait: 500, close_wait: 41, other_tcp: 109 }, max_total: 1000, release_below: 950, port_sources: { core: 1, flvx_shared_core: 0, flvx_file: "fresh", flvx_file_tcp: 1, flvx_file_udp: 1 }, dropped_total: 12, tw_buckets: { target: 500, current: 500, original: 262144 }, close_wait_seconds: 10 };
+  view = dialog(data);
+  tree = view.render();
+  const block = text(section(tree, "connection-protection-block"));
+  assert.match(block, /整机连接 1,012 \/ 1,000/);
+  assert.match(block, /当前动作 保护中/);
+  assert.match(block, /已丢弃新连接 12/);
+  assert.match(block, /ESTABLISHED300TIME_WAIT500CLOSE_WAIT41其它 TCP109UDP62/);
+  assert.match(block, /降到 950 以下恢复/);
+  assert.match(block, /已含 FLVX 业务端口（TCP 1 \/ UDP 1）/);
+  assert.match(block, /原值 262,144/);
+  assert.equal(input(tree, "整机连接上限（TCP+UDP）").props.value, 1000);
+  assert.equal(input(tree, "TIME_WAIT 上限").props.value, 500);
+  assert.equal(input(tree, "CLOSE_WAIT 超时（秒）").props.value, 10);
+  input(tree, "TIME_WAIT 上限").props.onChange({ target: { value: "800" } });
+  tree = view.render();
+  await nodes(tree).find(n => n.type === "button" && n.props.className === "connection-save").props.onClick();
+  assert.deepEqual(view.saved().machine_protection, { enabled: false, max_active: null, max_total: 1000, tw_buckets: 800, close_wait_seconds: 10 });
+  // Level 1 「机器 TCP」 is unchanged next to the new whole-machine numbers.
+  assert.match(text(section(tree, "connection-machine-section")), /TCP 总数304ESTABLISHED10TIME_WAIT279CLOSE_WAIT2/);
 });
 
 test("inbound inputs save their own fields while legacy limits stay collapsed and round-trip", async () => {

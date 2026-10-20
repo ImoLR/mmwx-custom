@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { Dispatch, SetStateAction } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import type { Dispatch, SetStateAction, SyntheticEvent } from "react";
 import { AlertTriangle, CheckCircle2, RefreshCw, Save, Trash2 } from "lucide-react";
 import {
   assignConnectionPort,
@@ -8,11 +8,14 @@ import {
   updateDetailedConnectionSettings,
 } from "./api";
 import type {
+  ConnectionMetric,
   DetailedConnectionResponse,
+  MachineProtectionSettings,
   RemoteServer,
   ServerConnectionSettings,
   TCPStateCounts,
 } from "./types";
+import { machineBadge, machineBreakdownRows, machineFLVXText, machineSettingsForSave, machineSettingsForm, machineStateText } from "./machine-protection-logic";
 
 type Props = { server: RemoteServer; token: string };
 type AssignmentDraft = { username: string; identity: string };
@@ -76,7 +79,9 @@ export function ConnectionsManager({ server, token }: Props) {
     setError("");
     setNotice("");
     try {
-      const response = await updateDetailedConnectionSettings(token, server.id, settings);
+      const machineV2 = (data?.record?.snapshot?.machine_protection?.version ?? 0) >= 2;
+      const payload = settings.machine_protection ? { ...settings, machine_protection: machineSettingsForSave(settings.machine_protection, machineV2) } : settings;
+      const response = await updateDetailedConnectionSettings(token, server.id, payload);
       dirtyRef.current = false;
       setData(response);
       setSettings(normalizeSettings(response.settings));
@@ -122,7 +127,9 @@ export function ConnectionsManager({ server, token }: Props) {
   const snapshot = data?.record?.snapshot;
   const managementUsers = data?.management?.users ?? [];
   const machine = snapshot?.machine_protection;
-  const machineSettings = settings.machine_protection ?? emptySettings.machine_protection!;
+  const machineV2 = (machine?.version ?? 0) >= 2;
+  const machineSettings = machineSettingsForm(settings.machine_protection);
+  const patchMachine = (patch: Partial<MachineProtectionSettings>) => updateSettings((current) => ({ ...current, machine_protection: { ...machineSettingsForm(current.machine_protection), ...patch } }));
   const coreAccounting = data?.core_accounting;
   const coreInboundTCP = (snapshot?.proxy_users ?? []).reduce((total, user) => total + (user.inbound_tcp?.tcp_total ?? 0), 0);
   const coreOutboundTCP = (snapshot?.proxy_users ?? []).reduce((total, user) => total + (user.outbound_tcp?.tcp_total ?? 0), 0);
@@ -156,22 +163,38 @@ export function ConnectionsManager({ server, token }: Props) {
           <div className="connection-fold-body"><TCPStateGrid states={snapshot?.system} /></div>
         </details>
         <div className="connection-protection-block">
-          <div className="connection-section-head"><h5>机器连接保护</h5><span className="connection-source">Helper 独立 nftables 兜底</span></div>
-          {!machine?.supported ? <div className="connection-message neutral"><AlertTriangle /><span>当前 Helper 不支持机器连接保护，需要升级 Helper；现有 Core 统计和限制不受影响。</span></div> : <>
+          <div className="connection-section-head"><h5>机器连接保护</h5><span className="connection-source">整机一个负责方：妙妙屋助手</span></div>
+          {!machine?.supported ? <div className="connection-message neutral"><AlertTriangle /><span>当前 Helper 不支持机器连接保护，需要升级 Helper；现有 Core 统计和限制不受影响。</span></div> : !machineV2 ? <>
+            <div className="connection-message neutral machine-outdated"><AlertTriangle /><span>助手版本过旧：整机连接上限、TIME_WAIT 上限和 CLOSE_WAIT 超时需要升级 Helper 后才能设置和生效。</span></div>
             <div className="connection-effective-grid">
-              <span>配置状态 <strong>{machineSettings.enabled ? "已启用" : "未启用"}</strong></span>
-              <span>生效状态 <strong>{machine.effective ? "已 reconcile" : "未生效"}</strong></span>
-              <span>当前动作 <strong>{machine.blocking ? "拒绝新业务连接" : "观察中"}</strong></span>
+              <span>配置状态 <strong>{settings.machine_protection?.enabled ? "已启用（旧版只算 TCP）" : "未启用"}</strong></span>
               <span>受控端口 <strong>{machine.controlled_ports?.join("、") || "--"}</strong></span>
             </div>
-            {machine.last_error && <div className="connection-message error"><AlertTriangle /><span>{machine.last_error}</span></div>}
-            <label className="connection-toggle">
-              <input type="checkbox" checked={machineSettings.enabled} onChange={(event) => updateSettings((current) => ({ ...current, machine_protection: { ...(current.machine_protection ?? machineSettings), enabled: event.target.checked } }))} />
-              <span><strong>启用机器连接保护</strong><small>只拒绝受控业务端口的新入站；不清理现有连接，不处理 SSH、Agent、Helper 或 loopback。</small></span>
-            </label>
-            <div className="connection-limit-grid">
-              <NullableNumber label="机器 TCP 总量上限" value={machineSettings.max_total} min={1} onChange={(value) => updateSettings((current) => ({ ...current, machine_protection: { ...(current.machine_protection ?? machineSettings), max_total: value } }))} />
+          </> : <>
+            <div className="connection-effective-grid machine-protection-grid">
+              <span>整机连接 <strong>{(machine.connections?.total ?? machine.total).toLocaleString()}{machine.max_total ? ` / ${machine.max_total.toLocaleString()}` : ""}</strong></span>
+              <span className={machine.blocking ? "machine-state danger" : ""}>当前动作 <strong>{machine.blocking ? "保护中" : machine.warming_up ? "即将保护" : machineSettings.enabled ? "观察中" : "未启用"}</strong></span>
+              <span>已丢弃新连接 <strong>{(machine.dropped_total ?? 0).toLocaleString()}</strong></span>
+              <span>受控端口 <strong>TCP {machine.tcp_ports?.length ?? 0} · UDP {machine.udp_ports?.length ?? 0}</strong></span>
             </div>
+            <div className="connection-summary-grid machine-breakdown-grid" aria-label="整机连接明细">
+              {machineBreakdownRows(machine.connections, machine.dropped_total).slice(0, 5).map(([label, value]) => <ConnectionStat key={label} label={label} value={value} />)}
+            </div>
+            <p className="connection-definition">{machineStateText({ ...machine, enabled: !!machine.configured?.enabled })}。{machineFLVXText(machine.port_sources)}。</p>
+            {machine.last_error && <div className="connection-message error"><AlertTriangle /><span>{machine.last_error}</span></div>}
+            {machine.tw_buckets?.error && <div className="connection-message error"><AlertTriangle /><span>{machine.tw_buckets.error}</span></div>}
+          </>}
+          {machine?.supported && <>
+            <label className="connection-toggle">
+              <input type="checkbox" checked={machineSettings.enabled} disabled={!machineV2} onChange={(event) => patchMachine({ enabled: event.target.checked })} />
+              <span><strong>启用机器连接保护</strong><small>超过上限只拒绝业务端口（妙妙屋 + FLVX）的新连接，已有连接不断开；降到上限的 95% 以下自动恢复。不处理 SSH、面板、Agent、Helper 和本机回环。</small></span>
+            </label>
+            <div className="connection-limit-grid machine-limit-grid">
+              <NullableNumber label="整机连接上限（TCP+UDP）" value={machineSettings.max_total} min={1} disabled={!machineV2} onChange={(value) => patchMachine({ max_total: value })} />
+              <NullableNumber label="TIME_WAIT 上限" value={machineSettings.tw_buckets ?? null} min={0} placeholder="0 = 不改内核值" disabled={!machineV2} onChange={(value) => patchMachine({ tw_buckets: value })} />
+              <NullableNumber label="CLOSE_WAIT 超时（秒）" value={machineSettings.close_wait_seconds ?? null} min={0} placeholder="0 = 不自动关闭" disabled={!machineV2} onChange={(value) => patchMachine({ close_wait_seconds: value })} />
+            </div>
+            {machineV2 && <p className="connection-definition machine-field-notes">TIME_WAIT 上限写入内核 tcp_max_tw_buckets，作用于整台机器，关闭保护时恢复原值{machine.tw_buckets?.original != null ? `（原值 ${machine.tw_buckets.original.toLocaleString()}）` : ""}。CLOSE_WAIT 超时作用于妙妙屋 Core 和 FLVX 共享 Core；下方 Core 设置里单独填了「CLOSE_WAIT 超时关闭」时以那里为准。0 表示该项不启用。</p>}
           </>}
         </div>
       </section>
@@ -399,8 +422,42 @@ function ConnectionStat({ label, value }: { label: string; value?: number }) { r
 function EmptyConnectionState({ text }: { text: string }) { return <div className="connection-empty">{text}</div>; }
 function IPList({ values }: { values: Array<{ ip: string; connections: number }> }) { return <div className="connection-ip-list">{values.map((item) => <div key={item.ip}><code>{item.ip}</code><strong>{item.connections}</strong></div>)}</div>; }
 
-function NullableNumber({ label, value, min, placeholder = "不限", required, onChange }: { label: string; value: number | null; min: number; placeholder?: string; required?: boolean; onChange: (value: number | null) => void }) {
-  return <label><span>{label}</span><input type="number" min={min} step="1" required={required} value={value ?? ""} placeholder={placeholder} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} /></label>;
+function NullableNumber({ label, value, min, placeholder = "不限", required, disabled, onChange }: { label: string; value: number | null; min: number; placeholder?: string; required?: boolean; disabled?: boolean; onChange: (value: number | null) => void }) {
+  return <label><span>{label}</span><input type="number" min={min} step="1" required={required} disabled={disabled} value={value ?? ""} placeholder={placeholder} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} /></label>;
+}
+
+/** Server card badge: the whole-machine 连接数, 「N/上限」 once protection is on, with a hover breakdown. */
+export function MachineConnectionTag({ metric, onOpen }: { metric?: ConnectionMetric; onOpen: () => void }) {
+  const badge = machineBadge(metric);
+  const machine = metric?.machine;
+  const tooltipID = useId();
+  // Cards clip their overflow, so the breakdown floats at viewport coordinates.
+  const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
+  const show = (event: SyntheticEvent<HTMLElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setAnchor({ top: rect.bottom + 6, left: Math.max(8, Math.min(rect.left, window.innerWidth - 308)) });
+  };
+  useEffect(() => {
+    if (!anchor) return;
+    const hide = () => setAnchor(null);
+    window.addEventListener("scroll", hide, true);
+    return () => window.removeEventListener("scroll", hide, true);
+  }, [anchor]);
+  return <span className="connection-tag-wrap" onMouseEnter={show} onMouseLeave={() => setAnchor(null)} onFocus={show} onBlur={() => setAnchor(null)}>
+    <button className={`service-badge ${badge.tone} connection-tag${badge.protecting ? " protecting" : ""}`} type="button" onClick={onOpen} aria-label={`查看具体连接数，${badge.label}`} aria-describedby={metric?.available ? tooltipID : undefined}>
+      <span className="connection-tag-icon" aria-hidden="true">🔌</span>
+      <span className="connection-tag-value">{badge.text}</span>
+      {badge.protecting && <span className="connection-tag-protecting">保护中</span>}
+    </button>
+    {metric?.available && <span className={`machine-breakdown${anchor ? " open" : ""}`} role="tooltip" id={tooltipID} style={anchor ?? undefined}>
+      <span className="machine-breakdown-title">整机连接 {badge.text}<small>TCP + UDP，全部状态</small></span>
+      {machine ? <>
+        <span className="machine-breakdown-rows">{machineBreakdownRows(machine.connections, machine.dropped_total).map(([label, value]) => <span key={label}><em>{label}</em><strong>{value == null ? "--" : value.toLocaleString()}</strong></span>)}</span>
+        <span className="machine-breakdown-note">{machineFLVXText(machine.port_sources)}</span>
+        <span className={`machine-breakdown-note${machine.blocking ? " danger" : ""}`}>{machineStateText(machine)}</span>
+      </> : <span className="machine-breakdown-note">{machineStateText(undefined)}</span>}
+    </span>}
+  </span>;
 }
 
 function normalizeSettings(settings: ServerConnectionSettings): ServerConnectionSettings {
