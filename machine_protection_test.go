@@ -191,6 +191,15 @@ func TestMachineSummaryReachesTheServerCard(t *testing.T) {
 	if response.Metrics["7"].Machine != nil {
 		t.Fatal("old Helper must not get a machine summary")
 	}
+	// v0.7.10 on an Embedded server: the official inbound count reaches the card.
+	embedded := strings.Replace(machineV2Snapshot, `"flvx_file_udp":1}`, `"flvx_file_udp":1,"official_embedded":3}`, 1)
+	reportMachine(t, a, "v0.7.10", embedded)
+	w = httptest.NewRecorder()
+	a.listConnectionMetrics(w, r)
+	_ = json.Unmarshal(w.Body.Bytes(), &response)
+	if machine := response.Metrics["7"].Machine; machine == nil || machine.Sources == nil || machine.Sources.OfficialEmbedded != 3 {
+		t.Fatalf("official Embedded count lost: %#v", machine)
+	}
 }
 
 // Verbatim shapes of FLVX go-backend/internal/landingcustom/client.go

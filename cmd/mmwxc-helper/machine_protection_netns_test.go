@@ -319,6 +319,9 @@ func TestMachineProtectionNetnsHelperProcess(t *testing.T) {
 			go echoServers(ctx, port)
 		}
 	}
+	if role == "agent" {
+		runNetnsOfficialAgent(ctx)
+	}
 	if role == "server" {
 		runNetnsProtectionLoop(ctx)
 	}
@@ -392,6 +395,9 @@ func runNetnsProtectionLoop(ctx context.Context) {
 			report.ReadNanos = time.Since(readStart).Nanoseconds()
 			machine := tables.Machine
 			input := machineProtectionInput{System: summarizeTCP(tables.TCP), Machine: &machine, CorePorts: corePorts}
+			if config := os.Getenv("MP_OFFICIAL_CONFIG"); config != "" {
+				input.Official = officialAgentInput(config, false, tables.TCP)
+			}
 			report.Status = manager.reconcile(ctx, &settings, input)
 			report.Status = manager.reconcile(ctx, &settings, input)
 		}
@@ -489,7 +495,14 @@ func raiseNoFile() {
 
 func startNetnsRole(t *testing.T, namespace string, env map[string]string, logPath string) *exec.Cmd {
 	t.Helper()
-	command := exec.Command("ip", "netns", "exec", namespace, os.Args[0], "-test.run", "^TestMachineProtectionNetnsHelperProcess$", "-test.v")
+	return startNetnsRoleAs(t, namespace, os.Args[0], env, logPath)
+}
+
+// startNetnsRoleAs runs the role from binary; a symlink named mmw-agent gives
+// the process the official Agent's comm.
+func startNetnsRoleAs(t *testing.T, namespace, binary string, env map[string]string, logPath string) *exec.Cmd {
+	t.Helper()
+	command := exec.Command("ip", "netns", "exec", namespace, binary, "-test.run", "^TestMachineProtectionNetnsHelperProcess$", "-test.v")
 	command.Env = os.Environ()
 	for key, value := range env {
 		command.Env = append(command.Env, key+"="+value)

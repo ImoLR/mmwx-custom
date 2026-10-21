@@ -199,13 +199,17 @@ type machineProtectionStatus struct {
 
 // machinePortSources says where the controlled ports came from; FLVX is the
 // /run/flvx/business-ports.json state: absent, fresh, stale or malformed.
+// OfficialEmbedded counts the official Agent's own inbound ports (Embedded
+// only, see official_ports.go).
 type machinePortSources struct {
-	Core          int    `json:"core"`
-	FLVXShared    int    `json:"flvx_shared_core"`
-	FLVXFile      string `json:"flvx_file"`
-	FLVXFileTCP   int    `json:"flvx_file_tcp"`
-	FLVXFileUDP   int    `json:"flvx_file_udp"`
-	FLVXUpdatedAt string `json:"flvx_file_updated_at,omitempty"`
+	Core                  int    `json:"core"`
+	FLVXShared            int    `json:"flvx_shared_core"`
+	FLVXFile              string `json:"flvx_file"`
+	FLVXFileTCP           int    `json:"flvx_file_tcp"`
+	FLVXFileUDP           int    `json:"flvx_file_udp"`
+	FLVXUpdatedAt         string `json:"flvx_file_updated_at,omitempty"`
+	OfficialEmbedded      int    `json:"official_embedded"`
+	OfficialEmbeddedError string `json:"official_embedded_error,omitempty"`
 }
 
 type machineTWStatus struct {
@@ -407,6 +411,8 @@ type detailedConnectionSnapshot struct {
 	SampledAt         time.Time                 `json:"sampled_at"`
 	// The whole-machine TCP+UDP rows read in the same pass as System.
 	machine *machineConnectionCounts
+	// The parsed TCP rows of that pass (nil when unusable).
+	tcpSockets []socketEntry
 }
 
 type detailedMetricsPayload struct {

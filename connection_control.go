@@ -214,13 +214,17 @@ type serverMachineConnections struct {
 	OtherTCP    int64 `json:"other_tcp"`
 }
 
+// OfficialEmbedded counts the official Agent's own inbound ports on Embedded
+// servers (Helper v0.7.10+); older Helpers leave it 0.
 type serverMachinePortSources struct {
-	Core          int    `json:"core"`
-	FLVXShared    int    `json:"flvx_shared_core"`
-	FLVXFile      string `json:"flvx_file"`
-	FLVXFileTCP   int    `json:"flvx_file_tcp"`
-	FLVXFileUDP   int    `json:"flvx_file_udp"`
-	FLVXUpdatedAt string `json:"flvx_file_updated_at,omitempty"`
+	Core                  int    `json:"core"`
+	FLVXShared            int    `json:"flvx_shared_core"`
+	FLVXFile              string `json:"flvx_file"`
+	FLVXFileTCP           int    `json:"flvx_file_tcp"`
+	FLVXFileUDP           int    `json:"flvx_file_udp"`
+	FLVXUpdatedAt         string `json:"flvx_file_updated_at,omitempty"`
+	OfficialEmbedded      int    `json:"official_embedded"`
+	OfficialEmbeddedError string `json:"official_embedded_error,omitempty"`
 }
 
 type serverMachineTWBucketsView struct {

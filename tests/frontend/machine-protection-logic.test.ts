@@ -33,6 +33,10 @@ test("breakdown lists every state, UDP and drops, and says whether FLVX ports ar
   assert.equal(machineFLVXText({ core: 2, flvx_shared_core: 0, flvx_file: "absent", flvx_file_tcp: 0, flvx_file_udp: 0 }), "本机没有 FLVX 端口");
   assert.match(machineFLVXText({ core: 2, flvx_shared_core: 0, flvx_file: "stale", flvx_file_tcp: 0, flvx_file_udp: 0 }), /暂未计入/);
   assert.match(machineFLVXText({ core: 2, flvx_shared_core: 0, flvx_file: "malformed", flvx_file_tcp: 0, flvx_file_udp: 0 }), /格式不对/);
+  // Embedded servers (Helper v0.7.10+): the official inbound ports are added in front; nothing else changes.
+  assert.equal(machineFLVXText({ core: 0, flvx_shared_core: 0, flvx_file: "absent", flvx_file_tcp: 0, flvx_file_udp: 0, official_embedded: 3 }), "已含官方 Embedded 端口 3 个；本机没有 FLVX 端口");
+  assert.equal(machineFLVXText({ core: 0, flvx_shared_core: 0, flvx_file: "fresh", flvx_file_tcp: 3, flvx_file_udp: 1, official_embedded: 2 }), "已含官方 Embedded 端口 2 个；已含 FLVX 业务端口（TCP 3 / UDP 1）");
+  assert.equal(machineFLVXText({ core: 2, flvx_shared_core: 0, flvx_file: "absent", flvx_file_tcp: 0, flvx_file_udp: 0, official_embedded: 0 }), "本机没有 FLVX 端口");
   assert.match(machineStateText({ ...summary, blocking: true }), /降到 950 以下恢复/);
   assert.match(machineStateText({ ...summary, warming_up: true }), /即将保护/);
   assert.match(machineStateText({ ...summary, idle_reason: "no_business_ports" }), /没有可保护的业务端口/);

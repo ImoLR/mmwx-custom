@@ -40,7 +40,7 @@ export function machineBreakdownRows(connections?: MachineConnections, dropped =
   ];
 }
 
-/** Whether FLVX ports are inside the guard, in plain words. */
+/** Whether FLVX ports (and, on Embedded servers, the official inbound ports) are inside the guard, in plain words. */
 export function machineFLVXText(sources?: MachinePortSources) {
   if (!sources) return "FLVX 端口：未知";
   const parts: string[] = [];
@@ -48,7 +48,8 @@ export function machineFLVXText(sources?: MachinePortSources) {
   else if (sources.flvx_file === "stale") parts.push("FLVX 端口文件超过 10 分钟未更新，暂未计入");
   else if (sources.flvx_file === "malformed") parts.push("FLVX 端口文件格式不对，未计入");
   if (sources.flvx_shared_core > 0) parts.push(`已含 FLVX 共享 Core 端口 ${sources.flvx_shared_core} 个`);
-  return parts.length ? parts.join("；") : "本机没有 FLVX 端口";
+  const flvx = parts.length ? parts.join("；") : "本机没有 FLVX 端口";
+  return sources.official_embedded ? `已含官方 Embedded 端口 ${sources.official_embedded} 个；${flvx}` : flvx;
 }
 
 export function machineStateText(machine?: Pick<MachineSummary, "enabled" | "blocking" | "warming_up" | "release_below" | "idle_reason" | "last_error"> & { max_total?: number | null; connections?: MachineConnections }) {

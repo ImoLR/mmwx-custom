@@ -440,6 +440,7 @@ func collectDetailedSnapshot(ctx context.Context, core *coreClient, tracker *onl
 	sockets := tables.TCP
 	if tables.TCPErr == nil {
 		snapshot.System = summarizeTCP(sockets)
+		snapshot.tcpSockets = sockets
 	}
 	if tables.MachineErr == nil {
 		machine := tables.Machine
@@ -458,7 +459,8 @@ func collectDetailedSnapshot(ctx context.Context, core *coreClient, tracker *onl
 }
 
 func (executor *commandExecutor) machineInput(snapshot detailedConnectionSnapshot) machineProtectionInput {
-	return machineProtectionInput{System: snapshot.System, Machine: snapshot.machine, CorePorts: machineControlledPorts(snapshot), FLVXShared: executor.flvx.businessPorts()}
+	return machineProtectionInput{System: snapshot.System, Machine: snapshot.machine, CorePorts: machineControlledPorts(snapshot), FLVXShared: executor.flvx.businessPorts(),
+		Official: officialAgentInput(officialAgentConfigPath, executor.state.ExternalOwnership.Enabled, snapshot.tcpSockets)}
 }
 
 func coreSnapshotFromDetailed(snapshot detailedConnectionSnapshot) coreSnapshotResponse {

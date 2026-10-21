@@ -388,6 +388,7 @@ type machineProtectionInput struct {
 	Machine    *machineConnectionCounts
 	CorePorts  []uint32
 	FLVXShared machinePorts
+	Official   officialAgentView
 }
 
 type machineProtectionManager struct {
@@ -396,6 +397,7 @@ type machineProtectionManager struct {
 	sysctl     machineSysctl
 	now        func() time.Time
 	flvxFile   flvxBusinessPortsReader
+	official   officialPortsScanner
 	statusPath string
 	// The saved TIME_WAIT original, loaded from and persisted to Helper state.
 	tw     *machineTWSaved
@@ -416,7 +418,7 @@ func newMachineProtectionManager() *machineProtectionManager {
 	_, err := exec.LookPath("nft")
 	return &machineProtectionManager{
 		supported: err == nil, nft: defaultMachineNftOps(), sysctl: fileMachineSysctl(tcpMaxTWBucketsPath), now: time.Now,
-		flvxFile: flvxBusinessPortsReader{path: flvxBusinessPortsPath}, statusPath: machineProtectionStatusPath, needCleanup: true,
+		flvxFile: flvxBusinessPortsReader{path: flvxBusinessPortsPath}, official: newOfficialPortsScanner(), statusPath: machineProtectionStatusPath, needCleanup: true,
 	}
 }
 
@@ -424,10 +426,12 @@ func (manager *machineProtectionManager) ports(input machineProtectionInput, now
 	core := normalizeMachinePorts(input.CorePorts)
 	shared := input.FLVXShared.normalized()
 	file, state, updated := manager.flvxFile.read(now)
-	sources := &machinePortSources{Core: len(core), FLVXShared: len(normalizeMachinePorts(append(append([]uint32(nil), shared.TCP...), shared.UDP...))), FLVXFile: state, FLVXFileTCP: len(file.TCP), FLVXFileUDP: len(file.UDP), FLVXUpdatedAt: updated}
+	official, officialErr := manager.official.current(input.Official, now)
+	sources := &machinePortSources{Core: len(core), FLVXShared: len(normalizeMachinePorts(append(append([]uint32(nil), shared.TCP...), shared.UDP...))), FLVXFile: state, FLVXFileTCP: len(file.TCP), FLVXFileUDP: len(file.UDP), FLVXUpdatedAt: updated,
+		OfficialEmbedded: len(normalizeMachinePorts(append(append([]uint32(nil), official.TCP...), official.UDP...))), OfficialEmbeddedError: officialErr}
 	merged := machinePorts{
-		TCP: append(append(append([]uint32(nil), core...), shared.TCP...), file.TCP...),
-		UDP: append(append(append([]uint32(nil), core...), shared.UDP...), file.UDP...),
+		TCP: append(append(append(append([]uint32(nil), core...), shared.TCP...), file.TCP...), official.TCP...),
+		UDP: append(append(append(append([]uint32(nil), core...), shared.UDP...), file.UDP...), official.UDP...),
 	}
 	return merged.normalized(), sources
 }

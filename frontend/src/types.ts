@@ -246,6 +246,8 @@ export type MachinePortSources = {
   flvx_file_tcp: number;
   flvx_file_udp: number;
   flvx_file_updated_at?: string;
+  official_embedded?: number;
+  official_embedded_error?: string;
 };
 
 export type MachineSummary = {
