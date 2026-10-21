@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Copy, KeyRound, Plus, RefreshCw, Route, Server, Users } from "lucide-react";
+import { AlertTriangle, Copy, KeyRound, Layers, Plus, RefreshCw, Route, Server, Users } from "lucide-react";
 import { CompactSegments, CompactSheet } from "./compact-ui";
 import { dispatchCustomAgentAction, fetchCustomReleaseInfo, requestFLVXAdmin } from "./api";
-import { flvxHelperIssue, flvxHelperUpgradable, flvxStateText, type FLVXHelper } from "./flvx-share-logic";
+import { flvxExtraProtocols, flvxHelperIssue, flvxHelperUpgradable, flvxProtocolName, flvxStateText, type FLVXHelper, type FLVXProtocolCaps } from "./flvx-share-logic";
 import "./flvx-share.css";
 
 type ShareConfig = { port_min: number; port_max: number; traffic_limit_bytes: number; reset_day: number; max_connections: number; share_until: number | null; memory_mb: number; cpu_percent: number };
@@ -11,8 +11,8 @@ type NodeStatus = { id: string; state: "active" | "error" | "removed" | "pending
 type ShareNode = { id: string; owner: { id: string; name: string }; name: string; protocol: string; port: number; expires_at: number | null; max_connections: number; status: NodeStatus };
 type EgressReport = { state: "none" | "applied" | "error"; error: string; applied_revision: number; warnings: string[] };
 type EgressPlan = { active: boolean; outbounds: number; outbound_types: string[]; rules: number; covered_nodes: number };
-type SharedServer = { server_id: number; name: string; hosts: { ipv4: string; ipv6: string; domain: string }; status: ShareStatus; config: ShareConfig; traffic_used_bytes: number; traffic_limit_bytes: number; connections: number; max_connections: number; core: { state: string; version: string }; dual_install: boolean; native_landing?: boolean; nodes: ShareNode[]; report: { collected_at: number; applied_revision: number; egress?: EgressReport }; allow_egress?: boolean; egress?: { versions: number[]; allowed: boolean; geoip: boolean; geosite: boolean }; egress_plan?: EgressPlan; helper?: FLVXHelper };
-type AvailableServer = { server_id: number; name: string; hosts: SharedServer["hosts"]; official_ports: number[]; ports_known: boolean; dual_install: boolean; native_landing: boolean; detection_error: boolean; helper?: FLVXHelper };
+type SharedServer = { server_id: number; name: string; hosts: { ipv4: string; ipv6: string; domain: string }; status: ShareStatus; config: ShareConfig; traffic_used_bytes: number; traffic_limit_bytes: number; connections: number; max_connections: number; core: { state: string; version: string }; dual_install: boolean; native_landing?: boolean; nodes: ShareNode[]; report: { collected_at: number; applied_revision: number; egress?: EgressReport }; allow_egress?: boolean; egress?: { versions: number[]; allowed: boolean; geoip: boolean; geosite: boolean }; egress_plan?: EgressPlan; helper?: FLVXHelper; protocol_caps?: FLVXProtocolCaps; server_mode?: "embedded" | "external"; busy_ports?: number[]; core_pin?: { pinned: string; latest: string; upgradable: boolean } };
+type AvailableServer = { server_id: number; name: string; hosts: SharedServer["hosts"]; official_ports: number[]; ports_known: boolean; dual_install: boolean; native_landing: boolean; detection_error: boolean; helper?: FLVXHelper; server_mode?: "embedded" | "external" };
 export type FLVXData = { shares: SharedServer[]; servers: AvailableServer[]; integration: { token_configured: boolean; last_api_at: number } };
 
 const GB = 2 ** 30;
@@ -36,6 +36,32 @@ function EgressLine({ share: s }: { share: SharedServer }) {
   }
   const notes = [report?.state === "error" && report.error, ...(plan?.active && s.allow_egress !== false ? report?.warnings || [] : [])].filter(Boolean) as string[];
   return <div className="flvx-egress"><Route /><div><span>出站与路由</span><strong>{text}</strong>{notes.map((note) => <small key={note}>{note}</small>)}</div>{status}</div>;
+}
+
+// 扩展协议 (AnyTLS / Snell / Mieru in the FLVX Core), the server mode, busy
+// ports and the FLVX Core build the share is pinned to. A release never
+// replaces that build by itself; 「升级 FLVX Core」 does.
+function ProtocolsLine({ share: s, token, onError, onReload }: { share: SharedServer; token: string; onError: (text: string) => void; onReload: () => Promise<void> }) {
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const extra = flvxExtraProtocols(s.protocol_caps, s.helper, s.core.state), pin = s.core_pin;
+  const notes = [
+    s.server_mode ? `${s.server_mode === "embedded" ? "内置" : "外置"} Xray 模式 · 共享不切换模式，也不动官方节点` : "",
+    s.busy_ports?.length ? `端口段内已被占用 ${s.busy_ports.length} 个，FLVX 建节点时自动避开` : "",
+    pin?.pinned ? `FLVX Core ${pin.pinned}${pin.upgradable ? ` · 最新 ${pin.latest}` : ""}` : "",
+  ].filter(Boolean);
+  const upgrade = async () => {
+    setBusy(true); onError("");
+    try { await requestFLVXAdmin(token, `/shares/${s.server_id}/core`, "POST"); setConfirm(false); await onReload(); }
+    catch (reason) { onError(message(reason)); } finally { setBusy(false); }
+  };
+  return <>
+    <div className="flvx-egress"><Layers /><div><span>扩展协议</span><strong>{extra.text}</strong>{notes.map((note) => <small className="flvx-protocol-note" key={note}>{note}</small>)}</div>{pin?.upgradable ? <button type="button" disabled={busy} onClick={() => setConfirm(true)}>升级 FLVX Core</button> : extra.ready ? <span className="flvx-status online">已开放</span> : null}</div>
+    {confirm && pin && <CompactSheet title="升级 FLVX Core" subtitle={s.name} className="flvx-dialog" onClose={() => !busy && setConfirm(false)} closeDisabled={busy}>
+      <p>这台服务器的 FLVX Core 会从 {pin.pinned} 换成 {pin.latest} 并重启，FLVX 节点会断开几秒后自动恢复。官方节点和这台机器的 Xray 模式不受影响。</p>
+      <div className="flvx-dialog-actions"><button type="button" disabled={busy} onClick={() => setConfirm(false)}>暂不升级</button><button type="button" className="flvx-primary" disabled={busy} onClick={() => void upgrade()}>{busy ? "正在提交…" : "确认升级"}</button></div>
+    </CompactSheet>}
+  </>;
 }
 
 export function useFLVXSharedServers(token: string, enabled: boolean) {
@@ -107,6 +133,7 @@ function ShareCard({ share: s, token, busy, onError, onReload, onEdit, onStatus,
     <div className="flvx-metrics"><div><span>流量</span><strong>{gb(s.traffic_used_bytes)} <small>/ {s.traffic_limit_bytes ? `${gb(s.traffic_limit_bytes)} GB` : "不限 GB"}</small></strong><div className={`flvx-meter ${exhausted ? "exhausted" : ""}`} role="progressbar" aria-label={`${s.name} 共享流量`} aria-valuenow={s.traffic_limit_bytes ? Math.min(100, s.traffic_used_bytes / s.traffic_limit_bytes * 100) : 0} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${s.traffic_limit_bytes ? Math.min(100, s.traffic_used_bytes / s.traffic_limit_bytes * 100) : 0}%` }} /></div><small>每月 {s.config.reset_day} 日重置 · 台湾时间</small></div><div><span>连接</span><strong>{s.connections.toLocaleString()} <small>/ {limit(s.max_connections)}</small></strong><small>{flvxStateText(s.core.state)}{s.core.version && ` · ${s.core.version}`}</small></div></div>
     <div className="flvx-card-facts"><span>端口 {s.config.port_min}–{s.config.port_max} <b>已用 {usedPorts}</b></span><span>{owners.length} 位用户 · {s.nodes.length} 个节点</span><span>共享至 {date(s.config.share_until)}</span></div>
     {s.status !== "revoked" && <EgressLine share={s} />}
+    {s.status !== "revoked" && <ProtocolsLine share={s} token={token} onError={onError} onReload={onReload} />}
     {pending && <p className="flvx-inline-warning">已提交，等待 Helper 确认停用节点。</p>}
     <div className="flvx-card-actions">{helperIssue && flvxHelperUpgradable(s.helper) && <HelperUpgradeButton token={token} serverID={s.server_id} helper={s.helper!} onError={onError} onDone={onReload} />}<button type="button" disabled={busy || s.status === "revoked"} onClick={onEdit}>设置</button>{s.status !== "revoked" && <><button type="button" disabled={busy || Boolean(s.native_landing)} onClick={() => onStatus(s.status === "paused" ? "active" : "paused")}>{s.status === "paused" ? "恢复" : "暂停共享"}</button><button type="button" className="flvx-text-danger" disabled={busy} onClick={onCancel}>取消共享</button></>}</div>
     {owners.length ? <details className="flvx-nodes"><summary>FLVX 用户与节点 <span>{s.nodes.length}</span></summary>{owners.map((id) => { const nodes = s.nodes.filter((n) => String(n.owner.id) === id); return <details className="flvx-user-group" key={id} open><summary><span className="flvx-avatar">{nodes[0].owner.name.slice(0, 1)}</span>{nodes[0].owner.name}<small>{nodes.length} 个节点</small></summary><NodeTable nodes={nodes} helper={s.helper} /></details>; })}</details> : <p className="flvx-no-nodes">等待 FLVX 用户创建节点</p>}
@@ -114,7 +141,7 @@ function ShareCard({ share: s, token, busy, onError, onReload, onEdit, onStatus,
 }
 
 function NodeTable({ nodes, helper }: { nodes: ShareNode[]; helper?: FLVXHelper }) {
-  return <table className="flvx-node-table"><thead><tr>{["名称", "协议", "端口", "已用 / 上限 GB", "连接", "状态", "到期"].map((title) => <th key={title}>{title}</th>)}</tr></thead><tbody>{nodes.map((node) => <tr key={node.id}><td className="flvx-node-name">{node.name}</td><td data-label="协议">{node.protocol === "ss2022" ? "SS2022" : "VLESS Reality Vision"}</td><td data-label="端口">{node.port}</td><td data-label="已用 / 上限 GB" title="节点流量上限由 FLVX 管理，v1 接口未提供">{gb(node.status.up_bytes + node.status.down_bytes)} / <span className="flvx-muted">未提供</span></td><td data-label="连接">{node.status.connections} / {limit(node.max_connections)}</td><td data-label="状态" title={node.status.error}><span className={`flvx-status ${node.status.state === "active" ? "online" : ""}`}>{flvxStateText(node.status.state, helper)}</span>{node.status.error && <small className="flvx-node-error">{node.status.error}</small>}</td><td data-label="到期">{date(node.expires_at)}</td></tr>)}</tbody></table>;
+  return <table className="flvx-node-table"><thead><tr>{["名称", "协议", "端口", "已用 / 上限 GB", "连接", "状态", "到期"].map((title) => <th key={title}>{title}</th>)}</tr></thead><tbody>{nodes.map((node) => <tr key={node.id}><td className="flvx-node-name">{node.name}</td><td data-label="协议">{flvxProtocolName(node.protocol)}</td><td data-label="端口">{node.port}</td><td data-label="已用 / 上限 GB" title="节点流量上限由 FLVX 管理，v1 接口未提供">{gb(node.status.up_bytes + node.status.down_bytes)} / <span className="flvx-muted">未提供</span></td><td data-label="连接">{node.status.connections} / {limit(node.max_connections)}</td><td data-label="状态" title={node.status.error}><span className={`flvx-status ${node.status.state === "active" ? "online" : ""}`}>{flvxStateText(node.status.state, helper)}</span>{node.status.error && <small className="flvx-node-error">{node.status.error}</small>}</td><td data-label="到期">{date(node.expires_at)}</td></tr>)}</tbody></table>;
 }
 
 function availableRange(ports: number[]): [number, number] {
@@ -145,6 +172,7 @@ function ShareEditor({ token, share, servers, shares, onRefresh, onClose, onSave
       <label className="flvx-field">服务器<select value={serverID} disabled={Boolean(share)} required onChange={(e) => select(Number(e.target.value))}><option value="0">选择服务器</option>{servers.map((s) => <option key={s.server_id} value={s.server_id} disabled={!share && shares.some((v) => v.server_id === s.server_id)}>{s.name}{s.native_landing ? " · 已启用 FLVX 落地，禁止共享" : flvxHelperIssue(s.helper) ? " · Helper 需升级" : s.dual_install ? " · 同时装有 FLVX" : ""}{!share && shares.some((v) => v.server_id === s.server_id) ? " · 已有共享记录" : ""}</option>)}</select></label>
       {server?.native_landing ? <p className="flvx-warning"><AlertTriangle />FLVX 已在这台服务器启用原生落地，不能共享。</p> : server?.dual_install ? <p className="flvx-warning"><AlertTriangle />这台服务器也装了 FLVX 节点程序。尚未启用原生落地，可以共享。</p> : null}
       {server && (server.detection_error || !server.ports_known) && <p className="flvx-warning">暂时无法核对地址或官方入站端口，请稍后重试。</p>}
+      {server?.server_mode === "embedded" && <p className="flvx-hint">这台是内置 Xray 模式，也可以共享：FLVX 节点跑在另起的 FLVX Core 里，不切换模式，也不动官方节点。</p>}
       {server && helperIssue && <div className="flvx-warning flvx-helper-warning" role="status"><AlertTriangle /><span>{helperIssue}，{share ? "FLVX 节点不会生效。" : "升级后才能共享。"}</span>{flvxHelperUpgradable(server.helper) ? <HelperUpgradeButton token={token} serverID={server.server_id} helper={server.helper!} onError={setError} onDone={onRefresh} /> : <span>请先在服务管理中安装或首次升级 Helper。</span>}</div>}
       <div className="flvx-form-row"><label className="flvx-field">端口起始<input type="number" min={1024} max={65535} required value={config.port_min} onChange={(e) => setNumber("port_min", e.target.value)} /></label><label className="flvx-field">端口结束<input type="number" min={config.port_min} max={65535} required value={config.port_max} onChange={(e) => setNumber("port_max", e.target.value)} /></label></div>
       <p className="flvx-hint">选择服务器时自动避开官方入站端口。{collisions.length ? `该范围内有 ${collisions.length} 个官方端口，FLVX 不可使用。` : "保存节点时还会再次核对端口占用。"}</p>

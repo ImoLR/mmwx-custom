@@ -45,6 +45,73 @@ type flvxShare struct {
 	// Share policy 「允许自定义出站与路由」, default on. Custom-only: it is
 	// enforced by rejecting/withholding plans and never reaches the Helper.
 	EgressDenied bool `json:"egress_denied,omitempty"`
+	// The FLVX Core build this share's Helper installs; see flvxPinnedCore.
+	Core *flvxPinnedCore `json:"core_artifact,omitempty"`
+}
+
+// flvxPinnedCore is pinned at the share's first Helper payload and moves to a
+// newer release only on the admin's 「升级 FLVX Core」. Publishing a release
+// therefore never replaces (and restarts) the FLVX Core of an existing share.
+type flvxPinnedCore struct {
+	Version   string                     `json:"version"`
+	Artifacts map[string]releaseArtifact `json:"artifacts"`
+}
+
+func flvxReleaseCore(info cachedReleaseInfo) *flvxPinnedCore {
+	if info.CoreVersion == "" || len(info.CoreArtifacts) == 0 {
+		return nil
+	}
+	artifacts := map[string]releaseArtifact{}
+	for arch, artifact := range info.CoreArtifacts {
+		artifacts[arch] = artifact
+	}
+	return &flvxPinnedCore{Version: info.CoreVersion, Artifacts: artifacts}
+}
+
+// flvxShareProtocols is what the share may carry of landing-protocols-v1: the
+// last Helper report's capability, while that Helper renders the protocols.
+func flvxShareProtocols(s flvxShare, helper flvxHelper) map[string]flvx.ProtocolCap {
+	if !helper.Ready || !helper.Protocols {
+		return nil
+	}
+	return flvx.SanitizeProtocols(s.Status.Protocols)
+}
+
+// flvxOwnPorts are the ports of the share's current nodes; they are FLVX's
+// own and never busy.
+func flvxOwnPorts(s flvxShare) map[int]bool {
+	own := map[int]bool{}
+	for _, n := range s.Desired.Nodes {
+		own[n.Port] = true
+	}
+	return own
+}
+
+// flvxBusyListening is the Helper-reported listening set without the share's
+// own node ports, for validating a new desired state; nil when unknown.
+func flvxBusyListening(s flvxShare) *flvx.ListeningPorts {
+	l := s.Status.Listening
+	if l == nil {
+		return nil
+	}
+	own := flvxOwnPorts(s)
+	return &flvx.ListeningPorts{TCP: flvx.BusyPorts(1, 65535, own, l.TCP), UDP: flvx.BusyPorts(1, 65535, own, l.UDP)}
+}
+
+// flvxBusyPorts is the share list's busy_ports: official inbound ports and
+// whatever else listens on the machine, inside the share range.
+func flvxBusyPorts(s flvxShare, server flvxServer) []int {
+	lists := [][]int{}
+	if server.PortsKnown {
+		lists = append(lists, server.OfficialPorts)
+	}
+	if l := s.Status.Listening; l != nil {
+		lists = append(lists, l.TCP, l.UDP)
+	}
+	if len(lists) == 0 {
+		return nil
+	}
+	return flvx.BusyPorts(s.Config.PortMin, s.Config.PortMax, flvxOwnPorts(s), lists...)
 }
 
 type flvxLedger struct {
@@ -135,6 +202,8 @@ type flvxServer struct {
 	NativeLanding  bool       `json:"native_landing"`
 	DetectionError bool       `json:"detection_error"`
 	Helper         flvxHelper `json:"helper"`
+	// Official remote_servers.xray_mode when embedded / external (information only).
+	Mode string `json:"server_mode,omitempty"`
 }
 
 // flvxHelper is the server's last Helper report as FLVX sharing sees it. Only
@@ -146,6 +215,8 @@ type flvxHelper struct {
 	Architecture string `json:"architecture"`
 	Ready        bool   `json:"flvx_ready"`
 	Upgrading    bool   `json:"upgrading"`
+	// Helper renders landing-protocols-v1 nodes ("flvx.protocols.v1").
+	Protocols bool `json:"flvx_protocols"`
 }
 
 func (a *app) flvxHelpers() map[int64]flvxHelper {
@@ -162,7 +233,7 @@ func (a *app) flvxHelpers() map[int64]flvxHelper {
 			continue
 		}
 		installed := status.Helper.Installed && s.data.Servers[id].HelperTokenHash != ""
-		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id)}
+		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1")}
 	}
 	return result
 }
@@ -250,6 +321,9 @@ func flvxServers(ctx context.Context, q flvxQuery) ([]flvxServer, error) {
 			return nil, err
 		}
 		s := flvxServer{ID: deletionID(data["id"]), Name: deletionText(data["name"]), Hosts: flvxLinkHosts(data)}
+		if mode := deletionText(data["xray_mode"]); mode == "embedded" || mode == "external" {
+			s.Mode = mode
+		}
 		for h := range deletionServerHosts(data) {
 			s.Addresses = append(s.Addresses, h)
 		}
@@ -369,9 +443,10 @@ func flvxReset(s *flvxShare, now time.Time) {
 }
 
 func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r flvx.Report, now time.Time) error {
-	if r.Generation == "" || len(r.Generation) > 64 || r.Sequence < 1 || r.AppliedRevision > s.Desired.Revision || !r.Egress.Valid() || r.Egress != nil && r.Egress.AppliedRevision > s.Desired.Revision {
+	if r.Generation == "" || len(r.Generation) > 64 || r.Sequence < 1 || r.AppliedRevision > s.Desired.Revision || !r.Egress.Valid() || r.Egress != nil && r.Egress.AppliedRevision > s.Desired.Revision || !r.Listening.Valid() {
 		return errors.New("invalid FLVX report")
 	}
+	r.Protocols = flvx.SanitizeProtocols(r.Protocols)
 	if r.Generation == s.Generation && r.Sequence <= s.Sequence {
 		return nil
 	}

@@ -1,6 +1,9 @@
 package flvx
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 // BaseConfig is read only when the Core starts. RoutingService enables hot
 // rule replacement for landing egress plans; IPOnDemand resolves a domain at
@@ -36,6 +39,31 @@ func Inbound(n Node) map[string]any {
 		result["protocol"] = "vless"
 		result["settings"] = map[string]any{"decryption": "none", "clients": []any{map[string]any{"id": v.UUID, "email": n.Tag(), "flow": "xtls-rprx-vision"}}}
 		result["streamSettings"] = map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"dest": v.Reality.Dest, "serverNames": v.Reality.ServerNames, "privateKey": v.Reality.PrivateKey, "shortIds": v.Reality.ShortIDs}}
+	} else if n.Protocol == ProtocolAnyTLS && n.AnyTLS != nil {
+		// landing-protocols-v1 §6. Padding "default" is the Core's built-in
+		// scheme (no paddingScheme); the certificate and key go inline, so no
+		// secret is written to disk. server_name is not rendered.
+		a := n.AnyTLS
+		result["protocol"] = "anytls"
+		result["settings"] = map[string]any{"users": []any{map[string]any{"password": a.Password, "email": n.Tag()}}}
+		result["streamSettings"] = map[string]any{"network": "tcp", "security": "tls", "tlsSettings": map[string]any{"minVersion": "1.2", "alpn": []string{"h2", "http/1.1"},
+			"certificates": []any{map[string]any{"certificate": pemLines(a.TLS.CertificatePEM), "key": pemLines(a.TLS.KeyPEM)}}}}
+	} else if n.Protocol == ProtocolSnell && n.Snell != nil {
+		user := map[string]any{"psk": n.Snell.PSK, "version": n.Snell.Version, "email": n.Tag()}
+		if n.Snell.Obfs == "http" || n.Snell.Obfs == "tls" {
+			user["obfsMode"], user["obfsHost"] = n.Snell.Obfs, n.Snell.ObfsHost
+		}
+		result["protocol"] = "snell"
+		result["settings"] = map[string]any{"users": []any{user}}
+	} else if n.Protocol == ProtocolMieru && n.Mieru != nil {
+		// The fork's Mieru inbound listens on TCP and UDP of the port; clients
+		// choose the underlay, so there is no transport key.
+		result["protocol"] = "mieru"
+		result["settings"] = map[string]any{"users": []any{map[string]any{"username": n.Mieru.Username, "password": n.Mieru.Password, "email": n.Tag()}}}
 	}
 	return result
+}
+
+func pemLines(data string) []string {
+	return strings.Split(strings.TrimSpace(strings.ReplaceAll(data, "\r\n", "\n")), "\n")
 }

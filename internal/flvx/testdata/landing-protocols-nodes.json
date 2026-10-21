@@ -1,0 +1,87 @@
+{
+ "nodes": [
+  {
+   "id": "41",
+   "owner": {
+    "id": "26",
+    "name": "leekao"
+   },
+   "name": "我的 AnyTLS",
+   "protocol": "anytls",
+   "port": 30003,
+   "enabled": true,
+   "max_connections": 6,
+   "max_online_ips": 2,
+   "expires_at": null,
+   "anytls": {
+    "password": "Xh3k9PqR2mWn7Lz4Vb8Tc1Yd",
+    "padding": "default",
+    "tls": {
+     "server_name": "dmit.example.com",
+     "certificate_pem": "-----BEGIN CERTIFICATE-----\nMIIBqDCCAU6gAwIBAgIUWTSCrxE+7IV/jv6ltSzfa8ZetIUwCgYIKoZIzj0EAwIw\nGzEZMBcGA1UEAwwQZG1pdC5leGFtcGxlLmNvbTAeFw0yNjEwMjExOTA5NThaFw0z\nNjEwMTgxOTA5NThaMBsxGTAXBgNVBAMMEGRtaXQuZXhhbXBsZS5jb20wWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAAQDzvb5UwO04tVIgPTeQZtb5sHq8ZxGKgy38LPt\nrDJlcbL2nIn+tyMBD7yd2cWGugB6NUYJ8EJZCdlZfAQycmOHo3AwbjAdBgNVHQ4E\nFgQU3L0FvZ0VGt0a5GnJaCll3+RsutQwHwYDVR0jBBgwFoAU3L0FvZ0VGt0a5GnJ\naCll3+RsutQwDwYDVR0TAQH/BAUwAwEB/zAbBgNVHREEFDASghBkbWl0LmV4YW1w\nbGUuY29tMAoGCCqGSM49BAMCA0gAMEUCIEXlR29hnVePlqbR7rL2eT/2U+LPLryq\nXGA1RKlUHANDAiEAyHarHET1n4WnfomVAMPDOGAtz/H69rFZ71qZ6Rourkg=\n-----END CERTIFICATE-----\n",
+     "key_pem": "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgVCZFykMD0IOsz8eP\nOxY/WRMknEXR0Z/sGC71a6CqdGWhRANCAAQDzvb5UwO04tVIgPTeQZtb5sHq8ZxG\nKgy38LPtrDJlcbL2nIn+tyMBD7yd2cWGugB6NUYJ8EJZCdlZfAQycmOH\n-----END PRIVATE KEY-----\n"
+    }
+   }
+  },
+  {
+   "id": "42",
+   "owner": {
+    "id": "26",
+    "name": "leekao"
+   },
+   "name": "Snell v4",
+   "protocol": "snell",
+   "port": 30004,
+   "enabled": true,
+   "max_connections": 0,
+   "max_online_ips": 0,
+   "expires_at": null,
+   "snell": {
+    "psk": "Qm7Zp2Xc9Vb4Nn1Lk8Jh5Gf3Dd6Ss0Aa",
+    "version": 4,
+    "obfs": "none",
+    "obfs_host": ""
+   }
+  },
+  {
+   "id": "43",
+   "owner": {
+    "id": "27",
+    "name": "wings"
+   },
+   "name": "Mieru",
+   "protocol": "mieru",
+   "port": 30005,
+   "enabled": true,
+   "max_connections": 0,
+   "max_online_ips": 0,
+   "expires_at": null,
+   "mieru": {
+    "username": "k3j9m2x7q1",
+    "password": "Zp4Kx8Wq2Lm6Nb9Vc3Rt7Yh1"
+   }
+  },
+  {
+   "id": "44",
+   "owner": {
+    "id": "27",
+    "name": "wings"
+   },
+   "name": "Snell v5 tls",
+   "protocol": "snell",
+   "port": 30006,
+   "enabled": true,
+   "max_connections": 0,
+   "max_online_ips": 0,
+   "expires_at": null,
+   "snell": {
+    "psk": "Hh2Jj4Kk6Ll8Mm0Nn2Pp4Qq6Rr8Ss0Tt",
+    "version": 5,
+    "obfs": "tls",
+    "obfs_host": "www.bing.com"
+   }
+  }
+ ],
+ "ec_private_key_pem": "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIFQmRcpDA9CDrM/HjzsWP1kTJJxF0dGf7Bgu9WugqnRloAoGCCqGSM49\nAwEHoUQDQgAEA872+VMDtOLVSID03kGbW+bB6vGcRioMt/Cz7awyZXGy9pyJ/rcj\nAQ+8ndnFhroAejVGCfBCWQnZWXwEMnJjhw==\n-----END EC PRIVATE KEY-----\n",
+ "other_key_pem": "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIGq5uM4rZ3btuw0XLRviTGD9DXMJvrATyVHt2VvnjcgDoAoGCCqGSM49\nAwEHoUQDQgAEK2ZQSw++68xKBsjT82c39bOLnD3MvCrhV90/FrzvFrqpNn1Samv5\n4pla6ZKaJWqzwlmVie94mfop97cfYcwh1A==\n-----END EC PRIVATE KEY-----\n"
+}

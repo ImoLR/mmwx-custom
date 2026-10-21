@@ -116,7 +116,7 @@ func TestFLVXOnlineIPPassthroughPostgres(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r.Sequence++
 			tc.change(&r)
-			if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, &r); err != nil {
+			if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, false, &r); err != nil {
 				t.Fatal(err)
 			}
 			w := flvxTestRequest(a, "GET", "/api/custom/flvx/v1/shares/7/status", token.Token, nil)
@@ -155,7 +155,10 @@ func TestFLVXOnlineIPCacheDoesNotWaitForDatabase(t *testing.T) {
 	defer tx.Rollback()
 	before := a.flvxDB().Stats().WaitCount
 	reportDone := make(chan error, 1)
-	go func() { _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, nil); reportDone <- err }()
+	go func() {
+		_, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, false, nil)
+		reportDone <- err
+	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for a.flvxDB().Stats().WaitCount == before && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)

@@ -52,7 +52,13 @@ func ValidateConfig(c Config) error {
 	return nil
 }
 
+// ValidateDesired checks a v1-only desired state: no extra protocol is
+// advertised and busy ports are unknown.
 func ValidateDesired(d Desired, c Config, official []int) []ValidationError {
+	return ValidateDesiredWith(d, c, official, DesiredOptions{})
+}
+
+func ValidateDesiredWith(d Desired, c Config, official []int, o DesiredOptions) []ValidationError {
 	errors := []ValidationError{}
 	add := func(id, field, message string) { errors = append(errors, ValidationError{id, field, message}) }
 	if d.Revision <= 0 || d.Revision > 9007199254740991 {
@@ -64,6 +70,15 @@ func ValidateDesired(d Desired, c Config, official []int) []ValidationError {
 	ids, ports, reserved := map[string]bool{}, map[int]bool{}, map[int]bool{}
 	for _, p := range official {
 		reserved[p] = true
+	}
+	busyTCP, busyUDP := map[int]bool{}, map[int]bool{}
+	if o.Busy != nil {
+		for _, p := range o.Busy.TCP {
+			busyTCP[p] = true
+		}
+		for _, p := range o.Busy.UDP {
+			busyUDP[p] = true
+		}
 	}
 	for _, n := range d.Nodes {
 		if !identifier.MatchString(n.ID) || ids[n.ID] {
@@ -78,6 +93,8 @@ func ValidateDesired(d Desired, c Config, official []int) []ValidationError {
 		}
 		if n.Port < c.PortMin || n.Port > c.PortMax || reserved[n.Port] || ports[n.Port] {
 			add(n.ID, "port", "port is outside share range or collides with an official inbound / FLVX node")
+		} else if busyTCP[n.Port] || UDPProtocol(n.Protocol) && busyUDP[n.Port] {
+			add(n.ID, "port", "port is already in use on the server")
 		}
 		ports[n.Port] = true
 		if n.Enabled == nil {
@@ -94,7 +111,7 @@ func ValidateDesired(d Desired, c Config, official []int) []ValidationError {
 		}
 		switch n.Protocol {
 		case "ss2022":
-			if n.SS2022 == nil || n.VLESS != nil {
+			if n.SS2022 == nil || n.objects() != 1 {
 				add(n.ID, "ss2022", "SS2022 fields are required exclusively")
 				continue
 			}
@@ -108,7 +125,7 @@ func ValidateDesired(d Desired, c Config, official []int) []ValidationError {
 				}
 			}
 		case "vless_reality_vision":
-			if n.VLESS == nil || n.SS2022 != nil {
+			if n.VLESS == nil || n.objects() != 1 {
 				add(n.ID, "vless", "VLESS fields are required exclusively")
 				continue
 			}
@@ -150,6 +167,13 @@ func ValidateDesired(d Desired, c Config, official []int) []ValidationError {
 				}
 				seen[id] = true
 			}
+		case ProtocolAnyTLS, ProtocolSnell, ProtocolMieru:
+			capability, ok := o.Protocols[n.Protocol]
+			if !ok {
+				add(n.ID, "protocol", "protocol is not supported on this share")
+				continue
+			}
+			validateExtra(n, capability, o.Now, func(field, message string) { add(n.ID, field, message) })
 		default:
 			add(n.ID, "protocol", "unsupported protocol")
 		}

@@ -52,6 +52,70 @@ type VLESS struct {
 	Reality Reality `json:"reality"`
 }
 
+// Contract landing-protocols-v1: AnyTLS / Snell / Mieru nodes in the FLVX Core.
+const (
+	ProtocolAnyTLS   = "anytls"
+	ProtocolSnell    = "snell"
+	ProtocolMieru    = "mieru"
+	ProtocolsVersion = 1
+)
+
+// ExtraProtocols lists the landing-protocols-v1 protocols in display order.
+var ExtraProtocols = []string{ProtocolAnyTLS, ProtocolSnell, ProtocolMieru}
+
+func IsExtraProtocol(p string) bool {
+	return p == ProtocolAnyTLS || p == ProtocolSnell || p == ProtocolMieru
+}
+
+// AnyTLS runs over TLS with an FLVX-generated certificate. KeyPEM is a secret
+// handled like Reality private keys: never logged, never echoed.
+type AnyTLS struct {
+	Password string    `json:"password"`
+	Padding  string    `json:"padding"`
+	TLS      AnyTLSTLS `json:"tls"`
+}
+
+type AnyTLSTLS struct {
+	ServerName     string `json:"server_name"`
+	CertificatePEM string `json:"certificate_pem"`
+	KeyPEM         string `json:"key_pem"`
+}
+
+type Snell struct {
+	PSK      string `json:"psk"`
+	Version  int    `json:"version"`
+	Obfs     string `json:"obfs"`
+	ObfsHost string `json:"obfs_host"`
+}
+
+type Mieru struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// ProtocolCap is one advertised extra protocol (contract §2). UDP = its UDP
+// relay works on the share's Core; empty lists mean the contract defaults
+// (Snell versions 4 and 5, obfs none/http/tls; Mieru TCP and UDP).
+type ProtocolCap struct {
+	UDP        bool     `json:"udp"`
+	Versions   []int    `json:"versions,omitempty"`
+	Obfs       []string `json:"obfs,omitempty"`
+	Transports []string `json:"transports,omitempty"`
+}
+
+// ProtocolCaps is the share list's protocol_caps object.
+type ProtocolCaps struct {
+	Versions  []int                  `json:"versions"`
+	Protocols map[string]ProtocolCap `json:"protocols"`
+}
+
+// ListeningPorts are the machine's listening ports inside the share range,
+// excluding the FLVX Core's own inbounds (contract busy_ports).
+type ListeningPorts struct {
+	TCP []int `json:"tcp"`
+	UDP []int `json:"udp"`
+}
+
 type Node struct {
 	ID             string  `json:"id"`
 	Owner          Owner   `json:"owner"`
@@ -64,6 +128,11 @@ type Node struct {
 	ExpiresAt      *int64  `json:"expires_at"`
 	SS2022         *SS2022 `json:"ss2022,omitempty"`
 	VLESS          *VLESS  `json:"vless,omitempty"`
+	// landing-protocols-v1. Omitted when absent, so the signed payload of a
+	// share without these nodes stays byte-identical for older Helpers.
+	AnyTLS *AnyTLS `json:"anytls,omitempty"`
+	Snell  *Snell  `json:"snell,omitempty"`
+	Mieru  *Mieru  `json:"mieru,omitempty"`
 }
 
 func (n Node) Tag() string { return "flvxl-" + n.ID }
@@ -129,6 +198,10 @@ type Status struct {
 	CollectedAt      int64        `json:"collected_at"`
 	// Reported only by Helpers with landing-egress support.
 	Egress *EgressStatus `json:"egress,omitempty"`
+	// landing-protocols-v1, reported only by Helpers that render the extra
+	// protocols, and only for what the running FLVX Core can account for.
+	Protocols map[string]ProtocolCap `json:"flvx_protocols,omitempty"`
+	Listening *ListeningPorts        `json:"listening_ports,omitempty"`
 }
 
 // Report sequence and generation belong only to the authenticated Helper channel.

@@ -41,6 +41,7 @@
 .flvx-egress > div > span { font-size: 13px; color: #7a8495; }
 .flvx-egress strong { font-weight: 600; color: #3d4b60; overflow-wrap: anywhere; }
 .flvx-egress small { font-size: 13px; color: #996c30; line-height: 1.5; overflow-wrap: anywhere; }
+.flvx-egress small.flvx-protocol-note { color: #7a8495; }
 .flvx-status.flvx-status-error { background: #fbeceb; color: #b44e48; }
 .flvx-switch { display: flex; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid var(--border-color, #e2e6ed); border-radius: 10px; padding: 11px 12px; cursor: pointer; }
 .flvx-switch > span { display: grid; gap: 4px; min-width: 0; }
@@ -99,6 +100,7 @@
 [data-theme="dark"] .flvx-server-icon, [data-theme="dark"] .flvx-token, [data-theme="dark"] .flvx-egress { background: #273347; }
 [data-theme="dark"] .flvx-egress strong { color: #dce3ed; }
 [data-theme="dark"] .flvx-egress small { color: #e0b87b; }
+[data-theme="dark"] .flvx-egress small.flvx-protocol-note { color: #9aa6b8; }
 [data-theme="dark"] .flvx-switch input { background: #4a5568; }
 [data-theme="dark"] .flvx-switch input:checked { background: #168061; }
 [data-theme="dark"] .flvx-status.flvx-status-error { background: #43282a; color: #f0a19c; }

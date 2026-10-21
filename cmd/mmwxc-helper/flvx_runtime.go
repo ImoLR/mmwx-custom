@@ -168,10 +168,11 @@ func (m *flvxManager) wanted(ctx context.Context) (map[string]string, map[string
 		return wanted, problems
 	}
 	ports = append(ports, p.OfficialPorts...)
-	validation := flvx.ValidateDesired(p.Desired, p.Config, ports)
+	validation := flvx.ValidateDesiredWith(p.Desired, p.Config, ports, flvx.DesiredOptions{Protocols: flvx.AllProtocols()})
 	for _, e := range validation {
 		problems[e.NodeID] = e.Message
 	}
+	features := m.coreFeatures()
 	for _, n := range p.Desired.Nodes {
 		if !flvx.Active(p.Status, p.Config, m.state.Report.TrafficUsedBytes, n, m.now()) || problems[n.ID] != "" {
 			continue
@@ -181,6 +182,10 @@ func (m *flvxManager) wanted(ctx context.Context) (map[string]string, map[string
 			continue
 		}
 		if reason := m.withheld[n.Tag()]; reason != "" {
+			problems[n.ID] = reason
+			continue
+		}
+		if reason := flvxProtocolProblem(n.Protocol, features); reason != "" {
 			problems[n.ID] = reason
 			continue
 		}
@@ -291,6 +296,8 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	m.state.Report.Protocols = flvxProtocolCaps(m.coreFeatures())
+	m.state.Report.Listening = m.listening()
 	m.state.Report.Nodes = []flvx.NodeStatus{}
 	for _, id := range ids {
 		s := statuses[id]
@@ -440,6 +447,7 @@ func (m *flvxManager) reconcile(ctx context.Context) (result error) {
 	if snapshot, err = m.ensureRouting(ctx, snapshot); err != nil {
 		return err
 	}
+	m.detectFeatures(ctx, flvxEpoch(snapshot))
 	if err = m.collect(ctx, snapshot); err != nil {
 		return err
 	}

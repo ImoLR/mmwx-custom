@@ -10,8 +10,9 @@ import (
 	"github.com/ImoLR/mmwx-custom/internal/flvx"
 )
 
-// egress reports whether this Helper advertises flvx.egress.v1.
-func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, egress bool, report *flvx.Report) (*flvx.Envelope, error) {
+// egress / protocols report whether this Helper advertises flvx.egress.v1 /
+// flvx.protocols.v1.
+func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, egress, protocols bool, report *flvx.Report) (*flvx.Envelope, error) {
 	if a.flvxDB() == nil {
 		return nil, nil
 	}
@@ -33,6 +34,10 @@ func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, 
 			accepted = report.Generation == s.Generation && report.Sequence == s.Sequence && report.CollectedAt == s.Status.CollectedAt
 		}
 		flvxReset(&s, time.Now())
+		if s.Core == nil && a.releaseCache != nil {
+			info, _ := a.releaseCache.snapshot()
+			s.Core = flvxReleaseCore(info)
+		}
 		current, _ := json.Marshal(s)
 		if string(previous) != string(current) {
 			if err = writeFLVXShare(ctx, tx, id, s); err != nil {
@@ -50,15 +55,14 @@ func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, 
 			state = "paused"
 		}
 		artifact := flvx.Artifact{}
-		if a.releaseCache != nil {
-			info, _ := a.releaseCache.snapshot()
-			asset := info.CoreArtifacts[arch]
-			artifact = flvx.Artifact{URL: asset.URL, SHA256: asset.SHA256, Version: info.CoreVersion}
+		if s.Core != nil {
+			asset := s.Core.Artifacts[arch]
+			artifact = flvx.Artifact{URL: asset.URL, SHA256: asset.SHA256, Version: s.Core.Version}
 		}
 		if a.helperState != nil {
 			artifact.GitHubAccelerator = a.helperState.githubAccelerator()
 		}
-		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: s.Config, Desired: flvxHelperEgress(s, egress), OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
+		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: s.Config, Desired: flvxHelperProtocols(flvxHelperEgress(s, egress), protocols), OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
 		envelope.Sign(token)
 		return nil
 	})
@@ -90,5 +94,26 @@ func flvxHelperEgress(s flvxShare, supported bool) flvx.Desired {
 			d.Nodes[i].Enabled = &disabled
 		}
 	}
+	return d
+}
+
+// flvxHelperProtocols withholds landing-protocols-v1 nodes from a Helper that
+// cannot render them (fail closed): it would reject the whole signed payload
+// on the unknown fields. FLVX keeps the nodes and resends them once the
+// share advertises the protocol again.
+func flvxHelperProtocols(d flvx.Desired, supported bool) flvx.Desired {
+	if supported {
+		return d
+	}
+	nodes := make([]flvx.Node, 0, len(d.Nodes))
+	for _, n := range d.Nodes {
+		if !flvx.IsExtraProtocol(n.Protocol) && n.AnyTLS == nil && n.Snell == nil && n.Mieru == nil {
+			nodes = append(nodes, n)
+		}
+	}
+	if len(nodes) == len(d.Nodes) {
+		return d
+	}
+	d.Nodes = nodes
 	return d
 }

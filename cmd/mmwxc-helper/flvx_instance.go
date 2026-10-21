@@ -47,6 +47,8 @@ type flvxLocalState struct {
 	EgressGeoBytes   int64    `json:"egress_geo_bytes,omitempty"`
 	EgressStale      bool     `json:"egress_stale,omitempty"`
 	RoutingRestartAt int64    `json:"routing_restart_at,omitempty"`
+	// landing-protocols-v1: features of the installed FLVX Core build.
+	CoreFeatures *flvxCoreFeatures `json:"core_features,omitempty"`
 }
 
 type flvxRealityPin struct {
@@ -94,6 +96,13 @@ type flvxManager struct {
 	diskFree                  func(string) (int64, error)
 	restartCore               func(context.Context) error
 	memory                    func() (current, available int64, availableOK bool)
+	// landing-protocols-v1; see flvx_protocols.go.
+	featuresEpoch  string
+	readFeatures   func(context.Context) ([]string, error)
+	readListening  func() (tcp, udp []uint32, err error)
+	listeningCache *flvx.ListeningPorts
+	listeningAt    time.Time
+	listeningKey   string
 	// The real transport is the fixed Core CLI's gRPC client; tests inject a fake.
 	apiCall      func(context.Context, string, ...string) ([]byte, error)
 	lookupHost   func(context.Context, string) ([]string, error)
@@ -266,7 +275,8 @@ func (m *flvxManager) publish() {
 }
 
 // appliedPorts are the shared Core's live inbound ports for machine
-// protection: SS2022 listens on TCP and UDP, VLESS Reality on TCP only.
+// protection: SS2022 and Mieru listen on TCP and UDP, VLESS Reality, AnyTLS
+// and Snell on TCP only.
 func (m *flvxManager) appliedPorts() machinePorts {
 	var ports machinePorts
 	for _, n := range m.state.Payload.Desired.Nodes {
@@ -274,7 +284,7 @@ func (m *flvxManager) appliedPorts() machinePorts {
 			continue
 		}
 		ports.TCP = append(ports.TCP, uint32(n.Port))
-		if n.Protocol == "ss2022" {
+		if flvx.UDPProtocol(n.Protocol) {
 			ports.UDP = append(ports.UDP, uint32(n.Port))
 		}
 	}
@@ -418,7 +428,9 @@ func (m *flvxManager) accept(e flvx.Envelope) error {
 		return err
 	}
 	if p.Desired.Revision > 0 {
-		if len(flvx.ValidateDesired(p.Desired, p.Config, p.OfficialPorts)) > 0 && p.Status == "active" {
+		// Extra protocols are checked structurally here; whether the running
+		// Core may serve them is decided per node when rendering.
+		if len(flvx.ValidateDesiredWith(p.Desired, p.Config, p.OfficialPorts, flvx.DesiredOptions{Protocols: flvx.AllProtocols()})) > 0 && p.Status == "active" {
 			return errors.New("invalid FLVX structured desired state")
 		}
 	}

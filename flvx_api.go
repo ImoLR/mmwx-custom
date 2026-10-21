@@ -268,6 +268,7 @@ func flvxEgressSummary(s flvxShare) map[string]any {
 }
 
 func (a *app) putFLVXDesired(ctx context.Context, id int64, d flvx.Desired) error {
+	helper := a.flvxHelpers()[id]
 	return flvxTransaction(ctx, a.flvxDB(), func(tx *sql.Tx) error {
 		s, err := readFLVXShare(ctx, tx, id, true)
 		if err != nil {
@@ -280,7 +281,8 @@ func (a *app) putFLVXDesired(ctx context.Context, id int64, d flvx.Desired) erro
 		if err != nil {
 			return err
 		}
-		problems := append(flvx.ValidateDesired(d, s.Config, server.OfficialPorts), flvxEgressProblems(s, d)...)
+		options := flvx.DesiredOptions{Protocols: flvxShareProtocols(s, helper), Busy: flvxBusyListening(s), Now: time.Now()}
+		problems := append(flvx.ValidateDesiredWith(d, s.Config, server.OfficialPorts, options), flvxEgressProblems(s, d)...)
 		if len(problems) > 0 {
 			return flvxValidationErrors(problems)
 		}
@@ -371,6 +373,15 @@ func (a *app) flvxAdminHandler(w http.ResponseWriter, r *http.Request) {
 			_, err = a.flvxDB().ExecContext(r.Context(), `UPDATE mmwxc_flvx_integration SET token_hash=$1,last_api_at=0 WHERE id=1`, hash)
 		}
 		result = map[string]string{"token": token}
+	case strings.HasPrefix(path, "/shares/") && strings.HasSuffix(path, "/core") && r.Method == http.MethodPost:
+		id, e := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(path, "/shares/"), "/core"), 10, 64)
+		if e != nil || id <= 0 {
+			err = sql.ErrNoRows
+			break
+		}
+		var version string
+		version, err = a.upgradeFLVXCore(r.Context(), id)
+		result = map[string]any{"success": err == nil, "version": version}
 	case strings.HasPrefix(path, "/shares/") && r.Method == http.MethodPut:
 		id, e := strconv.ParseInt(strings.TrimPrefix(path, "/shares/"), 10, 64)
 		if e != nil || id <= 0 {
@@ -435,7 +446,7 @@ func (a *app) saveFLVXShare(ctx context.Context, id int64, c flvx.Config, state 
 			return nil
 		}
 		if state == "paused" && s.Desired.Revision > 0 && (c.PortMin != s.Config.PortMin || c.PortMax != s.Config.PortMax) {
-			if problems := flvx.ValidateDesired(s.Desired, c, nil); len(problems) > 0 {
+			if problems := flvx.ValidateDesiredWith(s.Desired, c, nil, flvx.DesiredOptions{Protocols: flvx.AllProtocols()}); len(problems) > 0 {
 				return flvxValidationErrors(problems)
 			}
 		}
@@ -445,7 +456,9 @@ func (a *app) saveFLVXShare(ctx context.Context, id int64, c flvx.Config, state 
 				return e
 			}
 			if s.Desired.Revision > 0 {
-				if problems := flvx.ValidateDesired(s.Desired, c, server.OfficialPorts); len(problems) > 0 {
+				// The share's protocol capability gates FLVX and the Helper payload,
+				// not the admin's settings: check ports and structure only.
+				if problems := flvx.ValidateDesiredWith(s.Desired, c, server.OfficialPorts, flvx.DesiredOptions{Protocols: flvx.AllProtocols()}); len(problems) > 0 {
 					return flvxValidationErrors(problems)
 				}
 			}
@@ -461,6 +474,44 @@ func (a *app) saveFLVXShare(ctx context.Context, id int64, c flvx.Config, state 
 	})
 }
 
+// upgradeFLVXCore moves the share's pinned FLVX Core to the latest release
+// (「升级 FLVX Core」). Its Helper installs it and restarts the shared Core.
+func (a *app) upgradeFLVXCore(ctx context.Context, id int64) (string, error) {
+	var latest *flvxPinnedCore
+	if a.releaseCache != nil {
+		info, _ := a.releaseCache.snapshot()
+		latest = flvxReleaseCore(info)
+	}
+	if latest == nil {
+		return "", flvxAPIError{409, "release_unknown", "最新版本信息还未读取，请稍后重试"}
+	}
+	return latest.Version, flvxTransaction(ctx, a.flvxDB(), func(tx *sql.Tx) error {
+		s, err := readFLVXShare(ctx, tx, id, true)
+		if err != nil {
+			return err
+		}
+		if s.State == "revoked" {
+			return flvxAPIError{409, "share_revoked", "cancelled shares cannot be changed"}
+		}
+		if s.Core != nil && reflect.DeepEqual(*s.Core, *latest) {
+			return nil
+		}
+		s.Core = latest
+		s.Version++
+		return writeFLVXShare(ctx, tx, id, s)
+	})
+}
+
+// flvxCorePinSummary tells the operator page which FLVX Core the share is
+// pinned to and whether a newer release exists.
+func flvxCorePinSummary(s flvxShare, latest string) map[string]any {
+	pinned := ""
+	if s.Core != nil {
+		pinned = s.Core.Version
+	}
+	return map[string]any{"pinned": pinned, "latest": latest, "upgradable": pinned != "" && latest != "" && pinned != latest && s.State != "revoked"}
+}
+
 func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) {
 	db := a.flvxDB()
 	servers, err := flvxServers(ctx, db)
@@ -472,6 +523,11 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 		return nil, err
 	}
 	lookup, helpers := flvxResolver(), a.flvxHelpers()
+	latestCore := ""
+	if a.releaseCache != nil {
+		info, _ := a.releaseCache.snapshot()
+		latestCore = info.CoreVersion
+	}
 	for i := range servers {
 		detectFLVXDual(ctx, &servers[i], h, lookup)
 		flvxSortedPorts(servers[i].OfficialPorts)
@@ -506,6 +562,17 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 		if capability := flvxEgressCapability(s); capability != nil {
 			item["egress"] = capability
 		}
+		// landing-protocols-v1 §2. protocols above stays the v1 list: older
+		// FLVX copies it into a share and validates it against v1 names.
+		if protocols := flvxShareProtocols(s, server.Helper); protocols != nil {
+			item["protocol_caps"] = flvx.ProtocolCaps{Versions: []int{flvx.ProtocolsVersion}, Protocols: protocols}
+		}
+		if server.Mode != "" {
+			item["server_mode"] = server.Mode
+		}
+		if busy := flvxBusyPorts(s, server); busy != nil {
+			item["busy_ports"] = busy
+		}
 		if admin {
 			nodes := []map[string]any{}
 			for _, n := range s.Desired.Nodes {
@@ -523,6 +590,7 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 			item["nodes"], item["config"], item["report"] = nodes, s.Config, report
 			item["native_landing"], item["detection_error"], item["helper"] = server.NativeLanding, server.DetectionError, server.Helper
 			item["allow_egress"], item["egress_plan"] = !s.EgressDenied, flvxEgressSummary(s)
+			item["core_pin"] = flvxCorePinSummary(s, latestCore)
 		}
 		shares = append(shares, item)
 	}

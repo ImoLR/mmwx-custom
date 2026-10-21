@@ -27,7 +27,7 @@ func flvxTestEgress() *flvx.Egress {
 func flvxTestReport(t *testing.T, a *app, sequence int64, egress *flvx.EgressStatus) {
 	t.Helper()
 	r := flvx.Report{Generation: "helper-egress", Sequence: sequence, Period: flvx.Period(time.Now(), 1), Status: flvx.Status{AppliedRevision: 1, Core: flvx.Core{State: "running", Epoch: "e"}, Nodes: []flvx.NodeStatus{}, CollectedAt: time.Now().UnixMilli(), Egress: egress}}
-	if _, err := a.flvxHelperDesired(context.Background(), 7, "helper-uuid", "helper-secret", "amd64", true, &r); err != nil {
+	if _, err := a.flvxHelperDesired(context.Background(), 7, "helper-uuid", "helper-secret", "amd64", true, false, &r); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -106,13 +106,13 @@ func TestFLVXEgressContractPostgres(t *testing.T) {
 		t.Fatalf("plan not stored: %+v %v", s.Desired.Egress, err)
 	}
 	// The capable Helper receives the plan in its signed payload.
-	e, err := a.flvxHelperDesired(ctx, 7, "helper-uuid", "helper-secret", "amd64", true, nil)
+	e, err := a.flvxHelperDesired(ctx, 7, "helper-uuid", "helper-secret", "amd64", true, false, nil)
 	if err != nil || e.Payload.Desired.Egress == nil || !e.Verify("helper-secret", "helper-uuid", time.Now()) {
 		t.Fatal("plan not delivered", err)
 	}
 	// A Helper downgraded after acceptance must not route covered nodes
 	// around the plan: payload without the field, covered nodes withheld.
-	e, _ = a.flvxHelperDesired(ctx, 7, "helper-uuid", "helper-secret", "amd64", false, nil)
+	e, _ = a.flvxHelperDesired(ctx, 7, "helper-uuid", "helper-secret", "amd64", false, false, nil)
 	encoded, _ := json.Marshal(e.Payload)
 	if e.Payload.Desired.Egress != nil || strings.Contains(string(encoded), `"egress"`) || *e.Payload.Desired.Nodes[0].Enabled {
 		t.Fatalf("old Helper payload: %s", encoded)
@@ -128,7 +128,7 @@ func TestFLVXEgressContractPostgres(t *testing.T) {
 	}
 	// Oversized Helper status is rejected rather than stored.
 	r := flvx.Report{Generation: "helper-egress", Sequence: 4, Period: flvx.Period(time.Now(), 1), Status: flvx.Status{AppliedRevision: 2, Core: flvx.Core{State: "running"}, Nodes: []flvx.NodeStatus{}, Egress: &flvx.EgressStatus{State: "applied", Warnings: make([]string, 11)}}}
-	if _, err = a.flvxHelperDesired(ctx, 7, "helper-uuid", "helper-secret", "amd64", true, &r); err == nil {
+	if _, err = a.flvxHelperDesired(ctx, 7, "helper-uuid", "helper-secret", "amd64", true, false, &r); err == nil {
 		t.Fatal("unbounded egress warnings accepted")
 	}
 	// Policy off: advertised as not allowed, plans refused, delivered payloads
@@ -148,7 +148,7 @@ func TestFLVXEgressContractPostgres(t *testing.T) {
 	if w.Code != 422 || !strings.Contains(w.Body.String(), "妙妙屋共享方未允许自定义出站与路由") {
 		t.Fatalf("plan with policy off: %d %s", w.Code, w.Body.String())
 	}
-	e, _ = a.flvxHelperDesired(ctx, 7, "helper-uuid", "helper-secret", "amd64", true, nil)
+	e, _ = a.flvxHelperDesired(ctx, 7, "helper-uuid", "helper-secret", "amd64", true, false, nil)
 	if e.Payload.Desired.Egress != nil || !*e.Payload.Desired.Nodes[0].Enabled {
 		t.Fatal("policy off must deliver the default plan without withholding nodes")
 	}

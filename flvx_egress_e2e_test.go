@@ -83,7 +83,7 @@ func TestFLVXEgressE2EWithFLVXClient(t *testing.T) {
 	if !s.Desired.Egress.Active() || len(s.Desired.Egress.ExemptSources) == 0 {
 		t.Fatalf("plan not stored: %+v", s.Desired.Egress)
 	}
-	e, err := a.flvxHelperDesired(ctx, 7, "7", "helper-e2e-token", "amd64", true, nil)
+	e, err := a.flvxHelperDesired(ctx, 7, "7", "helper-e2e-token", "amd64", true, false, nil)
 	if err != nil || e.Payload.Desired.Egress == nil {
 		t.Fatal("Helper envelope", err)
 	}
