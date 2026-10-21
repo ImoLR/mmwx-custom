@@ -305,7 +305,6 @@ export type UserConnectionSettings = {
 
 export type ServerConnectionSettings = {
   machine_protection?: MachineProtectionSettings | null;
-  default_close_wait_timeout_seconds: number | null;
   online_ip_grace_period_seconds: number;
   global_total_limit_enabled: boolean;
   max_global_total_connections: number | null;

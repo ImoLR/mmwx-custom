@@ -1,0 +1,484 @@
+[
+  {
+    "name": "production today: protection on, 10 s, no old default",
+    "helper_version": "v0.7.9",
+    "machine_v2": true,
+    "before": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 10
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "after": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 10
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "want_core_before": 10,
+    "want_core_after": 10,
+    "want_flvx_after": 10
+  },
+  {
+    "name": "per-user override is kept",
+    "helper_version": "v0.7.9",
+    "machine_v2": true,
+    "before": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 10
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [
+        {
+          "identity": {
+            "inbound_tag": "in-a",
+            "user": "alice"
+          },
+          "max_inbound_online_ips": null,
+          "max_total_connections": null,
+          "max_outbound_tcp_active": null,
+          "max_outbound_tcp_new_per_second": null,
+          "close_wait_timeout_seconds": 5
+        }
+      ],
+      "ports": [],
+      "management_users": []
+    },
+    "after": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 10
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [
+        {
+          "identity": {
+            "inbound_tag": "in-a",
+            "user": "alice"
+          },
+          "max_inbound_online_ips": null,
+          "max_total_connections": null,
+          "max_outbound_tcp_active": null,
+          "max_outbound_tcp_new_per_second": null,
+          "close_wait_timeout_seconds": 5
+        }
+      ],
+      "ports": [],
+      "management_users": []
+    },
+    "want_core_before": 10,
+    "want_core_after": 10,
+    "want_flvx_after": 10
+  },
+  {
+    "name": "old default 30 was winning, stays 30",
+    "helper_version": "v0.7.9",
+    "machine_v2": true,
+    "before": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 10
+      },
+      "default_close_wait_timeout_seconds": 30,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "after": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 30
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "want_core_before": 30,
+    "want_core_after": 30,
+    "want_flvx_after": 30,
+    "note": "old server default 30 s kept (it was in effect); machine protection had 10 s"
+  },
+  {
+    "name": "old default 30 over the implicit 10",
+    "helper_version": "v0.7.9",
+    "machine_v2": true,
+    "before": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500
+      },
+      "default_close_wait_timeout_seconds": 30,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "after": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 30
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "want_core_before": 30,
+    "want_core_after": 30,
+    "want_flvx_after": 30,
+    "note": "old server default 30 s kept (it was in effect); machine protection had 10 s"
+  },
+  {
+    "name": "old default 30, machine CLOSE_WAIT off",
+    "helper_version": "v0.7.9",
+    "machine_v2": true,
+    "before": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 0
+      },
+      "default_close_wait_timeout_seconds": 30,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "after": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 30
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "want_core_before": 30,
+    "want_core_after": 30,
+    "want_flvx_after": 30,
+    "note": "old server default 30 s kept (it was in effect); machine protection had none"
+  },
+  {
+    "name": "old default equal to machine value",
+    "helper_version": "v0.7.9",
+    "machine_v2": true,
+    "before": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 10
+      },
+      "default_close_wait_timeout_seconds": 10,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "after": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 10
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "want_core_before": 10,
+    "want_core_after": 10,
+    "want_flvx_after": 10
+  },
+  {
+    "name": "old default 0 never took effect",
+    "helper_version": "v0.7.9",
+    "machine_v2": true,
+    "before": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 10
+      },
+      "default_close_wait_timeout_seconds": 0,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "after": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 10
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "want_core_before": 10,
+    "want_core_after": 10,
+    "want_flvx_after": 10
+  },
+  {
+    "name": "protection off, no old default",
+    "helper_version": "v0.7.9",
+    "machine_v2": true,
+    "before": {
+      "machine_protection": {
+        "enabled": false,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 10
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "after": {
+      "machine_protection": {
+        "enabled": false,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 10
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "want_core_before": null,
+    "want_core_after": null,
+    "want_flvx_after": null
+  },
+  {
+    "name": "protection off with old default 30",
+    "helper_version": "v0.7.9",
+    "machine_v2": true,
+    "before": {
+      "machine_protection": {
+        "enabled": false,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 10
+      },
+      "default_close_wait_timeout_seconds": 30,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "after": {
+      "machine_protection": {
+        "enabled": false,
+        "max_active": null,
+        "max_total": 1000,
+        "tw_buckets": 500,
+        "close_wait_seconds": 30
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "want_core_before": 30,
+    "want_core_after": null,
+    "want_flvx_after": null,
+    "note": "old server default 30 s kept (it was in effect); machine protection had none; machine protection is off, so it applies once protection is on"
+  },
+  {
+    "name": "v1 Helper, no old default",
+    "helper_version": "v0.7.8",
+    "machine_v2": false,
+    "before": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "after": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "want_core_before": null,
+    "want_core_after": null,
+    "want_flvx_after": null
+  },
+  {
+    "name": "v1 Helper, old default 30",
+    "helper_version": "v0.7.8",
+    "machine_v2": false,
+    "before": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000
+      },
+      "default_close_wait_timeout_seconds": 30,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "after": {
+      "machine_protection": {
+        "enabled": true,
+        "max_active": null,
+        "max_total": 1000
+      },
+      "default_close_wait_timeout_seconds": null,
+      "online_ip_grace_period_seconds": 30,
+      "global_total_limit_enabled": false,
+      "max_global_total_connections": null,
+      "max_global_inbound_connections": null,
+      "users": [],
+      "ports": [],
+      "management_users": []
+    },
+    "want_core_before": null,
+    "want_core_after": null,
+    "want_flvx_after": null,
+    "note": "old server default 30 s kept (it was in effect); machine protection had 10 s"
+  }
+]

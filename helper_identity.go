@@ -191,6 +191,7 @@ func (s *helperState) load() error {
 	if s.data.RebindTokens == nil {
 		s.data.RebindTokens = make(map[string]helperRebindToken)
 	}
+	s.mergeLegacyCloseWaitLocked()
 	return nil
 }
 

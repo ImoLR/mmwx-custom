@@ -22,7 +22,6 @@ type AssignmentDraft = { username: string; identity: string };
 
 const emptySettings: ServerConnectionSettings = {
   machine_protection: { enabled: false, max_active: null, max_total: null },
-  default_close_wait_timeout_seconds: null,
   online_ip_grace_period_seconds: 30,
   global_total_limit_enabled: false,
   max_global_total_connections: null,
@@ -195,7 +194,7 @@ export function ConnectionsManager({ server, token }: Props) {
               <NullableNumber label="TIME_WAIT 上限" value={machineSettings.tw_buckets ?? null} min={0} placeholder="0 = 不改内核值" disabled={!machineV2} onChange={(value) => patchMachine({ tw_buckets: value })} />
               <NullableNumber label="CLOSE_WAIT 超时（秒）" value={machineSettings.close_wait_seconds ?? null} min={0} placeholder="0 = 不自动关闭" disabled={!machineV2} onChange={(value) => patchMachine({ close_wait_seconds: value })} />
             </div>
-            {machineV2 && <p className="connection-definition machine-field-notes">TIME_WAIT 上限写入内核 tcp_max_tw_buckets，作用于整台机器，关闭保护时恢复原值{machine?.tw_buckets?.original != null ? `（原值 ${machine.tw_buckets.original.toLocaleString()}）` : ""}。CLOSE_WAIT 超时作用于妙妙屋 Core 和 FLVX 共享 Core；下方 Core 设置里单独填了「CLOSE_WAIT 超时关闭」时以那里为准。0 表示该项不启用。</p>}
+            {machineV2 && <p className="connection-definition machine-field-notes">TIME_WAIT 上限写入内核 tcp_max_tw_buckets，作用于整台机器，关闭保护时恢复原值{machine?.tw_buckets?.original != null ? `（原值 ${machine.tw_buckets.original.toLocaleString()}）` : ""}。CLOSE_WAIT 超时作用于妙妙屋 Core 和 FLVX 共享 Core，默认 10 秒，关闭保护时不生效。0 表示该项不启用。</p>}
           </>}
         </div>
       </section>
@@ -211,12 +210,11 @@ export function ConnectionsManager({ server, token }: Props) {
         {coreAccounting && !coreAccounting.balanced && <div className="connection-message error"><AlertTriangle /><span>Core tracker 对账差额 {coreAccounting.reconciliation_delta}，未把差额伪装成 pending 或未归属。</span></div>}
         <div className="connection-global-summary">
           <span>当前 CLOSE_WAIT <strong>{coreCloseWait}</strong></span>
-          <span>自动关闭秒数 <strong>{displayLimit(settings.default_close_wait_timeout_seconds)}</strong></span>
+          <span>自动关闭秒数 <strong>{displayLimit(machineV2 ? machine?.close_wait_seconds : null)}</strong></span>
           <span>全局连接拒绝 <strong>{snapshot?.global?.rejected_global_inbound_limit ?? "--"}</strong></span>
         </div>
         <div className="connection-limit-grid">
           <NullableNumber label="Core 连接上限" value={settings.max_global_inbound_connections} min={1} onChange={(value) => updateSettings((current) => ({ ...current, max_global_inbound_connections: value }))} />
-          <NullableNumber label="CLOSE_WAIT 超时关闭（秒）" value={settings.default_close_wait_timeout_seconds} min={0} placeholder="0 / 留空 = 关闭" onChange={(value) => updateSettings((current) => ({ ...current, default_close_wait_timeout_seconds: value }))} />
           <NullableNumber label="在线 IP 保留秒数" value={settings.online_ip_grace_period_seconds} min={1} required onChange={(value) => updateSettings((current) => ({ ...current, online_ip_grace_period_seconds: value ?? 30 }))} />
         </div>
       </section>

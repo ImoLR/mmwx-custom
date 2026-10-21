@@ -42,6 +42,8 @@ type serverPortConnectionSettings struct {
 
 // TWBuckets / CloseWaitSeconds need machine protection v2 Helpers; they are
 // never sent to older Helpers. nil = Helper default (500 / 10 s), 0 = off.
+// CloseWaitSeconds is the server's only CLOSE_WAIT setting (see
+// mergeLegacyCloseWait); per-identity close_wait_timeout_seconds still wins.
 type serverMachineProtectionSettings struct {
 	Enabled          bool   `json:"enabled"`
 	MaxActive        *int64 `json:"max_active"`
@@ -51,17 +53,20 @@ type serverMachineProtectionSettings struct {
 }
 
 type serverConnectionSettings struct {
-	BlockedIdentities              *[]serverConnectionIdentity      `json:"blocked_identities,omitempty"`
-	MachineProtection              *serverMachineProtectionSettings `json:"machine_protection,omitempty"`
-	DefaultCloseWaitTimeoutSeconds *int64                           `json:"default_close_wait_timeout_seconds"`
-	OnlineIPGracePeriodSeconds     int64                            `json:"online_ip_grace_period_seconds"`
-	GlobalTotalLimitEnabled        bool                             `json:"global_total_limit_enabled"`
-	MaxGlobalTotalConnections      *int64                           `json:"max_global_total_connections"`
-	MaxGlobalInboundConnections    *int64                           `json:"max_global_inbound_connections"`
-	Users                          []serverUserConnectionSettings   `json:"users"`
-	Ports                          []serverPortConnectionSettings   `json:"ports"`
-	ManagementUsers                []serverManagementUserSettings   `json:"management_users"`
-	ManagementMappings             []serverManagementMapping        `json:"management_mappings,omitempty"`
+	BlockedIdentities *[]serverConnectionIdentity      `json:"blocked_identities,omitempty"`
+	MachineProtection *serverMachineProtectionSettings `json:"machine_protection,omitempty"`
+	// Retired server default 「CLOSE_WAIT 超时关闭」: read from old state files
+	// and old forms only, merged into MachineProtection.CloseWaitSeconds, so it
+	// is always null in storage, responses and what Helpers receive.
+	DefaultCloseWaitTimeoutSeconds *int64                         `json:"default_close_wait_timeout_seconds"`
+	OnlineIPGracePeriodSeconds     int64                          `json:"online_ip_grace_period_seconds"`
+	GlobalTotalLimitEnabled        bool                           `json:"global_total_limit_enabled"`
+	MaxGlobalTotalConnections      *int64                         `json:"max_global_total_connections"`
+	MaxGlobalInboundConnections    *int64                         `json:"max_global_inbound_connections"`
+	Users                          []serverUserConnectionSettings `json:"users"`
+	Ports                          []serverPortConnectionSettings `json:"ports"`
+	ManagementUsers                []serverManagementUserSettings `json:"management_users"`
+	ManagementMappings             []serverManagementMapping      `json:"management_mappings,omitempty"`
 }
 
 type serverTCPStateCounts struct {
@@ -726,6 +731,8 @@ func (a *app) serverConnectionsHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid settings"})
 			return
 		}
+		// A browser tab still on the old page may send the retired field.
+		mergeLegacyCloseWait(&settings)
 		if err := validateServerConnectionSettings(settings); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
 			return

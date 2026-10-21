@@ -1,7 +1,10 @@
 package main
 
 import (
+	"fmt"
+	"log"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -36,9 +39,88 @@ func defaultMachineProtectionSettings() *serverMachineProtectionSettings {
 
 // unconfiguredMachineProtection: nothing was ever chosen. The settings form
 // always sent an empty, disabled block, so that counts as unconfigured too;
-// a deliberate "off" keeps the cap value it had.
+// a deliberate "off" keeps the cap value it had. A block holding only a
+// CLOSE_WAIT value came from mergeLegacyCloseWait and is still unconfigured.
 func unconfiguredMachineProtection(settings *serverMachineProtectionSettings) bool {
-	return settings == nil || !settings.Enabled && settings.MaxActive == nil && settings.MaxTotal == nil && settings.TWBuckets == nil && settings.CloseWaitSeconds == nil
+	return settings == nil || !settings.Enabled && settings.MaxActive == nil && settings.MaxTotal == nil && settings.TWBuckets == nil
+}
+
+// mergeLegacyCloseWait folds the retired server default 「CLOSE_WAIT 超时关闭」
+// (default_close_wait_timeout_seconds) into machine protection's CLOSE_WAIT,
+// the one server-level CLOSE_WAIT value since v1.4.70. Helpers apply a
+// positive old value ahead of machine protection's, so it becomes the merged
+// value; 0 never took effect over it (Core treats 0 and null alike: off).
+// note is non-empty when the merged value differs from what machine
+// protection applied before.
+func mergeLegacyCloseWait(settings *serverConnectionSettings) (note string, changed bool) {
+	legacy := settings.DefaultCloseWaitTimeoutSeconds
+	if legacy == nil {
+		return "", false
+	}
+	settings.DefaultCloseWaitTimeoutSeconds = nil
+	if *legacy <= 0 {
+		return "", true
+	}
+	value := *legacy
+	machine := settings.MachineProtection
+	if machine == nil {
+		machine = &serverMachineProtectionSettings{}
+		settings.MachineProtection = machine
+	}
+	// What machine protection applied so far (the Helper's closeWaitSeconds).
+	var before *int64
+	if machine.Enabled {
+		fallback := defaultMachineCloseWaitSeconds
+		before = &fallback
+		if machine.CloseWaitSeconds != nil {
+			before = nil
+			if *machine.CloseWaitSeconds > 0 {
+				before = machine.CloseWaitSeconds
+			}
+		}
+	}
+	machine.CloseWaitSeconds = &value
+	if before != nil && *before == value {
+		return "", true
+	}
+	had := "none"
+	if before != nil {
+		had = fmt.Sprintf("%d s", *before)
+	}
+	note = fmt.Sprintf("old server default %d s kept (it was in effect); machine protection had %s", value, had)
+	if !machine.Enabled {
+		note += "; machine protection is off, so it applies once protection is on"
+	}
+	return note, true
+}
+
+// mergeLegacyCloseWaitLocked runs mergeLegacyCloseWait over every server once
+// at startup and persists the result, logging each server whose value moved.
+func (s *helperState) mergeLegacyCloseWaitLocked() {
+	ids := make([]string, 0, len(s.data.ConnectionSettings))
+	for id := range s.data.ConnectionSettings {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	merged := false
+	for _, id := range ids {
+		settings := s.data.ConnectionSettings[id]
+		note, changed := mergeLegacyCloseWait(&settings)
+		if !changed {
+			continue
+		}
+		s.data.ConnectionSettings[id] = settings
+		merged = true
+		if note != "" {
+			log.Printf("[mmwx-custom] CLOSE_WAIT merged server=%s: %s", id, note)
+		}
+	}
+	if !merged {
+		return
+	}
+	if err := s.saveLocked(); err != nil {
+		log.Printf("[mmwx-custom] WARNING: CLOSE_WAIT merge not yet persisted (the next state write keeps it): %v", err)
+	}
 }
 
 // applyMachineProtectionDefaults is the one-time default-on migration. It runs
@@ -60,7 +142,11 @@ func (s *helperState) applyMachineProtectionDefaults(officialServerID string) (b
 	}
 	applied := unconfiguredMachineProtection(settings.MachineProtection)
 	if applied {
-		settings.MachineProtection = defaultMachineProtectionSettings()
+		defaults := defaultMachineProtectionSettings()
+		if settings.MachineProtection != nil && settings.MachineProtection.CloseWaitSeconds != nil {
+			defaults.CloseWaitSeconds = settings.MachineProtection.CloseWaitSeconds
+		}
+		settings.MachineProtection = defaults
 		s.data.ConnectionSettings[officialServerID] = cloneServerConnectionSettings(settings)
 	}
 	s.data.MachineProtectionDefaults[officialServerID] = time.Now().UTC()

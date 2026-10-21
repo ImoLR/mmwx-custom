@@ -146,6 +146,26 @@ test("machine protection v2 fields prefill 1000 / 500 / 10, old Helpers see 助�
   assert.match(text(section(tree, "connection-machine-section")), /TCP 总数304ESTABLISHED10TIME_WAIT279CLOSE_WAIT2/);
 });
 
+test("one server CLOSE_WAIT input: the machine protection one; Core shows what the Helper applies", async () => {
+  const data: any = fixture();
+  data.settings.machine_protection = { enabled: true, max_active: null, max_total: 1000, tw_buckets: 500, close_wait_seconds: 20 };
+  data.settings.default_close_wait_timeout_seconds = null;
+  data.record.snapshot.machine_protection = { version: 2, owner: "mmwx", supported: true, configured: data.settings.machine_protection, effective: true, blocking: false, active: 10, total: 304, controlled_ports: [443], tcp_ports: [443], udp_ports: [443], connections: { total: 304, tcp: 300, udp: 4, established: 10, time_wait: 279, close_wait: 2, other_tcp: 9 }, max_total: 1000, release_below: 950, dropped_total: 0, tw_buckets: { target: 500, current: 500, original: 4096 }, close_wait_seconds: 20 };
+  const view = dialog(data);
+  const tree = view.render();
+  const closeWaitInputs = nodes(tree).filter(n => n.type === "label" && /CLOSE_WAIT/.test(text(n)) && nodes(n).some(child => child.type === "input"));
+  assert.deepEqual(closeWaitInputs.map(n => text(n)), ["CLOSE_WAIT 超时（秒）"]);
+  assert.equal(input(tree, "CLOSE_WAIT 超时（秒）").props.value, 20);
+  assert.equal(nodes(tree).filter(n => n.props.className?.includes("machine-field-notes")).length, 1);
+  assert.match(text(section(tree, "machine-field-notes")), /CLOSE_WAIT 超时作用于妙妙屋 Core 和 FLVX 共享 Core，默认 10 秒，关闭保护时不生效。0 表示该项不启用。/);
+  assert.doesNotMatch(text(tree), /CLOSE_WAIT 超时关闭|以那里为准/);
+  assert.match(text(section(tree, "connection-global-settings")), /当前 CLOSE_WAIT \d+自动关闭秒数 20/);
+  input(tree, "CLOSE_WAIT 超时（秒）").props.onChange({ target: { value: "0" } });
+  await nodes(view.render()).find(n => n.type === "button" && n.props.className === "connection-save").props.onClick();
+  assert.equal(view.saved().machine_protection.close_wait_seconds, 0);
+  assert.equal(view.saved().default_close_wait_timeout_seconds ?? null, null);
+});
+
 test("inbound inputs save their own fields while legacy limits stay collapsed and round-trip", async () => {
   const data = fixture();
   assert.equal(section(dialog(data).render(), "connection-legacy-limits"), undefined);
