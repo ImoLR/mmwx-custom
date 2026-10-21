@@ -120,10 +120,18 @@ sha256sum \
   component-versions.json > checksums.txt
 popd >/dev/null
 
+# MMWXC_RELEASE_DRAFT=1 publishes a draft: it is not "latest" (which every
+# Custom's release cache follows) until `gh release edit "$TAG" --draft=false`.
+DRAFT_FLAG=()
+if [[ "${MMWXC_RELEASE_DRAFT:-}" == "1" ]]; then
+  DRAFT_FLAG=(--draft)
+fi
+
 gh release create "$TAG" \
   --repo "$REPOSITORY" \
   --title "$TAG" \
   --generate-notes \
+  "${DRAFT_FLAG[@]}" \
   "$RELEASE_DIR/mmwx-custom-linux-amd64.tar.gz" \
   "$RELEASE_DIR/mmwx-custom-linux-arm64.tar.gz" \
   "$RELEASE_DIR/mmwxc-helper-linux-amd64" \
