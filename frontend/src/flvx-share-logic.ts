@@ -9,6 +9,13 @@ export function flvxStateText(state: string, helper?: FLVXHelper) {
   return stateText[state] || state;
 }
 
+// The Helper's reason it cannot (re)start the FLVX Core, e.g. a parent
+// directory the mmwxc-flvx account cannot enter; "" when there is none.
+export function flvxCoreIssue(state: string, error?: string) {
+  if (!error) return "";
+  return state === "running" ? `FLVX Core 正在运行，但下次重启会失败：${error}` : `FLVX Core 未启动：${error}`;
+}
+
 // Why this server's Helper cannot run FLVX nodes; "" when it can. Only Helper
 // v0.7.5+ reports the flvx.share capability.
 export function flvxHelperIssue(helper?: FLVXHelper) {

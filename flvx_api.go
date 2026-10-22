@@ -591,6 +591,9 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 			item["native_landing"], item["detection_error"], item["helper"] = server.NativeLanding, server.DetectionError, server.Helper
 			item["allow_egress"], item["egress_plan"] = !s.EgressDenied, flvxEgressSummary(s)
 			item["core_pin"] = flvxCorePinSummary(s, latestCore)
+			if s.State != "revoked" && s.Status.Core.Error != "" {
+				item["core_error"] = s.Status.Core.Error
+			}
 		}
 		shares = append(shares, item)
 	}

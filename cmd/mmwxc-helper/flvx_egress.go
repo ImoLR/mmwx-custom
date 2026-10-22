@@ -578,7 +578,7 @@ func (m *flvxManager) ensureRouting(ctx context.Context, snapshot coreSnapshotRe
 	m.logs.report("FLVX Core routing API restart", errors.New("restarting the FLVX Core once to enable hot routing updates"))
 	restart := m.restartCore
 	if restart == nil {
-		restart = func(ctx context.Context) error { return systemctl(ctx, "restart", flvxServiceName) }
+		restart = func(ctx context.Context) error { return systemctl(ctx, "restart", m.service) }
 	}
 	if err := restart(ctx); err != nil {
 		return snapshot, err

@@ -245,3 +245,49 @@ func TestFLVXCorePinPostgres(t *testing.T) {
 		t.Fatalf("upgrade of a revoked share: %d %s", w.Code, w.Body.String())
 	}
 }
+
+// A Helper that cannot start the shared Core (e.g. a parent directory the
+// FLVX Core account cannot enter) reports why; the operator's share card shows
+// it, FLVX never sees it.
+func TestFLVXCoreErrorOperatorOnlyPostgres(t *testing.T) {
+	a := flvxTestApp(t)
+	ctx := context.Background()
+	auditDeleteExec(t, a.flvxDB(), `UPDATE mmwxc_flvx_integration SET token_hash=$1`, flvxTokenHash("flvx_fixture"))
+	if err := a.saveFLVXShare(ctx, 7, flvx.Config{PortMin: 30000, PortMax: 30100, ResetDay: 1, MemoryMB: 256, CPUPercent: 50}, "active", nil); err != nil {
+		t.Fatal(err)
+	}
+	reason := "FLVX Core 账户 mmwxc-flvx 无法访问 /opt/mmwxc（0700 root:root）：目录带 ACL，Helper 不改动"
+	report := flvxProtocolsReport(1, nil, nil, 0)
+	report.Core = flvx.Core{State: "error", Error: reason + "\n\x1b[31m" + strings.Repeat("长", 400)}
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, report); err != nil {
+		t.Fatal(err)
+	}
+	var admin struct {
+		Shares []struct {
+			CoreError string `json:"core_error"`
+		} `json:"shares"`
+	}
+	w := flvxTestRequest(a, "GET", "/api/custom/flvx/admin", "operator-token", nil)
+	if json.Unmarshal(w.Body.Bytes(), &admin) != nil || len(admin.Shares) != 1 {
+		t.Fatalf("admin list: %s", w.Body.String())
+	}
+	got := admin.Shares[0].CoreError
+	if !strings.HasPrefix(got, reason+"  [31m") || len([]rune(got)) != 300 || strings.ContainsAny(got, "\n\x1b") {
+		t.Fatalf("core_error not one bounded line: %q", got)
+	}
+	_, list := flvxTestShares(t, a, "/api/custom/flvx/v1/shares", "flvx_fixture")
+	status := flvxTestRequest(a, "GET", "/api/custom/flvx/v1/shares/7/status", "flvx_fixture", nil).Body.String()
+	for _, body := range []string{list, status} {
+		if strings.Contains(body, "mmwxc-flvx") || strings.Contains(body, "core_error") {
+			t.Fatalf("FLVX sees the operator-only reason: %s", body)
+		}
+	}
+	// A later healthy report clears it.
+	report = flvxProtocolsReport(2, nil, nil, 0)
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, report); err != nil {
+		t.Fatal(err)
+	}
+	if w = flvxTestRequest(a, "GET", "/api/custom/flvx/admin", "operator-token", nil); strings.Contains(w.Body.String(), "core_error") {
+		t.Fatalf("stale core_error: %s", w.Body.String())
+	}
+}

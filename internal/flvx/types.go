@@ -172,6 +172,9 @@ type Core struct {
 	State   string `json:"state"`
 	Version string `json:"version,omitempty"`
 	Epoch   string `json:"epoch,omitempty"`
+	// Why the Helper cannot (re)start the shared Core, e.g. a parent directory
+	// the FLVX Core account cannot enter. Shown to the operator only.
+	Error string `json:"error,omitempty"`
 }
 
 type OnlineIP struct {

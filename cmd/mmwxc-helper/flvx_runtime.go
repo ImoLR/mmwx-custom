@@ -103,7 +103,7 @@ func (m *flvxManager) collect(ctx context.Context, snapshot coreSnapshotResponse
 		}
 		m.state.Report.TrafficUsedBytes = flvx.AddBytes(m.state.Report.TrafficUsedBytes, c.Merge(epoch, s.up, s.down))
 	}
-	m.state.Report.Core = flvx.Core{State: "running", Epoch: epoch, Version: m.state.Payload.Artifact.Version}
+	m.state.Report.Core = flvx.Core{State: "running", Epoch: epoch, Version: m.state.Payload.Artifact.Version, Error: m.accessIssue}
 	return nil
 }
 
@@ -409,12 +409,12 @@ func (m *flvxManager) reconcile(ctx context.Context) (result error) {
 			return err
 		}
 		m.state.Applied = map[string]string{}
-		m.state.Report.Core.State = "stopped"
+		m.state.Report.Core.State, m.state.Report.Core.Error = "stopped", ""
 		m.state.Report.AppliedRevision = p.Desired.Revision
 		return m.record(coreSnapshotResponse{}, nil, nil)
 	}
 	if p.Status == "paused" && m.state.APIPort == 0 {
-		m.state.Report.Core.State = "stopped"
+		m.state.Report.Core.State, m.state.Report.Core.Error = "stopped", ""
 		m.state.Report.AppliedRevision = p.Desired.Revision
 		return m.record(coreSnapshotResponse{}, nil, nil)
 	}

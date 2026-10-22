@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { flvxExtraProtocols, flvxHelperIssue, flvxHelperUpgradable, flvxProtocolName, flvxStateText, type FLVXHelper } from "../../frontend/src/flvx-share-logic.ts";
+import { flvxCoreIssue, flvxExtraProtocols, flvxHelperIssue, flvxHelperUpgradable, flvxProtocolName, flvxStateText, type FLVXHelper } from "../../frontend/src/flvx-share-logic.ts";
 
 const ready: FLVXHelper = { installed: true, version: "v0.7.5", architecture: "amd64", flvx_ready: true, upgrading: false };
 const outdated: FLVXHelper = { ...ready, version: "v0.7.4", flvx_ready: false };
@@ -48,3 +48,10 @@ test("扩展协议 line: advertised, TCP-only, or what to upgrade", () => {
   assert.equal(flvxExtraProtocols(undefined, capable, "running").text, "升级 FLVX Core 后可用（AnyTLS / Snell / Mieru）");
 });
 
+test("FLVX Core start problems from the Helper show on the share card", () => {
+  const reason = "FLVX Core 账户 mmwxc-flvx 无法访问 /opt/mmwxc（0700 root:root）：目录带 ACL，Helper 不改动；请手动让 mmwxc-flvx 能进入（x）这个目录";
+  assert.equal(flvxCoreIssue("error", reason), `FLVX Core 未启动：${reason}`);
+  assert.equal(flvxCoreIssue("running", reason), `FLVX Core 正在运行，但下次重启会失败：${reason}`);
+  assert.equal(flvxCoreIssue("running", ""), "");
+  assert.equal(flvxCoreIssue("error"), "");
+});

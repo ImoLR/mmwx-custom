@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +58,7 @@ type flvxRealityPin struct {
 type flvxManager struct {
 	config                          config
 	dir, binary, configPath, socket string
+	unitPath, service               string
 	state                           flvxLocalState
 	core                            *coreClient
 	lifecycle                       *lifecycleManager
@@ -112,20 +112,19 @@ type flvxManager struct {
 	setup        func(context.Context) error
 	stop         func(context.Context) error
 	cleanup      func(context.Context) error
+	// Parent-directory access for the FLVX Core account; see flvx_access.go.
+	accessFixer *flvxAccessFixer
+	preflight   func(context.Context, flvxAccount) error
+	accessIssue string
 }
 
 func newFLVXManager(cfg config) (*flvxManager, error) {
-	m := &flvxManager{config: cfg, dir: flvxStateDir, binary: flvxBinaryPath, configPath: flvxConfigPath, socket: flvxSocketPath, incoming: make(chan flvx.Envelope, 1), logs: newPeriodicLogLimiter()}
+	m := &flvxManager{config: cfg, dir: flvxStateDir, binary: flvxBinaryPath, configPath: flvxConfigPath, socket: flvxSocketPath, unitPath: flvxUnitPath, service: flvxServiceName, incoming: make(chan flvx.Envelope, 1), logs: newPeriodicLogLimiter()}
 	m.core = newCoreClient(m.socket)
 	m.lifecycle = newLifecycleManager(m.core)
 	m.apiCall = m.api
 	m.setup = m.ensureService
-	m.stop = func(ctx context.Context) error {
-		if _, err := os.Stat(flvxUnitPath); errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return systemctl(ctx, "stop", flvxServiceName)
-	}
+	m.stop = m.stopService
 	m.cleanup = m.removeInstance
 	m.readOfficial = func() ([]int, error) {
 		raw, err := os.ReadFile(officialConfigPath)
@@ -387,18 +386,7 @@ func (m *flvxManager) run(ctx context.Context) {
 		cancel()
 		m.logs.report("FLVX instance reconcile", err)
 		if err != nil {
-			stopContext, stopCancel := context.WithTimeout(ctx, 5*time.Second)
-			m.logs.report("FLVX failed instance stop", m.stop(stopContext))
-			stopCancel()
-			m.state.Report.Core.State = "error"
-			for i := range m.state.Report.Nodes {
-				m.state.Report.Nodes[i].OnlineIPCount, m.state.Report.Nodes[i].OnlineIPs = nil, nil
-				if m.state.Report.Nodes[i].State != "removed" {
-					m.state.Report.Nodes[i].State = "error"
-					m.state.Report.Nodes[i].Error = "FLVX Core reconciliation failed"
-				}
-			}
-			m.logs.report("FLVX error state persistence", m.persistReport(true))
+			m.reportFailure(ctx, err)
 			nextAttempt = time.Now().Add(retryDelay)
 			if retryDelay < 5*time.Minute {
 				retryDelay *= 2
@@ -411,6 +399,24 @@ func (m *flvxManager) run(ctx context.Context) {
 			nextAttempt = time.Now().Add(5 * time.Second)
 		}
 	}
+}
+
+// reportFailure stops the instance after a failed reconcile and reports why;
+// the reason reaches the operator's share card, FLVX sees only node errors.
+func (m *flvxManager) reportFailure(ctx context.Context, err error) {
+	stopContext, stopCancel := context.WithTimeout(ctx, 5*time.Second)
+	m.logs.report("FLVX failed instance stop", m.stop(stopContext))
+	stopCancel()
+	m.state.Report.Core.State = "error"
+	m.state.Report.Core.Error = flvxCoreErrorText(err)
+	for i := range m.state.Report.Nodes {
+		m.state.Report.Nodes[i].OnlineIPCount, m.state.Report.Nodes[i].OnlineIPs = nil, nil
+		if m.state.Report.Nodes[i].State != "removed" {
+			m.state.Report.Nodes[i].State = "error"
+			m.state.Report.Nodes[i].Error = "FLVX Core reconciliation failed"
+		}
+	}
+	m.logs.report("FLVX error state persistence", m.persistReport(true))
 }
 
 func (m *flvxManager) accept(e flvx.Envelope) error {
@@ -485,7 +491,32 @@ func (m *flvxManager) reportAbsentInstance(p flvx.Payload) bool {
 	return true
 }
 
-func flvxServiceUnit(c flvx.Config) string {
+// flvxCoreErrorText is the reconcile failure shown on the operator's share
+// card (never sent to FLVX).
+func flvxCoreErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := err.Error()
+	if runes := []rune(text); len(runes) > 300 {
+		text = string(runes[:300])
+	}
+	return text
+}
+
+func (m *flvxManager) stopService(ctx context.Context) error {
+	if _, err := os.Stat(m.unitPath); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return systemctl(ctx, "stop", m.service)
+}
+
+func (m *flvxManager) serviceUnit() string {
+	return flvxServiceUnit(m.state.Payload.Config, m.binary, m.configPath, m.socket)
+}
+
+func flvxServiceUnit(c flvx.Config, binary, configPath, socket string) string {
+	runtime := filepath.Dir(socket)
 	return fmt.Sprintf(`[Unit]
 Description=MMWXC FLVX shared Core
 After=network-online.target
@@ -497,7 +528,7 @@ User=mmwxc-flvx
 Group=mmwxc-flvx
 Environment=MMWXC_CORE_CONTROL_SOCKET=%s
 ExecStart=%s run -config %s
-RuntimeDirectory=mmwxc-flvx
+RuntimeDirectory=%s
 RuntimeDirectoryMode=0700
 UMask=0077
 MemoryMax=%dM
@@ -506,7 +537,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/run/mmwxc-flvx
+ReadWritePaths=%s
 CapabilityBoundingSet=
 RestrictSUIDSGID=yes
 LimitNOFILE=65535
@@ -517,7 +548,7 @@ RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-`, flvxSocketPath, flvxBinaryPath, flvxConfigPath, c.MemoryMB, c.CPUPercent)
+`, socket, binary, configPath, filepath.Base(runtime), c.MemoryMB, c.CPUPercent, runtime)
 }
 
 func flvxFileHash(path string) (string, error) {
@@ -549,7 +580,7 @@ func (m *flvxManager) ensureBinary(ctx context.Context) (bool, error) {
 			return false, nil
 		}
 	}
-	m.state.Report.Core.State = "installing"
+	m.state.Report.Core.State, m.state.Report.Core.Error = "installing", ""
 	if err := m.persistReport(true); err != nil {
 		return false, err
 	}
@@ -612,6 +643,10 @@ func (m *flvxManager) ensureService(ctx context.Context) error {
 	if account.Uid == "0" {
 		return errors.New("FLVX Core must be unprivileged")
 	}
+	identity, err := flvxAccountOf(account)
+	if err != nil {
+		return err
+	}
 	if m.state.APIPort == 0 {
 		l, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
@@ -630,29 +665,36 @@ func (m *flvxManager) ensureService(ctx context.Context) error {
 			return err
 		}
 	}
-	gid, err := strconv.Atoi(account.Gid)
-	if err != nil {
-		return err
-	}
-	if err = os.Chown(filepath.Dir(m.configPath), 0, gid); err != nil {
-		return err
-	}
-	if err = os.Chmod(filepath.Dir(m.configPath), 0750); err != nil {
-		return err
-	}
-	if err = os.Chown(m.configPath, 0, gid); err != nil {
-		return err
-	}
-	unit := flvxServiceUnit(m.state.Payload.Config)
-	previous, _ := os.ReadFile(flvxUnitPath)
+	// Parent directories, owners and modes; a running Core keeps serving and
+	// only a start is refused (with the exact path) while access is broken.
+	accessErr := m.ensureAccess(identity)
+	m.accessIssue = flvxCoreErrorText(accessErr)
+	unit := m.serviceUnit()
+	previous, _ := os.ReadFile(m.unitPath)
 	if string(previous) != unit {
-		if err = writeFLVXFile(flvxUnitPath, []byte(unit), 0644); err != nil {
+		if err = writeFLVXFile(m.unitPath, []byte(unit), 0644); err != nil {
 			return err
 		}
 		if err = systemctl(ctx, "daemon-reload"); err != nil {
 			return err
 		}
-		if err = systemctl(ctx, "set-property", "--runtime", flvxServiceName, fmt.Sprintf("MemoryMax=%dM", m.state.Payload.Config.MemoryMB), fmt.Sprintf("CPUQuota=%d%%", m.state.Payload.Config.CPUPercent)); err != nil {
+		if err = systemctl(ctx, "set-property", "--runtime", m.service, fmt.Sprintf("MemoryMax=%dM", m.state.Payload.Config.MemoryMB), fmt.Sprintf("CPUQuota=%d%%", m.state.Payload.Config.CPUPercent)); err != nil {
+			return err
+		}
+	}
+	_, err = m.core.snapshot(ctx)
+	if changed || err != nil {
+		// Check the start before stopping anything: a start that would fail is
+		// reported with its path instead of looping in systemd.
+		if accessErr != nil {
+			return accessErr
+		}
+		preflight := m.preflight
+		if preflight == nil {
+			preflight = m.preflightCore
+		}
+		if err = preflight(ctx, identity); err != nil {
+			m.accessIssue = flvxCoreErrorText(err)
 			return err
 		}
 	}
@@ -662,7 +704,7 @@ func (m *flvxManager) ensureService(ctx context.Context) error {
 		}
 	}
 	if _, err = m.core.snapshot(ctx); err != nil {
-		if err = systemctl(ctx, "enable", "--now", flvxServiceName); err != nil {
+		if err = systemctl(ctx, "enable", "--now", m.service); err != nil {
 			return err
 		}
 		deadline := time.Now().Add(15 * time.Second)
@@ -684,12 +726,12 @@ func (m *flvxManager) ensureService(ctx context.Context) error {
 }
 
 func (m *flvxManager) removeInstance(ctx context.Context) error {
-	if _, err := os.Stat(flvxUnitPath); err == nil {
-		if err := systemctl(ctx, "disable", "--now", flvxServiceName); err != nil {
+	if _, err := os.Stat(m.unitPath); err == nil {
+		if err := systemctl(ctx, "disable", "--now", m.service); err != nil {
 			return err
 		}
 	}
-	for _, path := range []string{flvxUnitPath, flvxUnitPath + ".bak", flvxUnitPath + ".d", "/run/systemd/system.control/" + flvxServiceName + ".d", filepath.Dir(flvxConfigPath), filepath.Dir(flvxBinaryPath), filepath.Dir(flvxSocketPath)} {
+	for _, path := range []string{m.unitPath, m.unitPath + ".bak", m.unitPath + ".d", "/run/systemd/system.control/" + m.service + ".d", filepath.Dir(m.configPath), filepath.Dir(m.binary), filepath.Dir(m.socket)} {
 		if err := os.RemoveAll(path); err != nil {
 			return err
 		}

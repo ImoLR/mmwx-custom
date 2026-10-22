@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ImoLR/mmwx-custom/internal/flvx"
 )
@@ -442,11 +443,27 @@ func flvxReset(s *flvxShare, now time.Time) {
 	}
 }
 
+// flvxSanitizeCoreError bounds the Helper's reason it cannot start the shared
+// Core (one line, at most 300 characters); it is shown to the operator only.
+func flvxSanitizeCoreError(text string) string {
+	text = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, strings.ToValidUTF8(text, ""))
+	if runes := []rune(strings.TrimSpace(text)); len(runes) > 300 {
+		return string(runes[:300])
+	}
+	return strings.TrimSpace(text)
+}
+
 func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r flvx.Report, now time.Time) error {
 	if r.Generation == "" || len(r.Generation) > 64 || r.Sequence < 1 || r.AppliedRevision > s.Desired.Revision || !r.Egress.Valid() || r.Egress != nil && r.Egress.AppliedRevision > s.Desired.Revision || !r.Listening.Valid() {
 		return errors.New("invalid FLVX report")
 	}
 	r.Protocols = flvx.SanitizeProtocols(r.Protocols)
+	r.Core.Error = flvxSanitizeCoreError(r.Core.Error)
 	if r.Generation == s.Generation && r.Sequence <= s.Sequence {
 		return nil
 	}

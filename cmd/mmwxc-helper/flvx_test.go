@@ -521,7 +521,7 @@ func TestFLVXSignatureExpiryAndIsolationUnit(t *testing.T) {
 	if err := m.accept(e); err == nil {
 		t.Fatal("unsigned mutation accepted")
 	}
-	unit := flvxServiceUnit(m.state.Payload.Config)
+	unit := flvxServiceUnit(m.state.Payload.Config, flvxBinaryPath, flvxConfigPath, flvxSocketPath)
 	for _, required := range []string{"User=mmwxc-flvx", "MemoryMax=256M", "CPUQuota=50%", "NoNewPrivileges=yes", "ProtectSystem=strict", "ReadWritePaths=/run/mmwxc-flvx", "LogRateLimitBurst=10", "LimitNOFILE=65535"} {
 		if !strings.Contains(unit, required) {
 			t.Fatal("unit missing", required)
