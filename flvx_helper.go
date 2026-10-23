@@ -10,9 +10,9 @@ import (
 	"github.com/ImoLR/mmwx-custom/internal/flvx"
 )
 
-// egress / protocols report whether this Helper advertises flvx.egress.v1 /
-// flvx.protocols.v1.
-func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, egress, protocols bool, report *flvx.Report) (*flvx.Envelope, error) {
+// egress / protocols / guard report whether this Helper advertises
+// flvx.egress.v1 / flvx.protocols.v1 / flvx.reality_guard.v1.
+func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, egress, protocols, guard bool, report *flvx.Report) (*flvx.Envelope, error) {
 	if a.flvxDB() == nil {
 		return nil, nil
 	}
@@ -62,7 +62,7 @@ func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, 
 		if a.helperState != nil {
 			artifact.GitHubAccelerator = a.helperState.githubAccelerator()
 		}
-		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: s.Config, Desired: flvxHelperProtocols(flvxHelperEgress(s, egress), protocols), OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
+		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: s.Config, Desired: flvxHelperGuard(flvxHelperProtocols(flvxHelperEgress(s, egress), protocols), guard), OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
 		envelope.Sign(token)
 		return nil
 	})
@@ -115,5 +115,16 @@ func flvxHelperProtocols(d flvx.Desired, supported bool) flvx.Desired {
 		return d
 	}
 	d.Nodes = nodes
+	return d
+}
+
+// flvxHelperGuard strips the Reality guard switch for a Helper without
+// landing-reality-guard-v1: it would reject the signed payload on the unknown
+// field. Such a Helper keeps every node on its real dest (fail-open) and
+// reports no guard state, so FLVX sees the guard is not on.
+func flvxHelperGuard(d flvx.Desired, supported bool) flvx.Desired {
+	if !supported {
+		d.RealityGuard = nil
+	}
 	return d
 }

@@ -218,6 +218,9 @@ type flvxHelper struct {
 	Upgrading    bool   `json:"upgrading"`
 	// Helper renders landing-protocols-v1 nodes ("flvx.protocols.v1").
 	Protocols bool `json:"flvx_protocols"`
+	// Helper renders the Reality guard, landing-reality-guard-v1
+	// ("flvx.reality_guard.v1").
+	RealityGuard bool `json:"flvx_reality_guard"`
 }
 
 func (a *app) flvxHelpers() map[int64]flvxHelper {
@@ -234,7 +237,7 @@ func (a *app) flvxHelpers() map[int64]flvxHelper {
 			continue
 		}
 		installed := status.Helper.Installed && s.data.Servers[id].HelperTokenHash != ""
-		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1")}
+		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1"), RealityGuard: installed && hasCapability(status, "flvx.reality_guard.v1")}
 	}
 	return result
 }
@@ -459,11 +462,16 @@ func flvxSanitizeCoreError(text string) string {
 }
 
 func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r flvx.Report, now time.Time) error {
-	if r.Generation == "" || len(r.Generation) > 64 || r.Sequence < 1 || r.AppliedRevision > s.Desired.Revision || !r.Egress.Valid() || r.Egress != nil && r.Egress.AppliedRevision > s.Desired.Revision || !r.Listening.Valid() {
+	if r.Generation == "" || len(r.Generation) > 64 || r.Sequence < 1 || r.AppliedRevision > s.Desired.Revision || !r.Egress.Valid() || r.Egress != nil && r.Egress.AppliedRevision > s.Desired.Revision || !r.Listening.Valid() || !r.RealityGuard.Valid() {
 		return errors.New("invalid FLVX report")
 	}
 	r.Protocols = flvx.SanitizeProtocols(r.Protocols)
 	r.Core.Error = flvxSanitizeCoreError(r.Core.Error)
+	if r.RealityGuard != nil {
+		guard := *r.RealityGuard
+		guard.Error = flvxSanitizeCoreError(guard.Error)
+		r.RealityGuard = &guard
+	}
 	if r.Generation == s.Generation && r.Sequence <= s.Sequence {
 		return nil
 	}

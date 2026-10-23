@@ -212,6 +212,36 @@ func flvxPublicStatus(s flvx.Status, helperReady bool) map[string]any {
 		}
 		result["egress"] = map[string]any{"state": e.State, "error": e.Error, "applied_revision": e.AppliedRevision, "warnings": warnings}
 	}
+	// landing-reality-guard-v1 §5. The reason text stays operator-only.
+	if g := s.RealityGuard; g != nil {
+		result["reality_guard"] = map[string]any{"state": g.State, "nodes": g.Nodes}
+	}
+	return result
+}
+
+// flvxGuardCapability is the landing-reality-guard-v1 advertisement (§1): only
+// while the share's Helper renders the guard, so FLVX keeps sending today's
+// payload otherwise.
+func flvxGuardCapability(helper flvxHelper) map[string]any {
+	if !helper.Ready || !helper.RealityGuard {
+		return nil
+	}
+	return map[string]any{"versions": []int{flvx.RealityGuardVersion}}
+}
+
+// flvxGuardSummary tells the operator page whether FLVX asked for the guard,
+// how many VLESS Reality nodes it covers and why it is not in force.
+func flvxGuardSummary(s flvxShare) map[string]any {
+	nodes := 0
+	for _, n := range s.Desired.Nodes {
+		if n.Protocol == "vless_reality_vision" {
+			nodes++
+		}
+	}
+	result := map[string]any{"requested": s.Desired.GuardOn(), "reality_nodes": nodes}
+	if g := s.Status.RealityGuard; g != nil && g.Error != "" {
+		result["error"] = g.Error
+	}
 	return result
 }
 
@@ -562,6 +592,9 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 		if capability := flvxEgressCapability(s); capability != nil {
 			item["egress"] = capability
 		}
+		if capability := flvxGuardCapability(server.Helper); capability != nil {
+			item["reality_guard"] = capability
+		}
 		// landing-protocols-v1 §2. protocols above stays the v1 list: older
 		// FLVX copies it into a share and validates it against v1 names.
 		if protocols := flvxShareProtocols(s, server.Helper); protocols != nil {
@@ -591,6 +624,7 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 			item["native_landing"], item["detection_error"], item["helper"] = server.NativeLanding, server.DetectionError, server.Helper
 			item["allow_egress"], item["egress_plan"] = !s.EgressDenied, flvxEgressSummary(s)
 			item["core_pin"] = flvxCorePinSummary(s, latestCore)
+			item["reality_guard_plan"] = flvxGuardSummary(s)
 			if s.State != "revoked" && s.Status.Core.Error != "" {
 				item["core_error"] = s.Status.Core.Error
 			}

@@ -558,15 +558,16 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 	settings = a.trafficBlocksForHelper(settings, officialID, request.HelperVersion)
 	response := map[string]any{"success": true, "settings": sortedConnectionSettings(settingsForHelperMachine(settings, request.HelperVersion, machineV2)), "command": command}
 	if request.Management != nil {
-		share, egress, protocols := false, false, false
+		share, egress, protocols, guard := false, false, false, false
 		for _, capability := range request.Management.Status.Capabilities {
 			share = share || capability == "flvx.share"
 			egress = egress || capability == "flvx.egress.v1"
 			protocols = protocols || capability == "flvx.protocols.v1"
+			guard = guard || capability == "flvx.reality_guard.v1"
 		}
 		if share {
 			id, _ := strconv.ParseInt(officialID, 10, 64)
-			desired, flvxErr := a.flvxHelperDesired(r.Context(), id, serverID, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), request.Management.Status.Architecture, egress, protocols, request.FLVX)
+			desired, flvxErr := a.flvxHelperDesired(r.Context(), id, serverID, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), request.Management.Status.Architecture, egress, protocols, guard, request.FLVX)
 			if flvxErr == nil && desired != nil {
 				response["flvx"] = desired
 			}
