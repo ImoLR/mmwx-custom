@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { flvxCoreIssue, flvxExtraProtocols, flvxHelperIssue, flvxHelperUpgradable, flvxProtocolName, flvxStateText, type FLVXHelper } from "../../frontend/src/flvx-share-logic.ts";
+import { flvxCoreIssue, flvxExtraProtocols, flvxHelperIssue, flvxHelperUpgradable, flvxProtocolName, flvxRealityGuard, flvxStateText, type FLVXHelper } from "../../frontend/src/flvx-share-logic.ts";
 
 const ready: FLVXHelper = { installed: true, version: "v0.7.5", architecture: "amd64", flvx_ready: true, upgrading: false };
 const outdated: FLVXHelper = { ...ready, version: "v0.7.4", flvx_ready: false };
@@ -54,4 +54,17 @@ test("FLVX Core start problems from the Helper show on the share card", () => {
   assert.equal(flvxCoreIssue("running", reason), `FLVX Core 正在运行，但下次重启会失败：${reason}`);
   assert.equal(flvxCoreIssue("running", ""), "");
   assert.equal(flvxCoreIssue("error"), "");
+});
+
+test("Reality guard line follows capability, FLVX switch and Helper report", () => {
+  const plan = { requested: true, reality_nodes: 2 };
+  assert.deepEqual(flvxRealityGuard(false, undefined, undefined), { text: "升级 Helper 后可用", status: "", tone: "", note: "" });
+  assert.equal(flvxRealityGuard(false, plan, undefined).text, "升级 Helper 后生效 · 目前不拦截");
+  assert.equal(flvxRealityGuard(true, { requested: false, reality_nodes: 2 }, undefined).text, "FLVX 未开启");
+  assert.equal(flvxRealityGuard(true, { requested: true, reality_nodes: 0 }, undefined).text, "已开启 · 暂无 Reality 节点");
+  assert.deepEqual(flvxRealityGuard(true, plan, undefined), { text: "已开启 · 2 个 Reality 节点", status: "等待 Helper 应用", tone: "", note: "" });
+  assert.deepEqual(flvxRealityGuard(true, plan, { state: "on", nodes: 2 }), { text: "已开启 · 2 个 Reality 节点受保护", status: "已生效", tone: "online", note: "" });
+  assert.equal(flvxRealityGuard(true, { ...plan, error: "端口 41001 启动失败" }, { state: "on", nodes: 1 }).note, "端口 41001 启动失败");
+  assert.deepEqual(flvxRealityGuard(true, { ...plan, error: "x" }, { state: "error", nodes: 0 }), { text: "未生效 · 目前不拦截", status: "应用失败", tone: "error", note: "x" });
+  assert.deepEqual(flvxRealityGuard(true, plan, { state: "restart_required", nodes: 0 }), { text: "重启 FLVX Core 后生效 · 目前不拦截", status: "待重启", tone: "", note: "" });
 });

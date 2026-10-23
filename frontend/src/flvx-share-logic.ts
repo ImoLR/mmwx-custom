@@ -1,4 +1,6 @@
-export type FLVXHelper = { installed: boolean; version: string; architecture: string; flvx_ready: boolean; upgrading: boolean; flvx_protocols?: boolean };
+export type FLVXHelper = { installed: boolean; version: string; architecture: string; flvx_ready: boolean; upgrading: boolean; flvx_protocols?: boolean; flvx_reality_guard?: boolean };
+export type FLVXGuardReport = { state: "on" | "restart_required" | "error"; nodes: number };
+export type FLVXGuardPlan = { requested: boolean; reality_nodes: number; error?: string };
 export type FLVXProtocolCaps = { versions: number[]; protocols: Record<string, { udp: boolean; versions?: number[]; obfs?: string[]; transports?: string[] }> };
 
 const stateText: Record<string, string> = { active: "已启用", error: "异常", removed: "已移除", pending: "待应用", running: "运行中", stopped: "已停止", installing: "安装中", helper_outdated: "Helper 需升级" };
@@ -48,3 +50,18 @@ export function flvxExtraProtocols(caps: FLVXProtocolCaps | undefined, helper: F
   return { ready: false, text: "升级 FLVX Core 后可用（AnyTLS / Snell / Mieru）" };
 }
 
+
+// Reality 防盗 (landing-reality-guard-v1): FLVX switches it per server; the
+// Helper closes unauthenticated Reality probes with a foreign or missing SNI
+// instead of relaying them to the decoy site. capable = the share advertises
+// the guard to FLVX. status / tone drive the chip; note is the Helper's reason.
+export function flvxRealityGuard(capable: boolean, plan: FLVXGuardPlan | undefined, report: FLVXGuardReport | undefined) {
+  const note = plan?.error || "";
+  if (!capable) return { text: plan?.requested ? "升级 Helper 后生效 · 目前不拦截" : "升级 Helper 后可用", status: "", tone: "", note: "" };
+  if (!plan?.requested) return { text: "FLVX 未开启", status: "", tone: "", note: "" };
+  if (!plan.reality_nodes) return { text: "已开启 · 暂无 Reality 节点", status: "", tone: "", note: "" };
+  if (!report) return { text: `已开启 · ${plan.reality_nodes} 个 Reality 节点`, status: "等待 Helper 应用", tone: "", note: "" };
+  if (report.state === "restart_required") return { text: "重启 FLVX Core 后生效 · 目前不拦截", status: "待重启", tone: "", note: "" };
+  if (report.state === "error") return { text: "未生效 · 目前不拦截", status: "应用失败", tone: "error", note };
+  return { text: `已开启 · ${report.nodes} 个 Reality 节点受保护`, status: "已生效", tone: "online", note };
+}
