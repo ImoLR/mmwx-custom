@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { beginOrderDraft, defaultOutboundChange, isProtectedRule, moveToPosition, orderChanged, orderPayload, ruleMatcherSummary } from "../../frontend/src/xray-order-logic.ts";
+import { beginOrderDraft, defaultOutboundChange, isProtectedRule, moveToPosition, orderChanged, orderNeedsRestart, orderPayload, ruleMatcherSummary } from "../../frontend/src/xray-order-logic.ts";
 
 test("moves to top, bottom and adjacent positions without mutating input", () => {
   const items = Object.freeze(["a", "b", "c", "d"]);
@@ -51,8 +51,10 @@ test("outbound draft detects default changes and restores clean state after movi
   const draft = beginOrderDraft("outbound", items);
   draft.items = moveToPosition(draft.items, 2, -1);
   assert.equal(defaultOutboundChange(draft), null);
+  assert.equal(orderNeedsRestart(draft), false, "non-default reorder keeps Xray running");
   draft.items = moveToPosition(draft.items, 2, "top");
   assert.equal(defaultOutboundChange(draft), "warp-v4");
+  assert.equal(orderNeedsRestart(draft), true, "a new default outbound only applies after a restart");
   assert.deepEqual(orderPayload(draft), { action: "reorder", tags: ["warp-v4", "direct", "block"] });
   draft.items = moveToPosition(draft.items, 0, 1);
   assert.equal(orderChanged(draft), false);

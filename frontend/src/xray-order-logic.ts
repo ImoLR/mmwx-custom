@@ -36,6 +36,12 @@ export function defaultOutboundChange(draft: OrderDraft) {
   return draft.kind === "outbound" && draft.items[0]?.tag !== draft.original[0]?.tag ? String(draft.items[0]?.tag || "") : null;
 }
 
+// A running Xray only picks up rule order and its default outbound (the first
+// one) on restart; reordering other outbounds changes nothing at runtime.
+export function orderNeedsRestart(draft: OrderDraft) {
+  return orderChanged(draft) && (draft.kind === "rule" || defaultOutboundChange(draft) !== null);
+}
+
 export function orderPayload(draft: OrderDraft) {
   return draft.kind === "rule"
     ? { action: "set" as const, routing: { ...draft.routing, rules: [...draft.protectedRules, ...draft.items] } }

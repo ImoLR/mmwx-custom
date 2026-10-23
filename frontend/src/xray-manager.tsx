@@ -68,7 +68,7 @@ import { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, i
 import { nodeManagedServer } from "./node-card-logic";
 
 import { CompactSheet, CompactSegments } from "./compact-ui";
-import { beginOrderDraft, defaultOutboundChange, isProtectedRule, moveToPosition, orderChanged, orderPayload, ruleMatcherSummary, type MovePosition, type OrderDraft } from "./xray-order-logic";
+import { beginOrderDraft, defaultOutboundChange, isProtectedRule, moveToPosition, orderChanged, orderNeedsRestart, orderPayload, ruleMatcherSummary, type MovePosition, type OrderDraft } from "./xray-order-logic";
 
 type Tab = "config" | "inbounds" | "outbounds" | "routing";
 type Notice = { kind: "success" | "error"; text: string } | null;
@@ -862,7 +862,7 @@ export function XrayManager({ server, token, username, onClose }: { server: Remo
 
   async function saveOrder() {
     if (!orderDraft || !orderChanged(orderDraft) || busy) return;
-    if (changedDefault && !window.confirm(`默认出站将变为 ${changedDefault}，确认保存顺序？`)) return;
+    if (changedDefault && !window.confirm(`默认出站将变为 ${changedDefault}，保存后会重启 Xray（现有连接会短暂断开），确认保存顺序？`)) return;
     const draft = orderDraft;
     setBusy("save-order");
     setNotice(null);
@@ -877,9 +877,20 @@ export function XrayManager({ server, token, username, onClose }: { server: Remo
       } else {
         await mutateXrayOutbound(token, server.id, payload);
         setOrderDraft(null);
+        // The running Core keeps its old default outbound (the first one) until
+        // it restarts; the reorder alone only rewrites the config file.
+        if (orderNeedsRestart(draft)) {
+          try {
+            await restartAfterRouting();
+          } catch (error) {
+            await refreshOutbounds().catch(() => undefined);
+            setNotice({ kind: "error", text: getError(error, "顺序已保存，但重启 Xray 失败，请手动重启后新的默认出站才会生效") });
+            return;
+          }
+        }
         await refreshOutbounds();
       }
-      setNotice({ kind: "success", text: "顺序已保存" });
+      setNotice({ kind: "success", text: changedDefault ? "顺序已保存，Xray 已重启" : "顺序已保存" });
     } catch (error) {
       setOrderDraft(null);
       await (draft.kind === "rule" ? refreshRouting() : refreshOutbounds()).catch(() => undefined);
@@ -897,7 +908,7 @@ export function XrayManager({ server, token, username, onClose }: { server: Remo
   const managedTags = new Set(nodes.filter((node) => node.node_type === "routed" && node.routed_outbound_tag).map((node) => asString(node.routed_outbound_tag)));
 
   return (
-    <CompactSheet title="Xray 管理" className="xray-compact" onClose={() => { if (discardOrder()) onClose(); }} closeDisabled={Boolean(busy)} header={<div className="xray-sheet-heading"><div><h2>Xray 管理</h2><p><span className={`xray-status-dot ${running ? "running" : ""}`} />{server.name}</p></div><button type="button" disabled={Boolean(busy)} onClick={() => { if (discardOrder()) void refreshTab(); }} aria-label="刷新当前页面"><RefreshCw /></button></div>} footer={orderDraft && <div className="xray-order-bar"><span className={changedDefault ? "default-change" : undefined}>{changedDefault ? `默认出站将变为 ${changedDefault}` : unsavedOrder ? (orderDraft.kind === "rule" ? "顺序尚未保存 · 保存时只重启一次 Xray" : "顺序尚未保存") : "调整顺序后统一保存"}</span><div><button type="button" disabled={Boolean(busy)} onClick={() => setOrderDraft(null)}>取消</button><button type="button" className="primary" disabled={!unsavedOrder || Boolean(busy)} onClick={() => void saveOrder()}><Save />{busy ? "保存中…" : "保存顺序"}</button></div></div>}>
+    <CompactSheet title="Xray 管理" className="xray-compact" onClose={() => { if (discardOrder()) onClose(); }} closeDisabled={Boolean(busy)} header={<div className="xray-sheet-heading"><div><h2>Xray 管理</h2><p><span className={`xray-status-dot ${running ? "running" : ""}`} />{server.name}</p></div><button type="button" disabled={Boolean(busy)} onClick={() => { if (discardOrder()) void refreshTab(); }} aria-label="刷新当前页面"><RefreshCw /></button></div>} footer={orderDraft && <div className="xray-order-bar"><span className={changedDefault ? "default-change" : undefined}>{changedDefault ? `默认出站将变为 ${changedDefault} · 保存时会重启 Xray` : unsavedOrder ? (orderDraft.kind === "rule" ? "顺序尚未保存 · 保存时只重启一次 Xray" : "顺序尚未保存") : "调整顺序后统一保存"}</span><div><button type="button" disabled={Boolean(busy)} onClick={() => setOrderDraft(null)}>取消</button><button type="button" className="primary" disabled={!unsavedOrder || Boolean(busy)} onClick={() => void saveOrder()}><Save />{busy ? "保存中…" : "保存顺序"}</button></div></div>}>
     <div className="xray-manager">
       <CompactSegments<Tab> label="Xray 页面" value={tab} onChange={(value) => { if (value !== tab && discardOrder()) setTab(value); }} options={[["config", "配置"], ["inbounds", `入站 ${inbounds.length}`], ["outbounds", `出站 ${outbounds.length}`], ["routing", `路由 ${rules.length}`]]} />
       {notice && <div className={`xray-notice ${notice.kind}`} role="status">{notice.kind === "success" ? <Check /> : <X />}<span>{notice.text}</span></div>}
