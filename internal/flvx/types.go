@@ -139,11 +139,13 @@ func (n Node) Tag() string { return "flvxl-" + n.ID }
 
 // Desired is FLVX's complete replacement state. Egress is omitted when absent
 // so the signed Helper payload stays byte-identical for Helpers without
-// landing-egress support.
+// landing-egress support; RealityGuard (landing-reality-guard-v1, the FLVX
+// server switch) likewise, and Custom strips it for Helpers without it.
 type Desired struct {
-	Revision int64   `json:"revision"`
-	Nodes    []Node  `json:"nodes"`
-	Egress   *Egress `json:"egress,omitempty"`
+	Revision     int64   `json:"revision"`
+	Nodes        []Node  `json:"nodes"`
+	Egress       *Egress `json:"egress,omitempty"`
+	RealityGuard *bool   `json:"reality_guard,omitempty"`
 }
 
 type Config struct {
@@ -205,6 +207,9 @@ type Status struct {
 	// protocols, and only for what the running FLVX Core can account for.
 	Protocols map[string]ProtocolCap `json:"flvx_protocols,omitempty"`
 	Listening *ListeningPorts        `json:"listening_ports,omitempty"`
+	// landing-reality-guard-v1, reported while FLVX asks for the guard and
+	// the share has VLESS Reality nodes.
+	RealityGuard *RealityGuardStatus `json:"reality_guard,omitempty"`
 }
 
 // Report sequence and generation belong only to the authenticated Helper channel.
