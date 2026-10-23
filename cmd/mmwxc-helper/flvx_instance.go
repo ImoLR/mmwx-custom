@@ -48,6 +48,11 @@ type flvxLocalState struct {
 	RoutingRestartAt int64    `json:"routing_restart_at,omitempty"`
 	// landing-protocols-v1: features of the installed FLVX Core build.
 	CoreFeatures *flvxCoreFeatures `json:"core_features,omitempty"`
+	// landing-reality-guard-v1: loopback port -> guard group, kept while a
+	// node needs or still points at it; GuardRulePorts are the groups whose
+	// rules the rule set applied in AppliedEpoch holds. See flvx_guard.go.
+	Guards         map[int]flvx.Guard `json:"reality_guards,omitempty"`
+	GuardRulePorts []int              `json:"guard_rule_ports,omitempty"`
 }
 
 type flvxRealityPin struct {
@@ -103,6 +108,10 @@ type flvxManager struct {
 	listeningCache *flvx.ListeningPorts
 	listeningAt    time.Time
 	listeningKey   string
+	// landing-reality-guard-v1; see flvx_guard.go.
+	guards guardPass
+	// pickPort returns a free loopback TCP port; tests inject a fake.
+	pickPort func() (int, error)
 	// The real transport is the fixed Core CLI's gRPC client; tests inject a fake.
 	apiCall      func(context.Context, string, ...string) ([]byte, error)
 	lookupHost   func(context.Context, string) ([]string, error)

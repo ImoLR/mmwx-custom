@@ -157,10 +157,12 @@ func flvxValidRealityPin(dest string) bool {
 	return err == nil && net.ParseIP(host) != nil && !flvx.PrivateHost(host)
 }
 
-func (m *flvxManager) wanted(ctx context.Context) (map[string]string, map[string]string) {
+// wanted renders the share's admissible nodes; official are the official
+// inbound ports read once per pass (err when unavailable).
+func (m *flvxManager) wanted(ctx context.Context, official []int, err error) (map[string]string, map[string]string) {
 	wanted, problems := map[string]string{}, map[string]string{}
 	p := m.state.Payload
-	ports, err := m.readOfficial()
+	ports := append([]int(nil), official...)
 	if err != nil {
 		for _, n := range p.Desired.Nodes {
 			problems[n.ID] = "official inbound configuration unavailable"
@@ -173,6 +175,7 @@ func (m *flvxManager) wanted(ctx context.Context) (map[string]string, map[string
 		problems[e.NodeID] = e.Message
 	}
 	features := m.coreFeatures()
+	m.guards.pinned, m.guards.retained = map[string]flvx.Node{}, map[string]bool{}
 	for _, n := range p.Desired.Nodes {
 		if !flvx.Active(p.Status, p.Config, m.state.Report.TrafficUsedBytes, n, m.now()) || problems[n.ID] != "" {
 			continue
@@ -193,11 +196,15 @@ func (m *flvxManager) wanted(ctx context.Context) (map[string]string, map[string
 		if err != nil {
 			if applied := m.state.Applied[n.Tag()]; applied != "" && flvxValidRealityPin(m.state.RealityPins[n.Tag()].Dest) {
 				wanted[n.Tag()] = applied
+				m.guards.retained[n.Tag()] = true
 				m.logs.report("FLVX Reality destination retained", errors.New("destination unavailable or private; keeping the applied public pin"))
 				continue
 			}
 			problems[n.ID] = "Reality destination is unavailable or private"
 			continue
+		}
+		if node.VLESS != nil {
+			m.guards.pinned[n.Tag()] = node
 		}
 		raw, _ := json.Marshal(flvx.Inbound(node))
 		wanted[n.Tag()] = string(raw)
@@ -298,6 +305,7 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 	sort.Strings(ids)
 	m.state.Report.Protocols = flvxProtocolCaps(m.coreFeatures())
 	m.state.Report.Listening = m.listening()
+	m.state.Report.RealityGuard = m.guardStatus()
 	m.state.Report.Nodes = []flvx.NodeStatus{}
 	for _, id := range ids {
 		s := statuses[id]
@@ -458,16 +466,23 @@ func (m *flvxManager) reconcile(ctx context.Context) (result error) {
 		m.state.AppliedEpoch = epoch
 		// A new Core lost every plan outbound and rule as well.
 		m.state.EgressApplied, m.state.EgressCovered, m.state.EgressGeoBytes, m.state.EgressStale = "", nil, 0, false
+		m.state.GuardRulePorts = nil
 	}
-	// Outbounds and rules first: a node never serves before its plan applies.
+	// Outbounds and rules first (Reality guard rules included): a node never
+	// serves before its plan applies.
+	official, officialErr := m.readOfficial()
+	m.planGuards(ctx, official, officialErr)
 	m.applyEgress(ctx, epoch)
-	wanted, problems := m.wanted(ctx)
-	if !checkInbounds && reflect.DeepEqual(wanted, m.state.Applied) {
-		if err = m.limits(ctx, snapshot, wanted, nil); err != nil {
-			return err
+	wanted, problems := m.wanted(ctx, official, officialErr)
+	need := m.guardNeed(wanted)
+	if up, missing := m.guardsUp(need); !checkInbounds && !missing {
+		if final := m.guardFinal(wanted, problems, up); reflect.DeepEqual(final, m.state.Applied) {
+			if err = m.limits(ctx, snapshot, final, nil); err != nil {
+				return err
+			}
+			m.state.Report.AppliedRevision = p.Desired.Revision
+			return m.record(snapshot, final, problems)
 		}
-		m.state.Report.AppliedRevision = p.Desired.Revision
-		return m.record(snapshot, wanted, problems)
 	}
 	raw, err := m.apiCall(ctx, "lsi")
 	if err != nil {
@@ -483,12 +498,22 @@ func (m *flvxManager) reconcile(ctx context.Context) (result error) {
 	}
 	present, changing := map[string]bool{}, map[string]bool{}
 	for _, in := range list.Inbounds {
-		if !strings.HasPrefix(in.Tag, "flvxl-") {
+		if !strings.HasPrefix(in.Tag, "flvxl-") && !strings.HasPrefix(in.Tag, flvx.GuardTagPrefix) {
 			return errors.New("unexpected inbound in isolated FLVX Core")
 		}
 		present[in.Tag] = true
-		if wanted[in.Tag] == "" || m.state.Applied[in.Tag] != wanted[in.Tag] {
-			changing[in.Tag] = true
+	}
+	// Reality guards first: a node is pointed at its guard only once the
+	// guard listens; a guard that cannot be added leaves its nodes on the real
+	// dest (fail-open).
+	up, err := m.addGuards(ctx, need, present)
+	if err != nil {
+		return err
+	}
+	wanted = m.guardFinal(wanted, problems, up)
+	for tag := range present {
+		if strings.HasPrefix(tag, "flvxl-") && (wanted[tag] == "" || m.state.Applied[tag] != wanted[tag]) {
+			changing[tag] = true
 		}
 	}
 	if err = m.limits(ctx, snapshot, wanted, changing); err != nil {
@@ -537,6 +562,10 @@ func (m *flvxManager) reconcile(ctx context.Context) (result error) {
 		if err = m.persist(); err != nil {
 			return err
 		}
+	}
+	// Guards no node points at any more go last.
+	if err = m.removeGuards(ctx, present, wanted); err != nil {
+		return err
 	}
 	if snapshot, err = m.core.snapshot(ctx); err != nil {
 		return err

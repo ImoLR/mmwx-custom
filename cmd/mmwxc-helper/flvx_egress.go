@@ -647,12 +647,13 @@ func (m *flvxManager) listFLVXOutbounds(ctx context.Context) (map[string]bool, e
 	return out, nil
 }
 
-// removeStale removes FLVX plan outbounds the rules no longer reference.
-// Unreferenced outbounds are inert, so a failure only schedules a slow retry.
+// removeStale removes FLVX plan outbounds (and the Reality guard outbound)
+// the rules no longer reference. Unreferenced outbounds are inert, so a
+// failure only schedules a slow retry.
 func (m *flvxManager) removeStale(ctx context.Context, present map[string]bool, keep map[string]string) bool {
 	var stale []string
 	for tag := range present {
-		if strings.HasPrefix(tag, "flvxo-") && keep[tag] == "" {
+		if (strings.HasPrefix(tag, "flvxo-") || tag == flvx.GuardOutboundTag) && keep[tag] == "" {
 			stale = append(stale, tag)
 		}
 	}
@@ -668,11 +669,14 @@ func (m *flvxManager) removeStale(ctx context.Context, present map[string]bool, 
 // applyEgress makes the running Core match the plan before inbounds are
 // added: add new outbounds, replace the whole rule set atomically, then
 // remove outbounds no rule references. It sets the reported egress status and
-// the nodes to withhold.
+// the nodes to withhold. The Reality guard rules of this pass (planGuards)
+// lead the rule set, before the safety rule; GuardRulePorts records which
+// guards' rules the Core holds.
 func (m *flvxManager) applyEgress(ctx context.Context, epoch string) {
 	p := m.state.Payload
 	plan := p.Desired.Egress
 	active := plan.Active()
+	guards := m.guards.rules
 	geoip, geosite := m.egressCapability()
 	status := flvx.EgressStatus{Versions: []int{flvx.EgressVersion}, GeoIP: geoip, GeoSite: geosite, State: "none", AppliedRevision: m.state.EgressRevision}
 	m.withheld = map[string]string{}
@@ -690,15 +694,22 @@ func (m *flvxManager) applyEgress(ctx context.Context, epoch string) {
 		}
 		m.state.Report.Egress = &status
 	}()
-	if !active && m.state.EgressApplied == "" && !m.state.EgressStale {
+	if !active && len(guards) == 0 && m.state.EgressApplied == "" && !m.state.EgressStale {
 		m.state.EgressRevision = p.Desired.Revision
 		status.AppliedRevision = p.Desired.Revision
 		return
 	}
 	fail := func(reason string) {
-		status.State, status.Error = "error", reason
+		// Guard rules alone never turn the (plan-less) egress status into an
+		// error; the guard reports its own state.
+		if active || len(guards) == 0 {
+			status.State, status.Error = "error", reason
+		}
 		if active {
 			m.withhold(plan, reason)
+		}
+		if len(guards) > 0 {
+			m.guards.rulesIssue = "Reality 防盗规则未生效：" + reason
 		}
 	}
 	// Custom validated and signed the plan; check again once per plan, and
@@ -720,16 +731,32 @@ func (m *flvxManager) applyEgress(ctx context.Context, epoch string) {
 		fail(m.egressInvalid)
 		return
 	}
-	ready, _ := m.routingReady(ctx, epoch)
+	ready, missing := m.routingReady(ctx, epoch)
 	if !ready {
+		// Guards wait for a Core restart (fail-open meanwhile); the egress
+		// plan restarts the Core itself (ensureRouting).
+		m.guards.restart = missing
 		if !active {
 			// A Core without RoutingService never received our rules.
 			m.state.EgressApplied, m.state.EgressCovered, m.state.EgressGeoBytes, m.state.EgressStale, m.state.EgressRevision = "", nil, 0, false, p.Desired.Revision
+			m.state.GuardRulePorts = nil
 			status.AppliedRevision = p.Desired.Revision
+			if len(guards) > 0 && !missing {
+				m.guards.rulesIssue = "Reality 防盗规则未生效：FLVX Core 的路由 API 暂不可用"
+			}
 			return
 		}
 		fail("FLVX Core 的路由 API 暂不可用")
 		return
+	}
+	rulePorts := make([]int, 0, len(guards))
+	for port := range guards {
+		rulePorts = append(rulePorts, port)
+	}
+	sort.Ints(rulePorts)
+	renderKey := key
+	if len(guards) > 0 {
+		renderKey = flvxHash(map[string]any{"plan": plan, "guards": guards})
 	}
 	now := m.now()
 	c := &m.egress
@@ -737,9 +764,14 @@ func (m *flvxManager) applyEgress(ctx context.Context, epoch string) {
 	if c.err != nil || c.render.retrySoon {
 		wait = flvxEgressRetry
 	}
-	if c.key != key || c.epoch != epoch || now.Sub(c.at) >= wait {
+	if c.key != renderKey || c.epoch != epoch || now.Sub(c.at) >= wait {
 		render, err := m.renderEgress(ctx, plan)
-		*c = flvxEgressCache{key: key, epoch: epoch, at: now, render: render, err: err}
+		if err == nil && len(guards) > 0 {
+			render.outbounds[flvx.GuardOutboundTag] = flvx.CanonicalJSON(flvx.GuardOutbound())
+			render.rules = append(flvx.GuardRules(guards), render.rules...)
+			render.hash = flvxHash(map[string]any{"outbounds": render.outbounds, "rules": render.rules})
+		}
+		*c = flvxEgressCache{key: renderKey, epoch: epoch, at: now, render: render, err: err}
 	}
 	if c.err != nil {
 		fail(c.err.Error())
@@ -748,7 +780,7 @@ func (m *flvxManager) applyEgress(ctx context.Context, epoch string) {
 	r := c.render
 	status.Warnings = append(status.Warnings, r.warnings...)
 	applied := r.hash
-	if !active {
+	if !active && len(guards) == 0 {
 		applied = ""
 	}
 	if applied == m.state.EgressApplied && !m.state.EgressStale {
@@ -756,6 +788,7 @@ func (m *flvxManager) applyEgress(ctx context.Context, epoch string) {
 			status.State = "applied"
 		}
 		m.state.EgressRevision, status.AppliedRevision = p.Desired.Revision, p.Desired.Revision
+		m.state.GuardRulePorts = rulePorts
 		return
 	}
 	if applied == m.state.EgressApplied && m.state.EgressStale && now.Before(m.egressCleanupAt) {
@@ -764,6 +797,7 @@ func (m *flvxManager) applyEgress(ctx context.Context, epoch string) {
 		}
 		status.AppliedRevision = m.state.EgressRevision
 		status.Warnings = append(status.Warnings, "旧出站清理失败，稍后重试")
+		m.state.GuardRulePorts = rulePorts
 		return
 	}
 	if err := m.egressMemoryCheck(r); err != nil {
@@ -804,6 +838,7 @@ func (m *flvxManager) applyEgress(ctx context.Context, epoch string) {
 	cleaned := m.removeStale(ctx, present, r.outbounds)
 	m.state.EgressApplied, m.state.EgressCovered, m.state.EgressRevision = applied, r.covered, p.Desired.Revision
 	m.state.EgressGeoBytes, m.state.EgressStale = r.geoBytes, !cleaned
+	m.state.GuardRulePorts = rulePorts
 	if !active {
 		m.state.EgressCovered, m.state.EgressGeoBytes = nil, 0
 	}
