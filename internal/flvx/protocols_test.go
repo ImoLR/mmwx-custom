@@ -2,6 +2,7 @@ package flvx
 
 import (
 	"bytes"
+	"crypto/x509"
 	"encoding/json"
 	"os"
 	"reflect"
@@ -133,13 +134,22 @@ func TestExtraProtocolCapabilityGate(t *testing.T) {
 func TestAnyTLSCertificateValidity(t *testing.T) {
 	f := loadProtocolFixture(t)
 	d := Desired{Revision: 1, Nodes: []Node{f.anytls}}
-	for name, now := range map[string]time.Time{"expired": time.Now().AddDate(11, 0, 0), "not yet valid": time.Now().AddDate(0, 0, -2)} {
+	// Anchor on the fixture's own validity window, not the wall clock, so the
+	// test does not start failing once the fixture certificate gets older.
+	cert, err := x509.ParseCertificate(singlePEM(f.anytls.AnyTLS.TLS.CertificatePEM).Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, now := range map[string]time.Time{"expired": cert.NotAfter.Add(time.Second), "not yet valid": cert.NotBefore.Add(-certificateSkew - time.Second)} {
 		if e := ValidateDesiredWith(d, f.shareRange, nil, DesiredOptions{Protocols: f.allCaps, Now: now}); len(e) != 1 || e[0].Field != "anytls.tls" {
 			t.Fatalf("%s certificate accepted: %+v", name, e)
 		}
 	}
 	if e := ValidateDesiredWith(d, f.shareRange, nil, DesiredOptions{Protocols: f.allCaps}); len(e) > 0 {
 		t.Fatalf("structural check failed: %+v", e)
+	}
+	if e := ValidateDesiredWith(d, f.shareRange, nil, DesiredOptions{Protocols: f.allCaps, Now: cert.NotBefore.Add(-certificateSkew + time.Second)}); len(e) > 0 {
+		t.Fatalf("certificate inside the clock skew rejected: %+v", e)
 	}
 }
 
