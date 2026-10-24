@@ -109,7 +109,7 @@ test("server card badge still shows the available connection_count, now as N/上
   assert.ok(source.includes('<span className="connection-tag-value">{badge.text}</span>'));
 });
 
-test("machine protection v2 fields prefill 1000 / 500 / 10, old Helpers see 助手版本过旧 and send only old fields", async () => {
+test("machine protection v2 fields prefill 1000 / 200 / 10, old Helpers see 助手版本过旧 and send only old fields", async () => {
   const data: any = fixture();
   data.record.snapshot.machine_protection = { supported: true, configured: { enabled: false, max_active: null, max_total: null }, effective: true, blocking: false, active: 1, total: 10, controlled_ports: [443] };
   let view = dialog(data);
@@ -136,7 +136,7 @@ test("machine protection v2 fields prefill 1000 / 500 / 10, old Helpers see 助�
   assert.match(block, /已含 FLVX 业务端口（TCP 1 \/ UDP 1）/);
   assert.match(block, /原值 262,144/);
   assert.equal(input(tree, "整机连接上限（TCP+UDP）").props.value, 1000);
-  assert.equal(input(tree, "TIME_WAIT 上限").props.value, 500);
+  assert.equal(input(tree, "TIME_WAIT 上限").props.value, 200);
   assert.equal(input(tree, "CLOSE_WAIT 超时（秒）").props.value, 10);
   input(tree, "TIME_WAIT 上限").props.onChange({ target: { value: "800" } });
   tree = view.render();

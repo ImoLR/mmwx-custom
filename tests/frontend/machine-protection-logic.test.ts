@@ -45,7 +45,7 @@ test("breakdown lists every state, UDP and drops, and says whether FLVX ports ar
 });
 
 test("settings form prefills 1000 / 500 / 10 and old Helpers never get the new fields", () => {
-  assert.deepEqual(machineSettingsForm(null), { enabled: false, max_active: null, max_total: 1000, tw_buckets: 500, close_wait_seconds: 10 });
+  assert.deepEqual(machineSettingsForm(null), { enabled: false, max_active: null, max_total: 1000, tw_buckets: 200, close_wait_seconds: 10 });
   assert.deepEqual(machineSettingsForm({ enabled: true, max_active: null, max_total: 1500, tw_buckets: 0, close_wait_seconds: 0 }), { enabled: true, max_active: null, max_total: 1500, tw_buckets: 0, close_wait_seconds: 0 });
   const form = machineSettingsForm({ enabled: true, max_active: null, max_total: 1000 });
   assert.deepEqual(Object.keys(machineSettingsForSave(form, false)).sort(), ["enabled", "max_active", "max_total"]);

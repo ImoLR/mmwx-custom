@@ -26,7 +26,7 @@ const (
 	flvxBusinessPortsPath       = "/run/flvx/business-ports.json"
 	tcpMaxTWBucketsPath         = "/proc/sys/net/ipv4/tcp_max_tw_buckets"
 
-	defaultMachineTWBuckets        = int64(500)
+	defaultMachineTWBuckets        = int64(200)
 	defaultMachineCloseWaitSeconds = int64(10)
 	// Blocking starts at total >= cap and ends only once total < cap*95/100, so
 	// a machine hovering at the cap does not flap on every sample.

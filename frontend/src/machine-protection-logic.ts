@@ -1,7 +1,7 @@
 import type { ConnectionMetric, MachineConnections, MachinePortSources, MachineProtectionSettings, MachineSummary } from "./types";
 
-/** User decision 2026-10-20: 1000 whole-machine connections, TIME_WAIT 500, CLOSE_WAIT 10 s. */
-export const machineProtectionDefaults = { maxTotal: 1000, twBuckets: 500, closeWaitSeconds: 10 } as const;
+/** User decisions: 1000 whole-machine connections, CLOSE_WAIT 10 s (2026-10-20); TIME_WAIT 200 (2026-10-24). */
+export const machineProtectionDefaults = { maxTotal: 1000, twBuckets: 200, closeWaitSeconds: 10 } as const;
 
 export const machineWarningRatio = 0.8;
 

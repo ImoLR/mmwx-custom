@@ -11,10 +11,11 @@ import (
 )
 
 // Defaults approved by the user (2026-10-20): every machine with a Helper is
-// protected at 1000 whole-machine connections, TIME_WAIT 500, CLOSE_WAIT 10 s.
+// protected at 1000 whole-machine connections, CLOSE_WAIT 10 s; TIME_WAIT
+// 500 → 200 (user, 2026-10-24).
 const (
 	defaultMachineMaxTotal         = int64(1000)
-	defaultMachineTWBuckets        = int64(500)
+	defaultMachineTWBuckets        = int64(200)
 	defaultMachineCloseWaitSeconds = int64(10)
 )
 

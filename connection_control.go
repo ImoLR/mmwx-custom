@@ -541,7 +541,7 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 		if applied, err := a.helperState.applyMachineProtectionDefaults(officialID); err != nil {
 			log.Printf("[mmwx-custom] machine protection defaults server=%s failed: %v", officialID, err)
 		} else if applied {
-			log.Printf("[mmwx-custom] machine protection defaults enabled server=%s (1000 / TIME_WAIT 500 / CLOSE_WAIT 10 s)", officialID)
+			log.Printf("[mmwx-custom] machine protection defaults enabled server=%s (1000 / TIME_WAIT 200 / CLOSE_WAIT 10 s)", officialID)
 		}
 	}
 	settings := a.helperState.connectionSettings(officialID)

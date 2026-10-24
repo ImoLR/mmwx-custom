@@ -219,7 +219,7 @@ export type ConnectionMetric = {
   machine?: MachineSummary;
 };
 
-/** tw_buckets / close_wait_seconds: null = Helper default (500 / 10 s), 0 = off. */
+/** tw_buckets / close_wait_seconds: null = Helper default (200 / 10 s), 0 = off. */
 export type MachineProtectionSettings = {
   enabled: boolean;
   max_active: number | null;

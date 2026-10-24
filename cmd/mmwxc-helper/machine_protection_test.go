@@ -487,8 +487,8 @@ func TestMachineProtectionTWBucketsSaveApplyRestore(t *testing.T) {
 	}
 	enabled := &machineProtectionSettings{Enabled: true, MaxTotal: int64Value(1000)}
 	status := manager.reconcile(context.Background(), enabled, machineInputWithTotal(10, 443))
-	if sysctl.value != 500 || len(persisted) != 1 || persisted[0].Original != 262144 || persisted[0].Applied != 500 || status.TWBuckets == nil || *status.TWBuckets.Current != 500 || *status.TWBuckets.Original != 262144 {
-		t.Fatalf("default TIME_WAIT 500: kernel=%d persisted=%#v status=%#v", sysctl.value, persisted, status.TWBuckets)
+	if sysctl.value != 200 || len(persisted) != 1 || persisted[0].Original != 262144 || persisted[0].Applied != 200 || status.TWBuckets == nil || *status.TWBuckets.Current != 200 || *status.TWBuckets.Original != 262144 {
+		t.Fatalf("default TIME_WAIT 200: kernel=%d persisted=%#v status=%#v", sysctl.value, persisted, status.TWBuckets)
 	}
 	for loop := 0; loop < 3; loop++ {
 		manager.reconcile(context.Background(), enabled, machineInputWithTotal(10, 443))
@@ -542,7 +542,7 @@ func TestMachineProtectionStatusFileContract(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]any{"version": 1.0, "owner": "mmwx", "updated_at": "2026-10-20T16:41:47Z", "enabled": true, "max_total": 1000.0, "tw_buckets": 500.0, "close_wait_seconds": 10.0, "total": 823.0, "tcp": 700.0, "udp": 123.0, "blocking": false, "dropped_total": 0.0}
+	want := map[string]any{"version": 1.0, "owner": "mmwx", "updated_at": "2026-10-20T16:41:47Z", "enabled": true, "max_total": 1000.0, "tw_buckets": 200.0, "close_wait_seconds": 10.0, "total": 823.0, "tcp": 700.0, "udp": 123.0, "blocking": false, "dropped_total": 0.0}
 	if !reflect.DeepEqual(decoded, want) {
 		t.Fatalf("status file = %s\nwant %#v", raw, want)
 	}
