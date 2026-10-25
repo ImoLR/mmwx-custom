@@ -127,7 +127,15 @@ type externalOwnershipStatus struct {
 	RuntimeBinary    string    `json:"runtime_binary,omitempty"`
 	LastRepairAt     time.Time `json:"last_repair_at,omitempty"`
 	LastRepairReason string    `json:"last_repair_reason,omitempty"`
-	Error            string    `json:"error,omitempty"`
+	// PortConflicts: other processes on official inbound ports (Helper v0.7.14+).
+	PortConflicts []ownershipPortConflict `json:"port_conflicts,omitempty"`
+	Error         string                  `json:"error,omitempty"`
+}
+
+type ownershipPortConflict struct {
+	Port    int    `json:"port"`
+	PID     int    `json:"pid"`
+	Process string `json:"process,omitempty"`
 }
 
 type managementReport struct {

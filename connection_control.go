@@ -254,6 +254,7 @@ type serverDetailedConnectionSnapshot struct {
 	Global            serverGlobalConnections            `json:"global"`
 	Core              serverCoreConnectionStatus         `json:"core"`
 	MachineProtection *serverMachineProtectionStatus     `json:"machine_protection,omitempty"`
+	Listening         *serverListeningPorts              `json:"listening_ports,omitempty"`
 	SampledAt         time.Time                          `json:"sampled_at"`
 }
 
@@ -682,6 +683,7 @@ func normalizeDetailedSnapshot(snapshot serverDetailedConnectionSnapshot) server
 	if snapshot.MachineProtection != nil && snapshot.MachineProtection.ControlledPorts == nil {
 		snapshot.MachineProtection.ControlledPorts = []uint32{}
 	}
+	snapshot.Listening = sanitizeListeningPorts(snapshot.Listening)
 	for index := range snapshot.Inbounds {
 		if snapshot.Inbounds[index].OnlineIPs == nil {
 			snapshot.Inbounds[index].OnlineIPs = []serverOnlineIP{}
@@ -715,6 +717,10 @@ func (a *app) serverConnectionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if serverID, ok := parseConnectionAssignmentsPath(r.URL.Path); ok {
 		a.connectionAssignmentsHandler(w, r, serverID)
+		return
+	}
+	if serverID, ok := parseListeningPortsPath(r.URL.Path); ok {
+		a.listeningPortsHandler(w, r, serverID)
 		return
 	}
 	serverID, ok := parseServerConnectionsPath(r.URL.Path)
@@ -769,6 +775,8 @@ func (a *app) writeServerConnections(w http.ResponseWriter, r *http.Request, ser
 	record, exists := a.detailedConnections[serverID]
 	a.connectionMu.Unlock()
 	record.Snapshot = normalizeDetailedSnapshot(record.Snapshot)
+	// Listening ports have their own endpoint; keep this payload unchanged.
+	record.Snapshot.Listening = nil
 	available := exists && time.Since(record.UpdatedAt) <= helperStaleTimeout
 	settings := sortedConnectionSettings(a.helperState.connectionSettings(serverID))
 	management := serverManagementView{Users: []serverManagementUser{}, UnassignedPorts: []serverUnassignedPort{}, AssignableUsers: []string{}, Warnings: []string{}}

@@ -576,6 +576,9 @@ func foreignPortOwners(portOwners map[int]map[int]struct{}, mainPID int, comm fu
 		}
 		return conflicts[i].PID < conflicts[j].PID
 	})
+	if len(conflicts) > 32 {
+		conflicts = conflicts[:32]
+	}
 	return conflicts
 }
 
