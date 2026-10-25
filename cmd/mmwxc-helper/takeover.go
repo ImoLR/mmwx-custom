@@ -333,7 +333,7 @@ func waitExternalTakeoverHealthy(ctx context.Context, client *http.Client, cfg c
 		case <-time.After(time.Second):
 		}
 	}
-	return fmt.Errorf("external health timeout: controller_mode=%s controller_status=%s controller_error=%v agent_active=%t service_active=%t service_owned=%t runtime_owned=%t single_core=%t official_config=%t core_ready=%t main_pid=%d service_state=%s", lastRuntime.XrayMode, lastRuntime.Status, lastRuntimeErr, serviceActive(ctx, "mmw-agent.service"), lastStatus.ServiceActive, lastStatus.ServiceOwned, lastStatus.RuntimeOwned, lastStatus.SingleCore, lastStatus.OfficialConfig, lastStatus.CoreReady, lastStatus.MainPID, serviceStateSummary(ctx, "xray.service"))
+	return fmt.Errorf("%sexternal health timeout: controller_mode=%s controller_status=%s controller_error=%v agent_active=%t service_active=%t service_owned=%t runtime_owned=%t single_core=%t official_config=%t core_ready=%t main_pid=%d service_state=%s", portConflictPrefix(lastStatus.PortConflicts), lastRuntime.XrayMode, lastRuntime.Status, lastRuntimeErr, serviceActive(ctx, "mmw-agent.service"), lastStatus.ServiceActive, lastStatus.ServiceOwned, lastStatus.RuntimeOwned, lastStatus.SingleCore, lastStatus.OfficialConfig, lastStatus.CoreReady, lastStatus.MainPID, serviceStateSummary(ctx, "xray.service"))
 }
 
 func serviceStateSummary(ctx context.Context, service string) string {

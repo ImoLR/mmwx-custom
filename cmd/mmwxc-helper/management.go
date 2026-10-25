@@ -160,6 +160,7 @@ type commandExecutor struct {
 	logHousekeeping  *logHousekeeping
 	progressReporter *updateProgressReporter
 	startupUpdate    bool
+	listening        listeningPortsScanner
 }
 
 func (executor *commandExecutor) reportUpdateProgress(component, phase, version, message string, details ...updateProgressDetails) {
@@ -401,7 +402,8 @@ func completedCommand(ids []string, id string) bool {
 func sanitizeManagementMessage(value string) string {
 	value = strings.TrimSpace(value)
 	if len(value) > 512 {
-		value = value[:512]
+		// Never split a multi-byte rune: the signed message must survive JSON.
+		value = strings.ToValidUTF8(value[:512], "")
 	}
 	return value
 }

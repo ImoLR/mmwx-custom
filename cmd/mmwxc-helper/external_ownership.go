@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -93,7 +94,16 @@ type externalOwnershipStatus struct {
 	RuntimeBinary    string    `json:"runtime_binary,omitempty"`
 	LastRepairAt     time.Time `json:"last_repair_at,omitempty"`
 	LastRepairReason string    `json:"last_repair_reason,omitempty"`
-	Error            string    `json:"error,omitempty"`
+	// PortConflicts are other processes listening on official inbound ports
+	// (what makes single_core false), for an error that names the culprit.
+	PortConflicts []ownershipPortConflict `json:"port_conflicts,omitempty"`
+	Error         string                  `json:"error,omitempty"`
+}
+
+type ownershipPortConflict struct {
+	Port    int    `json:"port"`
+	PID     int    `json:"pid"`
+	Process string `json:"process,omitempty"`
 }
 
 // armExternalOwnership performs the downtime-bounded half of an external-mode
@@ -239,7 +249,7 @@ func (manager *lifecycleManager) activateExternalOwnership(ctx context.Context, 
 		}
 		status := manager.externalOwnershipStatus(ctx, state)
 		if !status.RuntimeOwned || !status.SingleCore {
-			return fmt.Errorf("external ownership verification failed: runtime_owned=%t single_core=%t", status.RuntimeOwned, status.SingleCore)
+			return fmt.Errorf("%sexternal ownership verification failed: runtime_owned=%t single_core=%t", portConflictPrefix(status.PortConflicts), status.RuntimeOwned, status.SingleCore)
 		}
 		return nil
 	}()
@@ -475,7 +485,7 @@ func (manager *lifecycleManager) installOrUpdateExternalOwnedCore(ctx context.Co
 		}
 		status := manager.externalOwnershipStatus(ctx, state)
 		if !status.RuntimeOwned || !status.SingleCore || !status.CoreReady {
-			return fmt.Errorf("updated owned Core is unhealthy: runtime_owned=%t single_core=%t ready=%t", status.RuntimeOwned, status.SingleCore, status.CoreReady)
+			return fmt.Errorf("%supdated owned Core is unhealthy: runtime_owned=%t single_core=%t ready=%t", portConflictPrefix(status.PortConflicts), status.RuntimeOwned, status.SingleCore, status.CoreReady)
 		}
 		return nil
 	}()
@@ -531,14 +541,8 @@ func (manager *lifecycleManager) externalOwnershipStatus(ctx context.Context, st
 	count, _ := countXrayProcesses()
 	ports, _ := officialInboundPorts()
 	portOwners, _ := listeningPIDsForPorts(ports)
-	portsOwned := true
-	for _, owners := range portOwners {
-		for pid := range owners {
-			if pid != status.MainPID {
-				portsOwned = false
-			}
-		}
-	}
+	status.PortConflicts = foreignPortOwners(portOwners, status.MainPID, func(pid int) string { return processComm("/proc", pid) })
+	portsOwned := len(status.PortConflicts) == 0
 	status.SingleCore = count == 1 && status.RuntimeOwned && portsOwned && !serviceActive(ctx, coreServiceName)
 	if _, err := hashValidJSONFile(officialConfigPath); err == nil {
 		status.OfficialConfig = true
@@ -550,9 +554,51 @@ func (manager *lifecycleManager) externalOwnershipStatus(ctx context.Context, st
 		status.CoreReady = err == nil
 	}
 	if state.Enabled && (!status.ServiceOwned || !status.RuntimeOwned || !status.SingleCore || !status.OfficialConfig || !status.CoreReady) {
-		status.Error = "external ownership is not fully healthy"
+		status.Error = portConflictPrefix(status.PortConflicts) + "external ownership is not fully healthy"
 	}
 	return status
+}
+
+// foreignPortOwners lists the listeners of official inbound ports that are
+// not the serving Core (mainPID), sorted by port and PID.
+func foreignPortOwners(portOwners map[int]map[int]struct{}, mainPID int, comm func(int) string) []ownershipPortConflict {
+	var conflicts []ownershipPortConflict
+	for port, owners := range portOwners {
+		for pid := range owners {
+			if pid != mainPID {
+				conflicts = append(conflicts, ownershipPortConflict{Port: port, PID: pid, Process: comm(pid)})
+			}
+		}
+	}
+	sort.Slice(conflicts, func(i, j int) bool {
+		if conflicts[i].Port != conflicts[j].Port {
+			return conflicts[i].Port < conflicts[j].Port
+		}
+		return conflicts[i].PID < conflicts[j].PID
+	})
+	return conflicts
+}
+
+// portConflictPrefix names who holds an official inbound port, ahead of the
+// technical health details (the result message is cut at 512 bytes):
+// 「端口 10017 被 lkbk-core (PID 212883) 占用；」. Empty without conflicts.
+func portConflictPrefix(conflicts []ownershipPortConflict) string {
+	if len(conflicts) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, 4)
+	for index, conflict := range conflicts {
+		if index == 3 {
+			parts = append(parts, fmt.Sprintf("另有 %d 处端口被占用", len(conflicts)-3))
+			break
+		}
+		name := conflict.Process
+		if name == "" {
+			name = "未知进程"
+		}
+		parts = append(parts, fmt.Sprintf("端口 %d 被 %s (PID %d) 占用", conflict.Port, name, conflict.PID))
+	}
+	return strings.Join(parts, "；") + "；"
 }
 
 func validateOwnedCoreAndConfig(ctx context.Context) error {

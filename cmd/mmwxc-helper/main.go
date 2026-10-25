@@ -26,7 +26,7 @@ const (
 	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
 	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
 	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
-	helperVersion        = "v0.7.13"
+	helperVersion        = "v0.7.14"
 )
 
 type config struct {
@@ -167,6 +167,7 @@ func main() {
 		// most recently persisted reconcile result instead.
 		machineStatus := state.MachineProtection
 		snapshot.MachineProtection = &machineStatus
+		snapshot.Listening = executor.listening.current(time.Now())
 		_ = json.NewEncoder(os.Stdout).Encode(snapshot)
 		return
 	}
@@ -263,6 +264,7 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 	cancelMachine()
 	snapshot.MachineProtection = &machineStatus
 	state.MachineProtection = machineStatus
+	snapshot.Listening = executor.listening.current(time.Now())
 	if snapshot.Core.Available {
 		applyNftables(nftables, snapshot, state.Settings, logs)
 	}

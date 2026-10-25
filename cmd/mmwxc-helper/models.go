@@ -408,6 +408,7 @@ type detailedConnectionSnapshot struct {
 	Global            coreGlobalSnapshot        `json:"global"`
 	Core              coreStatus                `json:"core"`
 	MachineProtection *machineProtectionStatus  `json:"machine_protection,omitempty"`
+	Listening         *listeningPortsReport     `json:"listening_ports,omitempty"`
 	SampledAt         time.Time                 `json:"sampled_at"`
 	// The whole-machine TCP+UDP rows read in the same pass as System.
 	machine *machineConnectionCounts
