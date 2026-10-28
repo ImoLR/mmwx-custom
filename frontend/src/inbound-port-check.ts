@@ -105,8 +105,13 @@ export function unavailablePorts(report: ListeningPortsResponse | null | undefin
   return ports;
 }
 
+// 随机 stays below the Linux ephemeral range (32768–60999): a port picked there
+// can later be held by an outbound connection and keep Xray from binding.
+export const RANDOM_PORT_START = 10000;
+export const RANDOM_PORT_END = 32767;
+
 export function pickAvailablePort(unavailable: Set<number>, random = Math.random) {
   const candidates: number[] = [];
-  for (let port = 10000; port <= 65535; port++) if (!unavailable.has(port)) candidates.push(port);
+  for (let port = RANDOM_PORT_START; port <= RANDOM_PORT_END; port++) if (!unavailable.has(port)) candidates.push(port);
   return candidates[Math.floor(random() * candidates.length)] || 0;
 }
