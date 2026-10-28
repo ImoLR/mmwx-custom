@@ -103,7 +103,7 @@ func TestFLVXLandingProtocolsPostgres(t *testing.T) {
 	flvxTestProtocolsHelper(a, 7, true)
 	caps := map[string]flvx.ProtocolCap{"anytls": {UDP: true}, "snell": {UDP: true, Versions: []int{4, 5}, Obfs: []string{"none", "http", "tls"}}, "mieru": {UDP: true, Transports: []string{"TCP", "UDP"}}, "socks": {UDP: true}}
 	listening := &flvx.ListeningPorts{TCP: []int{30010, 30999}, UDP: []int{30011}}
-	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, flvxProtocolsReport(1, caps, listening, 0)); err != nil {
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, false, flvxProtocolsReport(1, caps, listening, 0)); err != nil {
 		t.Fatal(err)
 	}
 	shares, _ = flvxTestShares(t, a, "/api/custom/flvx/v1/shares", "flvx_fixture")
@@ -129,7 +129,7 @@ func TestFLVXLandingProtocolsPostgres(t *testing.T) {
 		t.Fatalf("Snell (TCP) next to a UDP-only listener: %d %s", code, body)
 	}
 	// A node keeps its port when the Helper later sees it listening (own port).
-	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, flvxProtocolsReport(2, caps, &flvx.ListeningPorts{TCP: []int{30003, 30010}, UDP: []int{30005}}, 2)); err != nil {
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, false, flvxProtocolsReport(2, caps, &flvx.ListeningPorts{TCP: []int{30003, 30010}, UDP: []int{30005}}, 2)); err != nil {
 		t.Fatal(err)
 	}
 	if code, body := put(3, ss, anytls, snellOnUDP, mieru); code != 200 {
@@ -151,11 +151,11 @@ func TestFLVXLandingProtocolsPostgres(t *testing.T) {
 
 	// The capable Helper receives the nodes, a v0.7.10 Helper never does
 	// (it would reject the whole signed payload on the unknown fields).
-	e, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, nil)
+	e, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, false, nil)
 	if err != nil || len(e.Payload.Desired.Nodes) != 4 {
 		t.Fatalf("capable payload: %v %+v", err, e)
 	}
-	e, err = a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, false, false, nil)
+	e, err = a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, false, false, false, nil)
 	if err != nil || len(e.Payload.Desired.Nodes) != 1 || e.Payload.Desired.Nodes[0].ID != ss.ID || !e.Verify("helper", "7", time.Now()) {
 		t.Fatalf("old Helper payload: %v %+v", err, e)
 	}
@@ -205,7 +205,7 @@ func TestFLVXCorePinPostgres(t *testing.T) {
 	}
 	payload := func() flvx.Payload {
 		t.Helper()
-		e, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, nil)
+		e, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, false, nil)
 		if err != nil || e == nil {
 			t.Fatal(err)
 		}
@@ -259,7 +259,7 @@ func TestFLVXCoreErrorOperatorOnlyPostgres(t *testing.T) {
 	reason := "FLVX Core 账户 mmwxc-flvx 无法访问 /opt/mmwxc（0700 root:root）：目录带 ACL，Helper 不改动"
 	report := flvxProtocolsReport(1, nil, nil, 0)
 	report.Core = flvx.Core{State: "error", Error: reason + "\n\x1b[31m" + strings.Repeat("长", 400)}
-	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, report); err != nil {
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, false, report); err != nil {
 		t.Fatal(err)
 	}
 	var admin struct {
@@ -284,7 +284,7 @@ func TestFLVXCoreErrorOperatorOnlyPostgres(t *testing.T) {
 	}
 	// A later healthy report clears it.
 	report = flvxProtocolsReport(2, nil, nil, 0)
-	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, report); err != nil {
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, false, report); err != nil {
 		t.Fatal(err)
 	}
 	if w = flvxTestRequest(a, "GET", "/api/custom/flvx/admin", "operator-token", nil); strings.Contains(w.Body.String(), "core_error") {

@@ -70,7 +70,7 @@ func TestFLVXRealityGuardPostgres(t *testing.T) {
 	if code, body := put(flvx.Desired{Revision: 1, Nodes: []flvx.Node{ss, reality}}); code != 200 {
 		t.Fatalf("old FLVX payload: %d %s", code, body)
 	}
-	oldPayload, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, nil)
+	oldPayload, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,13 +97,13 @@ func TestFLVXRealityGuardPostgres(t *testing.T) {
 	if code, body := put(flvx.Desired{Revision: 2, Nodes: []flvx.Node{ss, reality}, RealityGuard: &on}); code != 200 {
 		t.Fatalf("guard on: %d %s", code, body)
 	}
-	guardPayload, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, nil)
+	guardPayload, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, false, nil)
 	if err != nil || !guardPayload.Payload.Desired.GuardOn() || !guardPayload.Verify("helper", "7", time.Now()) {
 		t.Fatalf("guard Helper payload: %v %+v", err, guardPayload.Payload.Desired.RealityGuard)
 	}
 	// A Helper without the capability (e.g. downgraded) never sees the
 	// switch: it would reject the payload on the unknown field.
-	stripped, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, nil)
+	stripped, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, false, false, nil)
 	raw, _ = json.Marshal(stripped.Payload)
 	if err != nil || strings.Contains(string(raw), "reality_guard") || len(stripped.Payload.Desired.Nodes) != 2 || !stripped.Verify("helper", "7", time.Now()) {
 		t.Fatalf("old Helper payload: %v %s", err, raw)
@@ -113,7 +113,7 @@ func TestFLVXRealityGuardPostgres(t *testing.T) {
 	// the operator.
 	report := flvxProtocolsReport(1, nil, nil, 2)
 	report.RealityGuard = &flvx.RealityGuardStatus{State: "on", Nodes: 1, Error: "Reality 防盗辅助入站（本机端口 41001）启动失败\n相关节点暂按未开启处理"}
-	if _, err = a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, report); err != nil {
+	if _, err = a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, false, report); err != nil {
 		t.Fatal(err)
 	}
 	status := flvxTestRequest(a, "GET", "/api/custom/flvx/v1/shares/7/status", "flvx_fixture", nil).Body.String()
@@ -134,7 +134,7 @@ func TestFLVXRealityGuardPostgres(t *testing.T) {
 	// Out-of-contract states are rejected with the whole report.
 	bad := flvxProtocolsReport(2, nil, nil, 2)
 	bad.RealityGuard = &flvx.RealityGuardStatus{State: "applied", Nodes: 1}
-	if _, err = a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, bad); err == nil {
+	if _, err = a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, false, bad); err == nil {
 		t.Fatal("invalid guard status accepted")
 	}
 	// Switched off: the Helper stops reporting, and so does Custom.
@@ -142,7 +142,7 @@ func TestFLVXRealityGuardPostgres(t *testing.T) {
 	if code, body := put(flvx.Desired{Revision: 3, Nodes: []flvx.Node{ss, reality}, RealityGuard: &off}); code != 200 {
 		t.Fatalf("guard off: %d %s", code, body)
 	}
-	if _, err = a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, flvxProtocolsReport(3, nil, nil, 3)); err != nil {
+	if _, err = a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, false, flvxProtocolsReport(3, nil, nil, 3)); err != nil {
 		t.Fatal(err)
 	}
 	if status = flvxTestRequest(a, "GET", "/api/custom/flvx/v1/shares/7/status", "flvx_fixture", nil).Body.String(); strings.Contains(status, "reality_guard") {

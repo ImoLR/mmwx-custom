@@ -10,9 +10,10 @@ import (
 	"github.com/ImoLR/mmwx-custom/internal/flvx"
 )
 
-// egress / protocols / guard report whether this Helper advertises
-// flvx.egress.v1 / flvx.protocols.v1 / flvx.reality_guard.v1.
-func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, egress, protocols, guard bool, report *flvx.Report) (*flvx.Envelope, error) {
+// egress / protocols / guard / limits report whether this Helper advertises
+// flvx.egress.v1 / flvx.protocols.v1 / flvx.reality_guard.v1 /
+// flvx.user_limits.v1.
+func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, egress, protocols, guard, limits bool, report *flvx.Report) (*flvx.Envelope, error) {
 	if a.flvxDB() == nil {
 		return nil, nil
 	}
@@ -62,7 +63,7 @@ func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, 
 		if a.helperState != nil {
 			artifact.GitHubAccelerator = a.helperState.githubAccelerator()
 		}
-		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: s.Config, Desired: flvxHelperGuard(flvxHelperProtocols(flvxHelperEgress(s, egress), protocols), guard), OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
+		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: s.Config, Desired: flvxHelperConnMode(flvxHelperGuard(flvxHelperProtocols(flvxHelperEgress(s, egress), protocols), guard), limits), OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
 		envelope.Sign(token)
 		return nil
 	})

@@ -260,6 +260,7 @@ type serverDetailedConnectionSnapshot struct {
 
 type helperDetailedMetricsRequest struct {
 	FLVX            *flvx.Report                     `json:"flvx,omitempty"`
+	FLVXUserLimits  *flvx.UserLimitsUsage            `json:"flvx_user_limits,omitempty"`
 	ServerID        any                              `json:"server_id"`
 	HelperVersion   string                           `json:"helper_version"`
 	TCPCount        int64                            `json:"tcp_count"`
@@ -559,18 +560,25 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 	settings = a.trafficBlocksForHelper(settings, officialID, request.HelperVersion)
 	response := map[string]any{"success": true, "settings": sortedConnectionSettings(settingsForHelperMachine(settings, request.HelperVersion, machineV2)), "command": command}
 	if request.Management != nil {
-		share, egress, protocols, guard := false, false, false, false
+		share, egress, protocols, guard, limits := false, false, false, false, false
 		for _, capability := range request.Management.Status.Capabilities {
 			share = share || capability == "flvx.share"
 			egress = egress || capability == "flvx.egress.v1"
 			protocols = protocols || capability == "flvx.protocols.v1"
 			guard = guard || capability == "flvx.reality_guard.v1"
+			limits = limits || capability == flvx.UserLimitsCapability
 		}
 		if share {
 			id, _ := strconv.ParseInt(officialID, 10, 64)
-			desired, flvxErr := a.flvxHelperDesired(r.Context(), id, serverID, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), request.Management.Status.Architecture, egress, protocols, guard, request.FLVX)
+			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			desired, flvxErr := a.flvxHelperDesired(r.Context(), id, serverID, token, request.Management.Status.Architecture, egress, protocols, guard, limits, request.FLVX)
 			if flvxErr == nil && desired != nil {
 				response["flvx"] = desired
+				// landing-user-limits-v1: the share's budgets, only while the
+				// Helper does not hold them yet.
+				if budgets, limitsErr := a.flvxUserLimitsForHelper(r.Context(), id, serverID, token, limits, request.FLVXUserLimits); limitsErr == nil && budgets != nil {
+					response["flvx_user_limits"] = budgets
+				}
 			}
 		}
 	}

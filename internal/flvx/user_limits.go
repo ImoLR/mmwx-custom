@@ -53,6 +53,9 @@ const (
 // (client) connections only (conn_mode "inbound"); otherwise 入站+出站.
 func (n Node) InboundLimit() bool { return n.ConnMode == ConnModeInbound }
 
+// ValidOwnerID reports whether id can be a node owner.id (and so a user_id).
+func ValidOwnerID(id string) bool { return identifier.MatchString(id) }
+
 // UserGroup is the Core management group of a node owner.
 func UserGroup(owner OwnerID) string { return UserGroupPrefix + string(owner) }
 
@@ -165,7 +168,7 @@ func ValidateUserLimits(r UserLimitsRequest, rate bool) []ValidationError {
 	seen := map[string]bool{}
 	for i, u := range r.Users {
 		at := fmt.Sprintf("users[%d]: ", i)
-		if !identifier.MatchString(u.UserID) || seen[u.UserID] {
+		if !ValidOwnerID(u.UserID) || seen[u.UserID] {
 			add("users", at+"user_id must be a unique node owner id")
 		}
 		seen[u.UserID] = true

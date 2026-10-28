@@ -114,6 +114,8 @@ type app struct {
 	releaseCache           *releaseCache
 	flvxOnlineMu           sync.Mutex
 	flvxOnline             map[int64]flvxOnlineSnapshot
+	flvxLimitsMu           sync.Mutex                     // landing-user-limits-v1, in memory:
+	flvxLimits             map[int64]*flvxUserLimitsShare // budgets + Helper usage per share
 	mmwxAPITarget          *url.URL
 	officialInternalTarget *url.URL
 	publicURL              string

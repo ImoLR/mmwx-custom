@@ -170,6 +170,12 @@ func (a *app) flvxV1Handler(w http.ResponseWriter, r *http.Request) {
 				err = a.putFLVXDesired(r.Context(), id, d)
 			}
 			result = map[string]any{"accepted_revision": d.Revision}
+		} else if parts[2] == "user-limits" && r.Method == http.MethodPut {
+			// landing-user-limits-v1 §4: budgets in, latest usage out.
+			var req flvx.UserLimitsRequest
+			if err = decodeFLVX(w, r, &req); err == nil {
+				result, err = a.putFLVXUserLimits(r.Context(), id, req)
+			}
 		} else if parts[2] == "status" && r.Method == http.MethodGet {
 			var s flvxShare
 			s, err = readFLVXShare(r.Context(), a.flvxDB(), id, false)
@@ -595,6 +601,9 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 		if capability := flvxGuardCapability(server.Helper); capability != nil {
 			item["reality_guard"] = capability
 		}
+		if capability := flvxUserLimitsCapability(server.Helper); capability != nil {
+			item["user_limits"] = capability
+		}
 		// landing-protocols-v1 §2. protocols above stays the v1 list: older
 		// FLVX copies it into a share and validates it against v1 names.
 		if protocols := flvxShareProtocols(s, server.Helper); protocols != nil {
@@ -618,13 +627,14 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 						break
 					}
 				}
-				nodes = append(nodes, map[string]any{"id": n.ID, "owner": n.Owner, "name": n.Name, "protocol": n.Protocol, "port": n.Port, "max_connections": n.MaxConnections, "max_online_ips": n.MaxOnlineIPs, "expires_at": n.ExpiresAt, "status": status})
+				nodes = append(nodes, map[string]any{"id": n.ID, "owner": n.Owner, "name": n.Name, "protocol": n.Protocol, "port": n.Port, "max_connections": n.MaxConnections, "inbound_limit": n.InboundLimit() && server.Helper.UserLimits, "max_online_ips": n.MaxOnlineIPs, "expires_at": n.ExpiresAt, "status": status})
 			}
 			item["nodes"], item["config"], item["report"] = nodes, s.Config, report
 			item["native_landing"], item["detection_error"], item["helper"] = server.NativeLanding, server.DetectionError, server.Helper
 			item["allow_egress"], item["egress_plan"] = !s.EgressDenied, flvxEgressSummary(s)
 			item["core_pin"] = flvxCorePinSummary(s, latestCore)
 			item["reality_guard_plan"] = flvxGuardSummary(s)
+			item["user_limits_plan"] = a.flvxUserLimitsSummary(id, server.Helper)
 			if s.State != "revoked" && s.Status.Core.Error != "" {
 				item["core_error"] = s.Status.Core.Error
 			}

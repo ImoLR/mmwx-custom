@@ -221,6 +221,10 @@ type flvxHelper struct {
 	// Helper renders the Reality guard, landing-reality-guard-v1
 	// ("flvx.reality_guard.v1").
 	RealityGuard bool `json:"flvx_reality_guard"`
+	// Helper groups the FLVX Core per user (landing-user-limits-v1,
+	// "flvx.user_limits.v1") and polices per-user 速率 ("flvx.user_rate.v1").
+	UserLimits bool `json:"flvx_user_limits"`
+	UserRate   bool `json:"flvx_user_rate"`
 }
 
 func (a *app) flvxHelpers() map[int64]flvxHelper {
@@ -237,7 +241,7 @@ func (a *app) flvxHelpers() map[int64]flvxHelper {
 			continue
 		}
 		installed := status.Helper.Installed && s.data.Servers[id].HelperTokenHash != ""
-		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1"), RealityGuard: installed && hasCapability(status, "flvx.reality_guard.v1")}
+		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1"), RealityGuard: installed && hasCapability(status, "flvx.reality_guard.v1"), UserLimits: installed && hasCapability(status, flvx.UserLimitsCapability), UserRate: installed && hasCapability(status, flvx.UserRateCapability)}
 	}
 	return result
 }
@@ -510,6 +514,9 @@ func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r 
 		}
 		n.UpBytes, n.DownBytes = ledger.Counter.Up, ledger.Counter.Down
 		n.OnlineIPCount, n.OnlineIPs = nil, nil
+		if n.InboundConnections != nil && *n.InboundConnections < 0 {
+			n.InboundConnections = nil
+		}
 		ledger.Status = n
 		raw, _ = json.Marshal(ledger)
 		if _, err = tx.ExecContext(ctx, `INSERT INTO mmwxc_flvx_counters(server_id,node_id,data_json) VALUES($1,$2,$3) ON CONFLICT(server_id,node_id) DO UPDATE SET data_json=EXCLUDED.data_json`, id, n.ID, string(raw)); err != nil {
@@ -542,6 +549,10 @@ func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r 
 		if !seen[l.Status.ID] {
 			l.Status.State = "removed"
 			l.Status.Connections = 0
+			if l.Status.InboundConnections != nil {
+				zero := int64(0)
+				l.Status.InboundConnections = &zero
+			}
 		}
 		s.Status.Nodes = append(s.Status.Nodes, l.Status)
 	}
