@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"sort"
 	"time"
 
@@ -175,32 +174,16 @@ func flvxPortsInRange(ports, own []uint32, c flvx.Config) []int {
 // (bound) UDP port of any owner and address, loopback included: a wildcard
 // bind of the FLVX Core collides with all of them.
 func readListeningSockets() (tcp, udp []uint32, err error) {
-	readable := 0
-	for _, source := range []struct {
-		path  string
-		ipv6  bool
-		state string
-		out   *[]uint32
-	}{{"/proc/net/tcp", false, tcpListen, &tcp}, {"/proc/net/tcp6", true, tcpListen, &tcp}, {"/proc/net/udp", false, tcpClose, &udp}, {"/proc/net/udp6", true, tcpClose, &udp}} {
-		file, openErr := os.Open(source.path)
-		if openErr != nil {
-			continue
-		}
-		entries, parseErr := parseProcNetTCP(file, source.ipv6)
-		file.Close()
-		if parseErr != nil {
-			return nil, nil, fmt.Errorf("parse %s: %w", source.path, parseErr)
-		}
-		readable++
-		for _, entry := range entries {
-			// UDP rows in state 07 with no peer are bound, unconnected sockets.
-			if entry.State == source.state && (source.state == tcpListen || !entry.RemoteIP.IsValid() || entry.RemoteIP.IsUnspecified()) {
-				*source.out = append(*source.out, entry.LocalPort)
-			}
-		}
+	sockets, err := readListenerSockets("/proc")
+	if err != nil {
+		return nil, nil, err
 	}
-	if readable == 0 {
-		return nil, nil, fmt.Errorf("no /proc/net socket tables are readable")
+	for _, socket := range sockets {
+		if socket.Protocol == "udp" {
+			udp = append(udp, socket.Port)
+		} else {
+			tcp = append(tcp, socket.Port)
+		}
 	}
 	return tcp, udp, nil
 }

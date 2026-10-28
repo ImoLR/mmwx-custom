@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,19 +21,24 @@ import (
 // (contract: inbound-port-check). TCP LISTEN sockets are always listed. An
 // unconnected UDP socket is listed when it is a kernel socket, the twin of a
 // TCP listener, or bound outside the kernel's ephemeral range; anything else
-// may be a short-lived outbound UDP socket. The four socket tables are read
-// every report, but the owner walk over /proc/*/fd only runs when the set of
-// listeners changed (at most every listeningMinGap) or listeningRefresh passed.
+// may be a short-lived outbound UDP socket. Each report reuses the TCP rows the
+// tick already read for the machine counts; the four socket tables and the
+// owner walk over /proc/*/fd only run again when the TCP listeners changed (at
+// most every listeningMinGap) or listeningRefresh passed.
 const (
 	listeningRefresh    = 60 * time.Second
 	listeningMinGap     = 5 * time.Second
 	listeningOwnerCore  = "core"
 	listeningOwnerAgent = "agent"
+	// listeningAnyAddress is the wire form of a wildcard bind (0.0.0.0 or ::).
+	listeningAnyAddress = "*"
 )
 
 type listeningPortOwner struct {
 	Port     uint32 `json:"port"`
 	Protocol string `json:"protocol"`
+	// Address is the bound local IP, or "*" for a wildcard bind.
+	Address string `json:"address"`
 	// PID 0 with no process is a kernel socket or an owner that exited.
 	PID     int    `json:"pid,omitempty"`
 	Process string `json:"process,omitempty"`
@@ -49,10 +56,12 @@ type listeningPortsReport struct {
 	Error     string               `json:"error,omitempty"`
 }
 
-type listeningRow struct {
-	Inode    uint64
-	Port     uint32
+// listenerSocket is a TCP LISTEN or bound, unconnected UDP socket.
+type listenerSocket struct {
 	Protocol string
+	Address  netip.Addr
+	Port     uint32
+	Inode    uint64
 }
 
 type listeningPortsScanner struct {
@@ -81,28 +90,61 @@ func (scanner *listeningPortsScanner) defaults() {
 	}
 }
 
-// current returns the listening report, rescanning owners only when due.
-func (scanner *listeningPortsScanner) current(now time.Time) *listeningPortsReport {
+// current returns the listening report, rescanning only when due. tcp are this
+// tick's parsed TCP rows (nil when unusable: then only the refresh applies).
+func (scanner *listeningPortsScanner) current(tcp []socketEntry, now time.Time) *listeningPortsReport {
 	scanner.defaults()
-	rows, err := readListeningRows(scanner.procRoot, scanner.portRange)
-	if err != nil {
-		if scanner.report == nil || now.Sub(scanner.scannedAt) >= listeningRefresh {
-			scanner.report = &listeningPortsReport{ScannedAt: now.UTC(), Ports: []listeningPortOwner{}, Error: err.Error()}
-			scanner.scannedAt, scanner.key = now, ""
-		}
-		return scanner.report
+	key := scanner.key
+	if tcp != nil {
+		key = tcpListenersKey(tcp)
 	}
-	key := listeningRowsKey(rows)
 	age := now.Sub(scanner.scannedAt)
 	due := scanner.report == nil || age >= listeningRefresh || age < 0 || key != scanner.key && age >= listeningMinGap
-	if due {
-		scanner.report = scanner.scan(rows, now)
-		scanner.key, scanner.scannedAt = key, now
+	if !due {
+		return scanner.report
 	}
+	scanner.key, scanner.scannedAt = key, now
+	sockets, err := readListenerSockets(scanner.procRoot)
+	if err != nil {
+		scanner.report = &listeningPortsReport{ScannedAt: now.UTC(), Ports: []listeningPortOwner{}, Error: err.Error()}
+		return scanner.report
+	}
+	scanner.report = scanner.scan(listeningRows(sockets, scanner.portRange), now)
 	return scanner.report
 }
 
-func (scanner *listeningPortsScanner) scan(rows []listeningRow, now time.Time) *listeningPortsReport {
+// tcpListenersKey identifies the machine's TCP listeners, loopback included.
+func tcpListenersKey(sockets []socketEntry) string {
+	var values []string
+	for _, socket := range sockets {
+		if socket.State == tcpListen {
+			values = append(values, socket.LocalIP.String()+"/"+strconv.FormatUint(uint64(socket.LocalPort), 10))
+		}
+	}
+	sort.Strings(values)
+	return strings.Join(values, ",")
+}
+
+// listeningRows keeps every TCP listener and the UDP sockets that look like a
+// service (see the file comment).
+func listeningRows(sockets []listenerSocket, portRange string) []listenerSocket {
+	tcpPorts := map[uint32]bool{}
+	for _, socket := range sockets {
+		if socket.Protocol == "tcp" {
+			tcpPorts[socket.Port] = true
+		}
+	}
+	low, high, rangeKnown := readPortRange(portRange)
+	rows := make([]listenerSocket, 0, len(sockets))
+	for _, socket := range sockets {
+		if socket.Protocol == "tcp" || socket.Inode == 0 || tcpPorts[socket.Port] || !rangeKnown || socket.Port < low || socket.Port > high {
+			rows = append(rows, socket)
+		}
+	}
+	return rows
+}
+
+func (scanner *listeningPortsScanner) scan(rows []listenerSocket, now time.Time) *listeningPortsReport {
 	wanted := map[uint64]struct{}{}
 	for _, row := range rows {
 		if row.Inode != 0 {
@@ -115,12 +157,17 @@ func (scanner *listeningPortsScanner) scan(rows []listeningRow, now time.Time) *
 	seen := map[string]struct{}{}
 	report := &listeningPortsReport{ScannedAt: now.UTC(), Ports: []listeningPortOwner{}}
 	for _, row := range rows {
+		address := listeningAnyAddress
+		if !row.Address.IsUnspecified() {
+			address = row.Address.String()
+		}
 		pids := owners[row.Inode]
 		if len(pids) == 0 {
 			pids = []int{0}
 		}
 		for _, pid := range pids {
-			id := fmt.Sprint(row.Protocol, "/", row.Port, "/", pid)
+			// tcp and tcp6 wildcard binds of one process are one entry.
+			id := fmt.Sprint(row.Protocol, "/", row.Port, "/", pid, "/", address)
 			if _, duplicate := seen[id]; duplicate {
 				continue
 			}
@@ -130,7 +177,7 @@ func (scanner *listeningPortsScanner) scan(rows []listeningRow, now time.Time) *
 				entry = listeningPortOwner{PID: pid, Process: processComm(scanner.procRoot, pid)}
 				exe := filepath.Join(scanner.procRoot, strconv.Itoa(pid), "exe")
 				for _, binary := range scanner.coreBinaries {
-					if sameFile(exe, binary) {
+					if runsBinary(exe, binary) {
 						entry.Owner = listeningOwnerCore
 					}
 				}
@@ -139,7 +186,7 @@ func (scanner *listeningPortsScanner) scan(rows []listeningRow, now time.Time) *
 				}
 				processes[pid] = entry
 			}
-			entry.Port, entry.Protocol = row.Port, row.Protocol
+			entry.Port, entry.Protocol, entry.Address = row.Port, row.Protocol, address
 			if entry.Owner != "" {
 				if tags == nil {
 					tags = officialInboundTags(scanner.configPath)
@@ -161,77 +208,85 @@ func (scanner *listeningPortsScanner) scan(rows []listeningRow, now time.Time) *
 		if a.Protocol != b.Protocol {
 			return a.Protocol < b.Protocol
 		}
-		return a.PID < b.PID
+		if a.PID != b.PID {
+			return a.PID < b.PID
+		}
+		return a.Address < b.Address
 	})
 	return report
 }
 
-// readListeningRows reads the listeners of the four socket tables.
-func readListeningRows(root, portRange string) ([]listeningRow, error) {
-	var tcp, udp []listeningRow
+// runsBinary reports whether the process behind exe runs binary, also when
+// the file was replaced on disk since (exe then reads "<path> (deleted)").
+func runsBinary(exe, binary string) bool {
+	if sameFile(exe, binary) {
+		return true
+	}
+	link, err := os.Readlink(exe)
+	return err == nil && filepath.Clean(strings.TrimSuffix(link, " (deleted)")) == filepath.Clean(binary)
+}
+
+// readListenerSockets returns every TCP LISTEN socket and every bound,
+// unconnected UDP socket (state 07, no peer) of the four socket tables under
+// root, of any owner and address, loopback included.
+func readListenerSockets(root string) ([]listenerSocket, error) {
+	var sockets []listenerSocket
 	readable := 0
 	for _, table := range []struct {
 		name      string
 		ipv6, udp bool
 	}{{"tcp", false, false}, {"tcp6", true, false}, {"udp", false, true}, {"udp6", true, true}} {
-		file, err := os.Open(filepath.Join(root, "net", table.name))
+		path := filepath.Join(root, "net", table.name)
+		file, err := os.Open(path)
 		if err != nil {
 			continue
 		}
-		readable++
-		scanner := bufio.NewScanner(file)
-		for first := true; scanner.Scan(); first = false {
-			fields := strings.Fields(scanner.Text())
-			if first || len(fields) < 10 {
-				continue
-			}
-			state := strings.ToUpper(fields[3])
-			if table.udp {
-				if _, remotePort, err := parseProcAddress(fields[2], table.ipv6); err != nil || state != tcpClose || remotePort != 0 {
-					continue
-				}
-			} else if state != tcpListen {
-				continue
-			}
-			_, port, err := parseProcAddress(fields[1], table.ipv6)
-			inode, inodeErr := strconv.ParseUint(fields[9], 10, 64)
-			if err != nil || inodeErr != nil || port == 0 {
-				continue
-			}
-			row := listeningRow{Inode: inode, Port: port, Protocol: "tcp"}
-			if table.udp {
-				row.Protocol = "udp"
-				udp = append(udp, row)
-			} else {
-				tcp = append(tcp, row)
-			}
-		}
+		rows, err := parseListenerSockets(file, table.ipv6, table.udp)
 		file.Close()
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		readable++
+		sockets = append(sockets, rows...)
 	}
 	if readable == 0 {
 		return nil, fmt.Errorf("no /proc/net socket tables are readable")
 	}
-	tcpPorts := map[uint32]bool{}
-	for _, row := range tcp {
-		tcpPorts[row.Port] = true
-	}
-	low, high, rangeKnown := readPortRange(portRange)
-	rows := tcp
-	for _, row := range udp {
-		if row.Inode == 0 || tcpPorts[row.Port] || !rangeKnown || row.Port < low || row.Port > high {
-			rows = append(rows, row)
-		}
-	}
-	return rows, nil
+	return sockets, nil
 }
 
-func listeningRowsKey(rows []listeningRow) string {
-	values := make([]string, len(rows))
-	for index, row := range rows {
-		values[index] = fmt.Sprint(row.Protocol, row.Port, ":", row.Inode)
+func parseListenerSockets(reader io.Reader, ipv6, udp bool) ([]listenerSocket, error) {
+	protocol, state := "tcp", tcpListen
+	if udp {
+		protocol, state = "udp", tcpClose
 	}
-	sort.Strings(values)
-	return strings.Join(values, ",")
+	var sockets []listenerSocket
+	scanner := bufio.NewScanner(reader)
+	for first := true; scanner.Scan(); first = false {
+		fields := strings.Fields(scanner.Text())
+		if first || len(fields) < 4 || strings.ToUpper(fields[3]) != state {
+			continue
+		}
+		local, port, err := parseProcAddress(fields[1], ipv6)
+		if err != nil {
+			return nil, err
+		}
+		remote, _, err := parseProcAddress(fields[2], ipv6)
+		if err != nil {
+			return nil, err
+		}
+		if udp && remote.IsValid() && !remote.IsUnspecified() {
+			continue
+		}
+		var inode uint64
+		if len(fields) > 9 {
+			if inode, err = strconv.ParseUint(fields[9], 10, 64); err != nil {
+				return nil, fmt.Errorf("invalid socket inode %q", fields[9])
+			}
+		}
+		sockets = append(sockets, listenerSocket{Protocol: protocol, Address: local, Port: port, Inode: inode})
+	}
+	return sockets, scanner.Err()
 }
 
 // socketOwnerPIDs maps each wanted socket inode to the processes holding it,

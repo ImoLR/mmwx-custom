@@ -167,7 +167,7 @@ func main() {
 		// most recently persisted reconcile result instead.
 		machineStatus := state.MachineProtection
 		snapshot.MachineProtection = &machineStatus
-		snapshot.Listening = executor.listening.current(time.Now())
+		snapshot.Listening = executor.listening.current(snapshot.tcpSockets, time.Now())
 		_ = json.NewEncoder(os.Stdout).Encode(snapshot)
 		return
 	}
@@ -264,7 +264,7 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 	cancelMachine()
 	snapshot.MachineProtection = &machineStatus
 	state.MachineProtection = machineStatus
-	snapshot.Listening = executor.listening.current(time.Now())
+	snapshot.Listening = executor.listening.current(snapshot.tcpSockets, time.Now())
 	if snapshot.Core.Available {
 		applyNftables(nftables, snapshot, state.Settings, logs)
 	}
