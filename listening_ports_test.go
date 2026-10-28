@@ -14,12 +14,12 @@ import (
 
 // The 「Boil HKT 99u」(2) listeners on 2026-10-25 as a v0.7.14 Helper reports them.
 const listeningSnapshot = `{"system":{"tcp_total":10},"core":{"available":false},"listening_ports":{"scanned_at":"2026-10-25T02:30:00Z","ports":[
-{"port":10016,"protocol":"tcp","pid":231078,"process":"xray","owner":"core","inbound_tag":"自己用 ss-10016"},
-{"port":10017,"protocol":"tcp","pid":212883,"process":"lkbk-core"},
+{"port":10016,"protocol":"tcp","address":"*","pid":231078,"process":"xray","owner":"core","inbound_tag":"自己用 ss-10016"},
+{"port":10017,"protocol":"tcp","address":"*","pid":212883,"process":"lkbk-core"},
 {"port":10017,"protocol":"udp","pid":212883,"process":"lkbk-core"},
 {"port":0,"protocol":"tcp","pid":1,"process":"bad-port"},
 {"port":80,"protocol":"sctp","pid":1,"process":"bad-protocol"},
-{"port":81,"protocol":"tcp","pid":7,"process":"odd\u0007name","owner":"root"}]}}`
+{"port":81,"protocol":"tcp","address":"127.0.0.1; rm","pid":7,"process":"odd\u0007name","owner":"root"}]}}`
 
 func getListeningPorts(t *testing.T, a *app, path string) (int, map[string]any) {
 	t.Helper()
@@ -45,13 +45,13 @@ func TestListeningPortsReachTheOperatorReadOnly(t *testing.T) {
 		t.Fatalf("malformed entries must be dropped, kept %#v", ports)
 	}
 	held := ports[1].(map[string]any)
-	if held["port"] != float64(10017) || held["process"] != "lkbk-core" || held["pid"] != float64(212883) || held["owner"] != nil {
+	if held["port"] != float64(10017) || held["address"] != "*" || held["process"] != "lkbk-core" || held["pid"] != float64(212883) || held["owner"] != nil {
 		t.Fatalf("10017 owner = %#v", held)
 	}
 	if core := ports[0].(map[string]any); core["owner"] != "core" || core["inbound_tag"] != "自己用 ss-10016" {
 		t.Fatalf("Core entry = %#v", core)
 	}
-	if odd := ports[3].(map[string]any); odd["process"] != "oddname" || odd["owner"] != nil {
+	if odd := ports[3].(map[string]any); odd["process"] != "oddname" || odd["owner"] != nil || odd["address"] != nil {
 		t.Fatalf("control characters and unknown owners must be cleaned: %#v", odd)
 	}
 

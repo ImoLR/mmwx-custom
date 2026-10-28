@@ -324,7 +324,8 @@ func (s *helperState) coreModeSummaries() map[string]coreModeSummary {
 func sanitizeCoreModeMessage(value string) string {
 	value = strings.TrimSpace(value)
 	if len(value) > 512 {
-		value = value[:512]
+		// Keep the leading 「端口 N 被 … 占用」 readable: never split a rune.
+		value = strings.ToValidUTF8(value[:512], "")
 	}
 	return value
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -14,8 +15,10 @@ import (
 // authorised operator for the inbound editor's port check.
 
 type serverListeningPort struct {
-	Port       int    `json:"port"`
-	Protocol   string `json:"protocol"`
+	Port     int    `json:"port"`
+	Protocol string `json:"protocol"`
+	// Address is the bound IP, or "*" for a wildcard bind ("" if unknown).
+	Address    string `json:"address,omitempty"`
 	PID        int    `json:"pid,omitempty"`
 	Process    string `json:"process,omitempty"`
 	Owner      string `json:"owner,omitempty"`
@@ -46,6 +49,13 @@ func sanitizeListeningPorts(report *serverListeningPorts) *serverListeningPorts 
 		}
 		if entry.Owner != "" && entry.Owner != "core" && entry.Owner != "agent" {
 			entry.Owner = ""
+		}
+		if entry.Address != "*" {
+			if address, err := netip.ParseAddr(entry.Address); err == nil {
+				entry.Address = address.String()
+			} else {
+				entry.Address = ""
+			}
 		}
 		entry.Process = listeningText(entry.Process, 64)
 		entry.InboundTag = listeningText(entry.InboundTag, 256)
