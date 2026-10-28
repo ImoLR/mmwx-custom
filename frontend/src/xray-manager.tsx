@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowDownToLine,
@@ -64,7 +64,7 @@ import {
 import type { CoreModeResponse, RemoteServer, RoutingRulePreset, XrayNode, XrayObject, XrayServerNIC, XraySystemConfig, XrayWarpStatus } from "./types";
 import { serverCoreVersion, supportsCustomCoreFeatures } from "./xray-capabilities";
 import { defaultNodeIPVersion } from "./node-manager-logic";
-import { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, nodeInboundFlow, normalizeInboundFlow, relayPortChangeWarning } from "./inbound-flow";
+import { applyRealityResult, inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, nodeInboundFlow, normalizeInboundFlow, realityTicket, relayPortChangeWarning, stripRealityLeftovers, type RealityTicket } from "./inbound-flow";
 import { nodeManagedServer } from "./node-card-logic";
 
 import { CompactSheet, CompactSegments } from "./compact-ui";
@@ -356,7 +356,7 @@ function sanitizeInbound(item: XrayObject, original?: XrayObject) {
   delete inbound._wizard_snell_obfs_host;
   delete inbound._wizard_snell_mode;
   if (sameProtocol && sameSnellOptions && JSON.stringify(item.settings) === JSON.stringify(original?.settings)) inbound.settings = item.settings;
-  return normalizeInboundFlow(inbound, inboundSecurityMode(item));
+  return normalizeInboundFlow(stripRealityLeftovers(inbound), inboundSecurityMode(item));
 }
 
 async function replaceInboundFlow(token: string, server: RemoteServer, tag: string, inbound: XrayObject, nodeName?: string) {
@@ -1851,11 +1851,15 @@ function InboundAssistant({ server, token, item, protocolMode, expert, editing, 
     return () => { active = false; };
   }, [server.id, token]);
 
+  // A Reality session ends whenever the protocol or the Reality mode changes;
+  // async key/domain results of an ended session are dropped.
+  const realitySession = useRef(0);
+  useEffect(() => { realitySession.current += 1; }, [protocol, isReality]);
   useEffect(() => {
     if (!editing && isReality && (!asString(reality.privateKey) || !asString(reality.publicKey))) void generateRealityKeys();
     // Key generation is intentionally tied to entering a Reality mode.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isReality]);
+  }, [isReality, protocol]);
 
   useEffect(() => {
     if (editing || (!isTLS && !isWSS) || item.cert_id || !certificates.length) return;
@@ -1874,24 +1878,24 @@ function InboundAssistant({ server, token, item, protocolMode, expert, editing, 
     onError("");
   }
 
-  function updateReality(values: XrayObject) {
-    updateItem((current) => {
-      const currentStream = asObject(current.streamSettings);
-      return { ...current, streamSettings: { ...currentStream, security: "reality", realitySettings: { ...asObject(currentStream.realitySettings), ...values } } };
-    });
+  // An async caller passes the ticket taken when its request started.
+  function updateReality(values: XrayObject, ticket = realityTicket(item, realitySession.current)) {
+    if (ticket.session !== realitySession.current) return;
+    updateItem((current) => applyRealityResult(current, ticket, realitySession.current, values));
   }
 
-  function selectRealityDomain(domain: string, domainList = domains, serverMap = domainServers) {
+  function selectRealityDomain(domain: string, domainList = domains, serverMap = domainServers, ticket?: RealityTicket) {
     const source = serverMap[domain] || {};
     const ownServer = asNumber(source.server_id) === server.id;
     const result = domainList.find((entry) => asString(entry.domain) === domain) || {};
     const nginxPort = asNumber(result.nginx_ssl_port) || 8001;
-    updateReality({ dest: ownServer ? `127.0.0.1:${nginxPort}` : `${domain}:443`, serverNames: [domain], xver: ownServer ? 1 : 0 });
+    updateReality({ dest: ownServer ? `127.0.0.1:${nginxPort}` : `${domain}:443`, serverNames: [domain], xver: ownServer ? 1 : 0 }, ticket);
   }
 
   async function loadRealityDomains() {
     setAssistantBusy("domains");
     onError("");
+    const ticket = realityTicket(item, realitySession.current);
     try {
       const response = await fetchRealityDomains(token, server.id);
       const next = response.domains || [];
@@ -1899,7 +1903,7 @@ function InboundAssistant({ server, token, item, protocolMode, expert, editing, 
       const serverMap = response.domain_servers || {};
       setDomainServers(serverMap);
       const first = [...next].filter((entry) => Boolean(entry.success)).sort((a, b) => asNumber(a.latency_ms) - asNumber(b.latency_ms))[0];
-      if (first) selectRealityDomain(asString(first.domain), next, serverMap);
+      if (first) selectRealityDomain(asString(first.domain), next, serverMap, ticket);
       if (!first) onError(response.warning || response.message || "没有探测到可用 Reality 域名");
     } catch (error) {
       onError(getError(error, "Reality 域名探测失败"));
@@ -1913,12 +1917,13 @@ function InboundAssistant({ server, token, item, protocolMode, expert, editing, 
     if (!domain) { onError("请输入 Reality 目标域名"); return; }
     if (!window.confirm(`确认保存并从 ${server.name} 探测 Reality 域名 ${domain}？`)) return;
     setAssistantBusy("custom-domain");
+    const ticket = realityTicket(item, realitySession.current);
     try {
       const response = await probeCustomRealityDomain(token, server.id, domain);
       const entry: Record<string, unknown> = { ...response, domain: asString(response.domain) || domain };
       setDomains((current) => [...current.filter((value) => asString(value.domain) !== asString(entry.domain)), entry].sort((a, b) => asNumber(a.latency_ms) - asNumber(b.latency_ms)));
       if (response.success === false || response.error) throw new Error(asString(response.error) || "该域名不可用");
-      selectRealityDomain(asString(entry.domain), [entry, ...domains.filter((value) => asString(value.domain) !== asString(entry.domain))], domainServers);
+      selectRealityDomain(asString(entry.domain), [entry, ...domains.filter((value) => asString(value.domain) !== asString(entry.domain))], domainServers, ticket);
       setCustomDomain("");
     } catch (error) {
       onError(getError(error, "自定义域名探测失败"));
@@ -1929,9 +1934,10 @@ function InboundAssistant({ server, token, item, protocolMode, expert, editing, 
 
   async function generateRealityKeys() {
     setAssistantBusy("x25519");
+    const ticket = realityTicket(item, realitySession.current);
     try {
       const response = await generateXrayX25519(token);
-      updateReality({ privateKey: response.privateKey, publicKey: response.publicKey });
+      updateReality({ privateKey: response.privateKey, publicKey: response.publicKey }, ticket);
     } catch (error) {
       onError(getError(error, "X25519 密钥生成失败"));
     } finally {

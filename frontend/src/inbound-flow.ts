@@ -92,3 +92,54 @@ export function relayPortChangeWarning(original: XrayObject, next: XrayObject, n
   if (!relays.length) return "";
   return `入站端口将从 ${original.port} 改为 ${next.port}；关联中转节点 ${relays.map((node) => node.node_name).join("、")} 的外部中转转发规则必须手动更新，否则仍会转发到旧端口。`;
 }
+
+// Protocols whose inbounds may carry REALITY: the editor offers it for VLESS,
+// Trojan and AnyTLS; hand-written VMess configs are left alone.
+const realityProtocols = ["vless", "trojan", "anytls", "vmess"];
+
+function lowerProtocol(item: XrayObject) {
+  return String(item.protocol || "").toLowerCase();
+}
+
+function realitySecurity(item: XrayObject) {
+  return String(object(item.streamSettings).security || "").toLowerCase() === "reality";
+}
+
+// A Reality request (X25519 keys, domain probe) remembers the editor session
+// and protocol it started for. The editor starts a new session whenever the
+// protocol or the Reality mode changes.
+export type RealityTicket = { session: number; protocol: string };
+
+export function realityTicket(item: XrayObject, session: number): RealityTicket {
+  return { session, protocol: lowerProtocol(item) };
+}
+
+// applyRealityResult merges Reality values into realitySettings only while the
+// editor is still in the ticket's session and the item is still a Reality
+// inbound of the ticket's protocol; otherwise the item comes back untouched.
+// It never sets security itself, so a late result cannot turn another
+// protocol into a half-configured Reality inbound.
+export function applyRealityResult(current: XrayObject, ticket: RealityTicket, session: number, values: XrayObject) {
+  if (ticket.session !== session || lowerProtocol(current) !== ticket.protocol || !realitySecurity(current)) return current;
+  const stream = object(current.streamSettings);
+  return { ...current, streamSettings: { ...stream, realitySettings: { ...object(stream.realitySettings), ...values } } };
+}
+
+// stripRealityLeftovers removes realitySettings and reality_guard from an
+// inbound that is not REALITY, and security "reality" from protocols that
+// cannot carry it, so a switched-away editor never saves them.
+export function stripRealityLeftovers(item: XrayObject) {
+  const stream = object(item.streamSettings);
+  const reality = realitySecurity(item);
+  if (reality && realityProtocols.includes(lowerProtocol(item))) return item;
+  if (!reality && stream.realitySettings === undefined && item.reality_guard === undefined) return item;
+  const next: XrayObject = { ...item };
+  delete next.reality_guard;
+  if (item.streamSettings !== undefined) {
+    const nextStream = { ...stream };
+    delete nextStream.realitySettings;
+    if (reality) delete nextStream.security;
+    next.streamSettings = nextStream;
+  }
+  return next;
+}

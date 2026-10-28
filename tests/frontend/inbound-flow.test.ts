@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, nodeInboundFlow, normalizeInboundFlow, relayPortChangeWarning } from "../../frontend/src/inbound-flow.ts";
+import { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, nodeInboundFlow, normalizeInboundFlow, relayPortChangeWarning, stripRealityLeftovers } from "../../frontend/src/inbound-flow.ts";
 import { nodeManagedServer } from "../../frontend/src/node-card-logic.ts";
 import type { XrayNode, XrayObject } from "../../frontend/src/types.ts";
 
@@ -97,7 +97,7 @@ function compileSave(component: string, name: string, dependencies: Record<strin
   assert.ok(handler, `${component} ${name} handler exists`);
   const helpers = file.statements.filter((value: any) => ts.isFunctionDeclaration(value) && ["asString", "asNumber", "asObject", "sanitizeInbound", "replaceInboundFlow", "managementAssignments", "getError"].includes(value.name?.text));
   const code = ts.transpileModule(`${helpers.map((value: any) => value.getText(file)).join("\n")}\n${ts.isVariableDeclaration(handler) ? "const " : ""}${handler.getText(file)}`, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
-  const deps = { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, normalizeInboundFlow, nodeInboundFlow, nodeManagedServer, ...dependencies };
+  const deps = { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, normalizeInboundFlow, nodeInboundFlow, nodeManagedServer, stripRealityLeftovers, ...dependencies };
   return new Function(...Object.keys(deps), `${code}\nreturn ${name};`)(...Object.values(deps));
 }
 
