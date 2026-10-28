@@ -117,17 +117,21 @@ type ListeningPorts struct {
 }
 
 type Node struct {
-	ID             string  `json:"id"`
-	Owner          Owner   `json:"owner"`
-	Name           string  `json:"name"`
-	Protocol       string  `json:"protocol"`
-	Port           int     `json:"port"`
-	Enabled        *bool   `json:"enabled"`
-	MaxConnections int64   `json:"max_connections"`
-	MaxOnlineIPs   int     `json:"max_online_ips"`
-	ExpiresAt      *int64  `json:"expires_at"`
-	SS2022         *SS2022 `json:"ss2022,omitempty"`
-	VLESS          *VLESS  `json:"vless,omitempty"`
+	ID             string `json:"id"`
+	Owner          Owner  `json:"owner"`
+	Name           string `json:"name"`
+	Protocol       string `json:"protocol"`
+	Port           int    `json:"port"`
+	Enabled        *bool  `json:"enabled"`
+	MaxConnections int64  `json:"max_connections"`
+	MaxOnlineIPs   int    `json:"max_online_ips"`
+	ExpiresAt      *int64 `json:"expires_at"`
+	// landing-user-limits-v1 §3: "inbound" = max_connections counts inbound
+	// connections only. Omitted when absent (入站+出站, byte-identical payload);
+	// Custom strips it for Helpers without flvx.user_limits.v1.
+	ConnMode string  `json:"conn_mode,omitempty"`
+	SS2022   *SS2022 `json:"ss2022,omitempty"`
+	VLESS    *VLESS  `json:"vless,omitempty"`
 	// landing-protocols-v1. Omitted when absent, so the signed payload of a
 	// share without these nodes stays byte-identical for older Helpers.
 	AnyTLS *AnyTLS `json:"anytls,omitempty"`
@@ -193,6 +197,9 @@ type NodeStatus struct {
 	Connections   int64       `json:"connections"`
 	OnlineIPCount *int        `json:"online_ip_count,omitempty"`
 	OnlineIPs     *[]OnlineIP `json:"online_ips,omitempty"`
+	// landing-user-limits-v1 §5: Σ inbound_current of the node's tag, what a
+	// 入站 node limit counts. Absent = unknown (older Helper).
+	InboundConnections *int64 `json:"inbound_connections,omitempty"`
 }
 
 type Status struct {

@@ -106,6 +106,11 @@ func ValidateDesiredWith(d Desired, c Config, official []int, o DesiredOptions) 
 		if n.MaxOnlineIPs < 0 || n.MaxOnlineIPs > 1000000 {
 			add(n.ID, "max_online_ips", "invalid online IP limit")
 		}
+		switch n.ConnMode {
+		case "", ConnModeTotal, ConnModeInbound:
+		default:
+			add(n.ID, "conn_mode", "invalid connection mode")
+		}
 		if n.ExpiresAt != nil && (*n.ExpiresAt <= 0 || *n.ExpiresAt > 253402300799999) {
 			add(n.ID, "expires_at", "invalid expiry")
 		}
