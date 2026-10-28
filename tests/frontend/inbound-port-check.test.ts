@@ -97,14 +97,14 @@ test("随机 skips other inbounds and every busy machine port", () => {
   for (const port of [10015, 10016, 10017, 22, 38889, 40100, 51820, 46736]) assert.ok(busy.has(port), `port ${port} must be skipped`);
   assert.ok(!busy.has(10018), "the edited inbound's own port stays available");
   assert.ok(unavailablePorts(listeningUnreachable, usedPorts, 0).has(10016));
-  const none = new Set(Array.from({ length: 55536 }, (_, index) => index + 10000));
+  const none = new Set(Array.from({ length: 22768 }, (_, index) => index + 10000));
   none.delete(10017);
   assert.equal(pickAvailablePort(none, () => 0), 10017);
   none.add(10017);
   assert.equal(pickAvailablePort(none, () => 0.5), 0);
   for (let draw = 0; draw < 200; draw++) {
     const port = pickAvailablePort(busy);
-    assert.ok(port >= 10000 && port <= 65535 && !busy.has(port));
+    assert.ok(port >= 10000 && port <= 32767 && !busy.has(port));
   }
 });
 
