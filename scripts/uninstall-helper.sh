@@ -53,7 +53,7 @@ if [[ "${1:-}" != "--finish" ]]; then
     esac
   done
   if command -v nft >/dev/null 2>&1; then
-    for table in mmwxc_connection_control mmwxc_machine_protection; do
+    for table in mmwxc_connection_control mmwxc_machine_protection mmwxc_flvx_rate; do
       if nft list table inet "$table" >/dev/null 2>&1; then nft delete table inet "$table"; fi
     done
   fi

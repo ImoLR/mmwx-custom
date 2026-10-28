@@ -272,7 +272,7 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 	state.HelperVersion = helperVersion
 	logs.report("save heartbeat failed", saveLocalState(cfg.StatePath, *state))
 	report := &managementReport{Status: executor.status(context.Background()), Result: state.PendingResult}
-	response, err := uploadDetailedMetrics(context.Background(), client, cfg, snapshot, report, executor.flvx.snapshotReport())
+	response, err := uploadDetailedMetrics(context.Background(), client, cfg, snapshot, report, flvxUpload{Report: executor.flvx.snapshotReport(), UserLimits: executor.flvx.userLimitsUpload()})
 	logs.report("upload failed", err)
 	if err != nil {
 		return
@@ -286,6 +286,8 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 		executor.reportUpdateProgress("helper", "success", helperVersion, "", updateProgressDetails{LogLine: "新 Helper 进程已启动，首次上报成功"})
 	}
 	state.updateSettings(response.Settings)
+	// Budgets first, so the pass the new desired state triggers applies them.
+	logs.report("FLVX user limits rejected", executor.flvx.submitUserLimits(response.FLVXUserLimits))
 	executor.flvx.submit(response.FLVX)
 	if response.Command != nil && !completedCommand(state.CompletedCommandIDs, response.Command.ID) {
 		commandCtx, cancelCommand := context.WithTimeout(context.Background(), 31*time.Minute)
@@ -510,7 +512,13 @@ func uploadMetrics(ctx context.Context, client *http.Client, cfg config, snapsho
 	return nil
 }
 
-func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config, snapshot detailedConnectionSnapshot, management *managementReport, flvxReport ...*flvx.Report) (detailedMetricsResponse, error) {
+// flvxUpload is the FLVX shared Core's part of an upload.
+type flvxUpload struct {
+	Report     *flvx.Report
+	UserLimits *flvx.UserLimitsUsage
+}
+
+func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config, snapshot detailedConnectionSnapshot, management *managementReport, shared ...flvxUpload) (detailedMetricsResponse, error) {
 	var legacy connectionSnapshot
 	var err error
 	if machine := snapshot.machine; machine != nil {
@@ -523,8 +531,8 @@ func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config,
 		ServerID: cfg.ServerID, HelperVersion: helperVersion, TCPCount: legacy.TCPCount, UDPCount: legacy.UDPCount,
 		ConnectionCount: legacy.ConnectionCount, Snapshot: snapshot, Management: management,
 	}
-	if len(flvxReport) > 0 {
-		payload.FLVX = flvxReport[0]
+	if len(shared) > 0 {
+		payload.FLVX, payload.FLVXUserLimits = shared[0].Report, shared[0].UserLimits
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

@@ -110,6 +110,17 @@ type flvxManager struct {
 	listeningKey   string
 	// landing-reality-guard-v1; see flvx_guard.go.
 	guards guardPass
+	// landing-user-limits-v1; see flvx_user_limits.go and flvx_rate.go.
+	// budgetMu guards the budgets handed over by the upload loop; the other
+	// fields belong to the pass, userLimits is published under mu.
+	budgetMu       sync.Mutex
+	budgets        *flvx.UserLimitsEnvelope
+	budgetsExpired bool
+	budgetCache    *flvxBudgetView
+	budgetCacheOf  *flvx.UserLimitsEnvelope
+	appliedBudget  int64
+	userLimits     flvxUserLimitsPublished
+	rate           *flvxRateLimiter
 	// pickPort returns a free loopback TCP port; tests inject a fake.
 	pickPort func() (int, error)
 	// The real transport is the fixed Core CLI's gRPC client; tests inject a fake.
@@ -131,6 +142,7 @@ func newFLVXManager(cfg config) (*flvxManager, error) {
 	m := &flvxManager{config: cfg, dir: flvxStateDir, binary: flvxBinaryPath, configPath: flvxConfigPath, socket: flvxSocketPath, unitPath: flvxUnitPath, service: flvxServiceName, incoming: make(chan flvx.Envelope, 1), logs: newPeriodicLogLimiter()}
 	m.core = newCoreClient(m.socket)
 	m.lifecycle = newLifecycleManager(m.core)
+	m.rate = newFLVXRateLimiter()
 	m.apiCall = m.api
 	m.setup = m.ensureService
 	m.stop = m.stopService
@@ -232,6 +244,7 @@ func (m *flvxManager) materialHash() [32]byte {
 		s.Report.Nodes[i].UpBytes = 0
 		s.Report.Nodes[i].DownBytes = 0
 		s.Report.Nodes[i].Connections = 0
+		s.Report.Nodes[i].InboundConnections = nil
 		s.Report.Nodes[i].OnlineIPCount, s.Report.Nodes[i].OnlineIPs = nil, nil
 	}
 	s.Report.Sequence, s.Report.CollectedAt = 0, 0
@@ -394,6 +407,8 @@ func (m *flvxManager) run(ctx context.Context) {
 		err := m.reconcile(child)
 		cancel()
 		m.logs.report("FLVX instance reconcile", err)
+		m.reconcileRates(ctx)
+		m.reportBudgetExpiry()
 		if err != nil {
 			m.reportFailure(ctx, err)
 			nextAttempt = time.Now().Add(retryDelay)
@@ -418,6 +433,7 @@ func (m *flvxManager) reportFailure(ctx context.Context, err error) {
 	stopCancel()
 	m.state.Report.Core.State = "error"
 	m.state.Report.Core.Error = flvxCoreErrorText(err)
+	m.recordUserLimits(coreSnapshotResponse{})
 	for i := range m.state.Report.Nodes {
 		m.state.Report.Nodes[i].OnlineIPCount, m.state.Report.Nodes[i].OnlineIPs = nil, nil
 		if m.state.Report.Nodes[i].State != "removed" {
@@ -747,6 +763,11 @@ func (m *flvxManager) removeInstance(ctx context.Context) error {
 	}
 	if err := systemctl(ctx, "daemon-reload"); err != nil {
 		return err
+	}
+	if m.rate != nil {
+		if err := m.rate.ensure(ctx, nil); err != nil {
+			return err
+		}
 	}
 	return os.RemoveAll(m.dir)
 }

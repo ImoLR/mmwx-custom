@@ -227,7 +227,13 @@ func (m *flvxManager) limits(ctx context.Context, snapshot coreSnapshotResponse,
 		port := portConnectionSettings{InboundTag: n.Tag()}
 		if n.MaxConnections > 0 {
 			v := n.MaxConnections
-			port.MaxTotalConnections = &v
+			// landing-user-limits-v1 §3: 入站 (admitted client requests) or, as
+			// before, 入站+出站 sockets of the port.
+			if n.InboundLimit() {
+				port.MaxInboundConnections = &v
+			} else {
+				port.MaxTotalConnections = &v
+			}
 		}
 		if n.MaxOnlineIPs > 0 {
 			v := n.MaxOnlineIPs
@@ -257,10 +263,22 @@ func (m *flvxManager) limits(ctx context.Context, snapshot coreSnapshotResponse,
 	for _, u := range snapshot.Users {
 		block(u.Identity.InboundTag, u.Identity.User)
 	}
+	view := m.budgetView()
+	for _, identity := range m.applyUserLimits(&settings, view, snapshot, wanted) {
+		if !seen[identity] {
+			settings.BlockedIdentities = append(settings.BlockedIdentities, identity)
+			seen[identity] = true
+		}
+	}
 	// This instance must support v7 blocks. Never fall back to old interfaces
 	// which could leave established sessions alive after pause or quota expiry.
-	_, err := m.core.applyConfig(ctx, settings.coreConfig())
-	return err
+	if _, err := m.core.applyConfig(ctx, settings.coreConfig()); err != nil {
+		return err
+	}
+	if view != nil {
+		m.appliedBudget = view.sequence
+	}
+	return nil
 }
 
 func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]string, problems map[string]string) error {
@@ -269,6 +287,11 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 		connections[strings.TrimPrefix(u.Identity.InboundTag, "flvxl-")] += u.CurrentTotal
 	}
 	online := flvxSnapshotOnlineIPs(snapshot)
+	inbound := flvxInboundByNode(snapshot)
+	inboundOf := func(id string) *int64 {
+		v := inbound[id]
+		return &v
+	}
 	statuses := map[string]flvx.NodeStatus{}
 	acknowledged := m.state.Payload.AckGeneration == m.state.Report.Generation && m.state.Payload.AckSequence >= m.state.Report.Sequence
 	for _, old := range m.state.Report.Nodes {
@@ -280,12 +303,13 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 		}
 		old.State = "removed"
 		old.Connections = connections[old.ID]
+		old.InboundConnections = inboundOf(old.ID)
 		old.Error = ""
 		old.OnlineIPCount, old.OnlineIPs = nil, nil
 		statuses[old.ID] = old
 	}
 	for _, n := range m.state.Payload.Desired.Nodes {
-		s := flvx.NodeStatus{ID: n.ID, State: "removed", Connections: connections[n.ID]}
+		s := flvx.NodeStatus{ID: n.ID, State: "removed", Connections: connections[n.ID], InboundConnections: inboundOf(n.ID)}
 		if wanted[n.Tag()] != "" && m.state.Applied[n.Tag()] == wanted[n.Tag()] {
 			s.State = "active"
 		}
@@ -306,6 +330,7 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 	m.state.Report.Protocols = flvxProtocolCaps(m.coreFeatures())
 	m.state.Report.Listening = m.listening()
 	m.state.Report.RealityGuard = m.guardStatus()
+	m.recordUserLimits(snapshot)
 	m.state.Report.Nodes = []flvx.NodeStatus{}
 	for _, id := range ids {
 		s := statuses[id]

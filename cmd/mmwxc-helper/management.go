@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ImoLR/mmwx-custom/internal/flvx"
 )
 
 const (
@@ -94,7 +96,7 @@ var helperCapabilities = []string{
 	"external.takeover",
 	"core.mode.apply",
 	"connection.status", "connection.settings",
-	"flvx.share", "flvx.egress.v1", flvxProtocolsCapability, flvxGuardCapability,
+	"flvx.share", "flvx.egress.v1", flvxProtocolsCapability, flvxGuardCapability, flvx.UserLimitsCapability,
 	"machine.protection.v2",
 }
 
@@ -187,6 +189,11 @@ func (executor *commandExecutor) status(ctx context.Context) agentStatus {
 		Ownership: executor.lifecycle.externalOwnershipStatus(ctx, &executor.state.ExternalOwnership),
 		Takeover:  executor.state.Takeover, MachineID: executor.state.MachineID,
 		Logs: executor.logHousekeeping.snapshot(ctx),
+	}
+	// landing-user-limits-v1 §7: only while nft and the kernel take the
+	// FLVX rate table (probed once, cached).
+	if executor.flvx.rateCapable(ctx) {
+		status.Capabilities = append(status.Capabilities, flvx.UserRateCapability)
 	}
 	if actualMode, err := readAgentXrayMode(officialAgentConfigPath); err == nil {
 		status.CoreMode = actualMode

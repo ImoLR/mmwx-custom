@@ -27,6 +27,8 @@ type fakeFLVXCore struct {
 	stops         int
 	calls, blocks int
 	writes        int
+	// snap is served as the Core snapshot (users, management groups).
+	snap coreSnapshotResponse
 }
 
 func helperFLVXNode(id string, port int) flvx.Node {
@@ -55,7 +57,9 @@ func fakeFLVXManager(t *testing.T) (*flvxManager, *fakeFLVXCore) {
 			json.NewEncoder(w).Encode(map[string]bool{"success": true})
 			return
 		}
-		json.NewEncoder(w).Encode(coreSnapshotResponse{Version: 7, StartedAt: f.epoch})
+		snapshot := f.snap
+		snapshot.Version, snapshot.StartedAt = 7, f.epoch
+		json.NewEncoder(w).Encode(snapshot)
 	})}
 	go server.Serve(l)
 	t.Cleanup(func() { server.Close() })
