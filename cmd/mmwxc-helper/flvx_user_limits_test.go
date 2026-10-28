@@ -87,12 +87,19 @@ func TestFLVXGroupLimitFormulas(t *testing.T) {
 		ips        *int
 		blockIPs   bool
 	}{
-		{name: "unlimited", b: flvx.UserLimitBudget{}, live: flvxGroupLive{current: 5}},
-		{name: "relay add-back", b: flvx.UserLimitBudget{MaxInboundConnections: ulInt64(2)}, live: flvxGroupLive{current: 6, relayConns: 4}, conns: ulInt64(6)},
+		{name: "unlimited", b: flvx.UserLimitBudget{}, live: flvxGroupLive{current: 5, counted: 5}},
+		{name: "relay add-back", b: flvx.UserLimitBudget{MaxInboundConnections: ulInt64(2)}, live: flvxGroupLive{current: 6, counted: 6, relayConns: 4}, conns: ulInt64(6)},
 		{name: "server cap below the total", b: flvx.UserLimitBudget{MaxInboundConnections: ulInt64(40), ServerMaxInboundConnections: ulInt64(7)}, live: flvxGroupLive{relayConns: 3}, conns: ulInt64(7)},
 		{name: "server cap only", b: flvx.UserLimitBudget{ServerMaxInboundConnections: ulInt64(100)}, conns: ulInt64(100)},
 		{name: "full and idle is blocked", b: flvx.UserLimitBudget{MaxInboundConnections: ulInt64(0)}, blockConns: true},
-		{name: "full with open leases gets 1", b: flvx.UserLimitBudget{MaxInboundConnections: ulInt64(0)}, live: flvxGroupLive{current: 2}, conns: ulInt64(1)},
+		{name: "full with open leases gets 1", b: flvx.UserLimitBudget{MaxInboundConnections: ulInt64(0)}, live: flvxGroupLive{current: 2, counted: 2}, conns: ulInt64(1)},
+		// Leases admitted before the mapping existed are not in the group
+		// counter: they are taken off the limit the Core gets.
+		{name: "uncounted leases fill the budget", b: flvx.UserLimitBudget{MaxInboundConnections: ulInt64(4)}, live: flvxGroupLive{current: 5, counted: 2}, conns: ulInt64(1)},
+		{name: "uncounted leases taken off", b: flvx.UserLimitBudget{MaxInboundConnections: ulInt64(10)}, live: flvxGroupLive{current: 5, counted: 2}, conns: ulInt64(7)},
+		{name: "full, only uncounted leases open: never blocked", b: flvx.UserLimitBudget{MaxInboundConnections: ulInt64(0)}, live: flvxGroupLive{current: 3}, conns: ulInt64(1)},
+		{name: "uncounted IPs taken off", b: flvx.UserLimitBudget{MaxInboundOnlineIPs: ulInt(4)}, live: flvxGroupLive{seenIPs: 3, uncountedIPs: 2}, ips: ulInt(2)},
+		{name: "uncounted IPs fill the budget", b: flvx.UserLimitBudget{MaxInboundOnlineIPs: ulInt(1)}, live: flvxGroupLive{seenIPs: 2, uncountedIPs: 2}, ips: ulInt(1)},
 		{name: "server cap 0 idle", b: flvx.UserLimitBudget{ServerMaxInboundConnections: ulInt64(0)}, blockConns: true},
 		{name: "IPs with reserve", b: flvx.UserLimitBudget{MaxInboundOnlineIPs: ulInt(3), RelayIPReserve: 1}, ips: ulInt(4)},
 		{name: "IPs: seen relays beat the reserve", b: flvx.UserLimitBudget{MaxInboundOnlineIPs: ulInt(3), RelayIPReserve: 1}, live: flvxGroupLive{relayIPs: 2}, ips: ulInt(5)},
@@ -137,8 +144,8 @@ func TestFLVXUserGroupsMappingAndUsage(t *testing.T) {
 	}
 	f.snap = coreSnapshotResponse{
 		Users: []coreUserSnapshot{
-			{Identity: coreIdentity{InboundTag: "flvxl-a1", User: "flvxl-a1"}, InboundCurrent: 3, CurrentTotal: 7},
-			{Identity: coreIdentity{InboundTag: "flvxl-a2", User: "flvxl-a2"}, InboundCurrent: 2, CurrentTotal: 4},
+			{Identity: coreIdentity{InboundTag: "flvxl-a1", User: "flvxl-a1"}, InboundCurrent: 3, CurrentTotal: 7, InboundOnlineIPs: coreOnlineIPs{{IP: "::ffff:198.51.100.7", Connections: 3}}},
+			{Identity: coreIdentity{InboundTag: "flvxl-a2", User: "flvxl-a2"}, InboundCurrent: 2, CurrentTotal: 4, InboundOnlineIPs: coreOnlineIPs{{IP: "203.0.113.9", Connections: 2}, {IP: "203.0.113.10", Connections: 0}}},
 			{Identity: coreIdentity{InboundTag: "flvxl-b1", User: "flvxl-b1"}, InboundCurrent: 1, CurrentTotal: 2},
 		},
 		ManagementGroups: []managementGroupSnapshot{{Username: "flvx-user-26", InboundCurrent: 5, InboundOnlineIPs: []onlineIP{
@@ -227,6 +234,7 @@ func TestFLVXBudgetsMemoryOnlyAndExpiry(t *testing.T) {
 		now = now.Add(5 * time.Second)
 		m.submitUserLimits(signedBudgets(m, now, i, nil, flvx.UserLimitBudget{UserID: "26", MaxInboundConnections: ulInt64(i)}))
 		f.snap.Users = []coreUserSnapshot{{Identity: coreIdentity{InboundTag: "flvxl-a1", User: "flvxl-a1"}, InboundCurrent: i % 3, CurrentTotal: i}}
+		f.snap.ManagementGroups = []managementGroupSnapshot{{Username: "flvx-user-26", InboundCurrent: i % 3}}
 		if err := m.reconcile(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -305,6 +313,7 @@ func TestFLVXUserLimitsPausedAndFailure(t *testing.T) {
 	m.state.Payload.Desired.Nodes = []flvx.Node{ownedNode("a1", 30001, "26")}
 	m.submitUserLimits(signedBudgets(m, now, 1, nil, flvx.UserLimitBudget{UserID: "26", MaxInboundConnections: ulInt64(5)}))
 	f.snap.ManagementGroups = []managementGroupSnapshot{{Username: "flvx-user-26", InboundCurrent: 1, InboundOnlineIPs: []onlineIP{{IP: "203.0.113.9", Connections: 1}}}}
+	f.snap.Users = []coreUserSnapshot{{Identity: coreIdentity{InboundTag: "flvxl-a1", User: "flvxl-a1"}, InboundCurrent: 1, InboundOnlineIPs: coreOnlineIPs{{IP: "203.0.113.9", Connections: 1}}}}
 	if err := m.reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +322,7 @@ func TestFLVXUserLimitsPausedAndFailure(t *testing.T) {
 	}
 	m.stop = func(context.Context) error { return nil }
 	m.reportFailure(context.Background(), errors.New("boom"))
-	if u := m.userLimitsUpload(); len(u.Users) != 0 {
+	if u := m.userLimitsUpload(); len(u.Users) != 1 || u.Users[0].InboundConnections != 0 || len(u.Users[0].OnlineIPs) != 0 {
 		t.Fatalf("stale usage after failure %+v", u)
 	}
 	m.state.Payload.Status = "paused"
@@ -322,5 +331,37 @@ func TestFLVXUserLimitsPausedAndFailure(t *testing.T) {
 	}
 	if len(f.limits.ManagementMappings) != 0 {
 		t.Fatalf("paused share mapped %+v", f.limits.ManagementMappings)
+	}
+}
+
+// The first budgets of a user with connections already open (release day):
+// the Core's group counts nothing yet, the identities count everything, and
+// the limit the Core gets leaves room only for what the budget allows.
+func TestFLVXUserLimitsCountLeasesBeforeMapping(t *testing.T) {
+	m, f := fakeFLVXManager(t)
+	now := time.Now()
+	m.clock = func() time.Time { return now }
+	m.state.Payload.Desired.Nodes = []flvx.Node{ownedNode("a1", 30001, "26"), ownedNode("a2", 30002, "26")}
+	f.snap = coreSnapshotResponse{
+		Users: []coreUserSnapshot{
+			{Identity: coreIdentity{InboundTag: "flvxl-a1", User: "flvxl-a1"}, InboundCurrent: 3, InboundOnlineIPs: coreOnlineIPs{{IP: "203.0.113.9", Connections: 2}, {IP: "198.51.100.7", Connections: 1}}},
+			{Identity: coreIdentity{InboundTag: "flvxl-a2", User: "flvxl-a2"}, InboundCurrent: 2, InboundOnlineIPs: coreOnlineIPs{{IP: "203.0.113.10", Connections: 2}}},
+			// Unauthenticated probes of the port are not the owner's.
+			{Identity: coreIdentity{InboundTag: "flvxl-a2", User: ""}, InboundCurrent: 4},
+		},
+		ManagementGroups: []managementGroupSnapshot{{Username: "flvx-user-26"}},
+	}
+	m.submitUserLimits(signedBudgets(m, now, 1, []string{"198.51.100.7"}, flvx.UserLimitBudget{UserID: "26", MaxInboundConnections: ulInt64(5), MaxInboundOnlineIPs: ulInt(3)}))
+	if err := m.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g := groupLimit(f.limits, "flvx-user-26")
+	// Connections: 5 + 1 relay − 5 uncounted = 1. IPs: 3 + 1 relay − 2 uncounted direct = 2.
+	if g == nil || deref64(g.MaxInboundConnections) != int64(1) || derefInt(g.MaxInboundOnlineIPs) != 2 || len(*f.limits.BlockedIdentities) != 0 {
+		t.Fatalf("limits %+v", f.limits.ManagementLimits)
+	}
+	u := m.userLimitsUpload().Users
+	if len(u) != 1 || u[0].InboundConnections != 4 || u[0].RelayConnections != 1 || strings.Join(u[0].OnlineIPs, ",") != "203.0.113.10,203.0.113.9" {
+		t.Fatalf("usage %+v", u)
 	}
 }

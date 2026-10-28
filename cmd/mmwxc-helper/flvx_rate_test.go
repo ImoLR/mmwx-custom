@@ -44,14 +44,14 @@ delete table inet mmwxc_flvx_rate
 add table inet mmwxc_flvx_rate
 add chain inet mmwxc_flvx_rate input { type filter hook input priority 0; policy accept; }
 add chain inet mmwxc_flvx_rate output { type filter hook output priority 0; policy accept; }
-add limit inet mmwxc_flvx_rate u_3236_up { rate over 6553600 bytes/second burst 1638400 bytes }
-add limit inet mmwxc_flvx_rate u_3236_down { rate over 6553600 bytes/second burst 1638400 bytes }
+add limit inet mmwxc_flvx_rate u_3236_up { rate over 6553600 bytes/second }
+add limit inet mmwxc_flvx_rate u_3236_down { rate over 6553600 bytes/second }
 add rule inet mmwxc_flvx_rate input tcp dport { 30001, 30002 } limit name "u_3236_up" drop
 add rule inet mmwxc_flvx_rate output tcp sport { 30001, 30002 } limit name "u_3236_down" drop
 add rule inet mmwxc_flvx_rate input udp dport { 30001 } limit name "u_3236_up" drop
 add rule inet mmwxc_flvx_rate output udp sport { 30001 } limit name "u_3236_down" drop
-add limit inet mmwxc_flvx_rate u_3331_up { rate over 131072 bytes/second burst 65536 bytes }
-add limit inet mmwxc_flvx_rate u_3331_down { rate over 131072 bytes/second burst 65536 bytes }
+add limit inet mmwxc_flvx_rate u_3331_up { rate over 131072 bytes/second }
+add limit inet mmwxc_flvx_rate u_3331_down { rate over 131072 bytes/second }
 add rule inet mmwxc_flvx_rate input tcp dport { 30004 } limit name "u_3331_up" drop
 add rule inet mmwxc_flvx_rate output tcp sport { 30004 } limit name "u_3331_down" drop
 `
@@ -60,9 +60,6 @@ add rule inet mmwxc_flvx_rate output tcp sport { 30004 } limit name "u_3331_down
 	}
 	if renderFLVXRateNft(nil) != "" {
 		t.Fatal("empty owners render a table")
-	}
-	if b := flvxRateBurst(flvx.MaxUserRateMbps * flvx.RateBytesPerMbps); b != 3276800000 {
-		t.Fatalf("burst at the maximum rate %d", b)
 	}
 	// Owner ids are restricted to [A-Za-z0-9_-]; hex keeps every name valid.
 	if name := flvxRateObject("a-B_9", "up"); name != "u_612d425f39_up" {

@@ -25,13 +25,20 @@ type flvxBudgetView struct {
 	relay    map[string]bool
 }
 
-// flvxGroupLive is a group's state in the pass's Core snapshot.
+// flvxGroupLive is an owner group's state in the pass's Core snapshot. The
+// Core binds a lease to its management group when it admits it, so leases
+// admitted before the owner's mapping existed (budgets just arrived, the
+// first release) are missing from the group's own counters: counted /
+// countedIPs are what the Core's group holds, the rest is read from the
+// owner's identities, which count every lease.
 type flvxGroupLive struct {
-	current    int64 // admitted inbound leases, relays included
-	relayConns int64
-	relayIPs   int // relay sources among the group's online IPs
-	seenIPs    int // every listed IP, the Core's 30 s grace included
-	direct     []string
+	current      int64 // inbound leases of the owner's identities, relays included
+	counted      int64 // the part the Core's group counter holds
+	relayConns   int64
+	relayIPs     int // relay sources among the online IPs
+	seenIPs      int // every listed IP, the Core's 30 s grace included
+	uncountedIPs int // active sources the Core's group set does not hold
+	direct       []string
 }
 
 // flvxUserLimitsPublished is what the upload loop reads (under m.mu).
@@ -125,34 +132,77 @@ func (m *flvxManager) budgetView() *flvxBudgetView {
 	return view
 }
 
-// flvxGroupLives derives each owner group's live state from a snapshot.
-func flvxGroupLives(snapshot coreSnapshotResponse, relay map[string]bool) map[string]flvxGroupLive {
-	lives := map[string]flvxGroupLive{}
+// flvxGroupLives derives each owner group's live state; groups maps the
+// node tags of owners with budgets to their group.
+func flvxGroupLives(snapshot coreSnapshotResponse, relay map[string]bool, groups map[string]string) map[string]flvxGroupLive {
+	type acc struct {
+		live    flvxGroupLive
+		ips     map[string]int64
+		grouped map[string]bool
+	}
+	accs := map[string]*acc{}
+	get := func(group string) *acc {
+		a := accs[group]
+		if a == nil {
+			a = &acc{ips: map[string]int64{}, grouped: map[string]bool{}}
+			accs[group] = a
+		}
+		return a
+	}
+	for _, group := range groups {
+		get(group)
+	}
 	for _, g := range snapshot.ManagementGroups {
-		if !strings.HasPrefix(g.Username, flvx.UserGroupPrefix) {
+		a := accs[g.Username]
+		if a == nil {
 			continue
 		}
-		l := flvxGroupLive{current: g.InboundCurrent, seenIPs: len(g.InboundOnlineIPs), direct: []string{}}
+		a.live.counted = max(g.InboundCurrent, 0)
 		for _, ip := range g.InboundOnlineIPs {
-			canonical, ok := flvx.CanonicalIP(ip.IP)
-			if ok && relay[canonical] {
-				l.relayConns += ip.Connections
+			if canonical, ok := flvx.CanonicalIP(ip.IP); ok {
+				a.grouped[canonical] = true
+			}
+		}
+	}
+	for _, u := range snapshot.Users {
+		group, ok := groups[u.Identity.InboundTag]
+		if !ok || u.Identity.User != u.Identity.InboundTag {
+			continue
+		}
+		a := get(group)
+		a.live.current += max(u.InboundCurrent, 0)
+		for _, ip := range u.InboundOnlineIPs {
+			if canonical, ok := flvx.CanonicalIP(ip.IP); ok {
+				a.ips[canonical] += max(ip.Connections, 0)
+			}
+		}
+	}
+	lives := make(map[string]flvxGroupLive, len(accs))
+	for group, a := range accs {
+		l := a.live
+		l.current = max(l.current, l.counted)
+		l.seenIPs = len(a.ips)
+		l.direct = []string{}
+		for ip, connections := range a.ips {
+			if relay[ip] {
+				l.relayConns += connections
 				l.relayIPs++
 				continue
 			}
+			if connections > 0 && !a.grouped[ip] {
+				l.uncountedIPs++
+			}
 			// Grace-only IPs (no active lease) are not reported as online.
-			if ip.Connections > 0 && ok && len(l.direct) < flvx.MaxUserLimitIPs {
-				l.direct = append(l.direct, canonical)
+			if connections > 0 {
+				l.direct = append(l.direct, ip)
 			}
 		}
-		if l.current < 0 {
-			l.current = 0
-		}
-		if l.relayConns > l.current {
-			l.relayConns = l.current
-		}
+		l.relayConns = min(l.relayConns, l.current)
 		sort.Strings(l.direct)
-		lives[g.Username] = l
+		if len(l.direct) > flvx.MaxUserLimitIPs {
+			l.direct = l.direct[:flvx.MaxUserLimitIPs]
+		}
+		lives[group] = l
 	}
 	return lives
 }
@@ -160,9 +210,10 @@ func flvxGroupLives(snapshot coreSnapshotResponse, relay map[string]bool) map[st
 // flvxGroupConnLimit maps a budget to the group's max_inbound_connections.
 // The Core counts every admitted inbound lease of the group, relays included;
 // the user-total budget excludes relays, so the live relay count is added
-// back, and the 入站连接数 of this server (relays included) caps it. The Core
-// reads 0 as unlimited: a full group with nothing open is blocked instead
-// (exact), one with open leases gets 1 (≤ open ⇒ nothing new).
+// back, and the 入站连接数 of this server (relays included) caps it. Leases
+// the group counter misses are taken off. The Core reads 0 as unlimited: a
+// full group with nothing open is blocked instead (exact), otherwise it gets
+// 1 (≤ open ⇒ nothing new; blocking would close the open leases).
 func flvxGroupConnLimit(b flvx.UserLimitBudget, live flvxGroupLive) (*int64, bool) {
 	l := int64(-1)
 	if b.MaxInboundConnections != nil {
@@ -174,7 +225,7 @@ func flvxGroupConnLimit(b flvx.UserLimitBudget, live flvxGroupLive) (*int64, boo
 	if l < 0 {
 		return nil, false
 	}
-	if l == 0 {
+	if l -= live.current - live.counted; l <= 0 {
 		if live.current == 0 {
 			return nil, true
 		}
@@ -185,13 +236,14 @@ func flvxGroupConnLimit(b flvx.UserLimitBudget, live flvxGroupLive) (*int64, boo
 
 // flvxGroupIPLimit maps a budget to max_inbound_online_ips: relay sources
 // keep their slots (the ones seen, at least the reserve FLVX announced), so
-// a relay is never refused for a new source IP.
+// a relay is never refused for a new source IP; sources the group set misses
+// are taken off.
 func flvxGroupIPLimit(b flvx.UserLimitBudget, live flvxGroupLive) (*int, bool) {
 	if b.MaxInboundOnlineIPs == nil {
 		return nil, false
 	}
 	l := *b.MaxInboundOnlineIPs + max(live.relayIPs, b.RelayIPReserve)
-	if l == 0 {
+	if l -= live.uncountedIPs; l <= 0 {
 		if live.seenIPs == 0 {
 			return nil, true
 		}
@@ -207,7 +259,7 @@ func (m *flvxManager) applyUserLimits(settings *connectionSettings, view *flvxBu
 	if view == nil {
 		return nil
 	}
-	members := map[string][]string{}
+	members, tags := map[string][]string{}, map[string]string{}
 	budgets := map[string]flvx.UserLimitBudget{}
 	for _, n := range m.state.Payload.Desired.Nodes {
 		b, ok := view.users[n.Owner.ID]
@@ -216,6 +268,7 @@ func (m *flvxManager) applyUserLimits(settings *connectionSettings, view *flvxBu
 		}
 		group := flvx.UserGroup(n.Owner.ID)
 		members[group] = append(members[group], n.Tag())
+		tags[n.Tag()] = group
 		budgets[group] = b
 		settings.ManagementMappings = append(settings.ManagementMappings, managementMapping{Identity: coreIdentity{InboundTag: n.Tag(), User: n.Tag()}, Group: group})
 	}
@@ -224,7 +277,7 @@ func (m *flvxManager) applyUserLimits(settings *connectionSettings, view *flvxBu
 		groups = append(groups, group)
 	}
 	sort.Strings(groups)
-	lives := flvxGroupLives(snapshot, view.relay)
+	lives := flvxGroupLives(snapshot, view.relay, tags)
 	var blocked []coreIdentity
 	for _, group := range groups {
 		live := lives[group]
@@ -241,13 +294,19 @@ func (m *flvxManager) applyUserLimits(settings *connectionSettings, view *flvxBu
 }
 
 // recordUserLimits publishes the usage of the pass's snapshot for the next
-// uploads (memory only) together with the sequence the pass applied.
+// uploads (memory only) together with the sequence the pass applied: one
+// entry per owner with budgets and nodes on this share.
 func (m *flvxManager) recordUserLimits(snapshot coreSnapshotResponse) {
-	relay := map[string]bool{"127.0.0.1": true, "::1": true}
+	relay, tags := map[string]bool{}, map[string]string{}
 	if view := m.budgetView(); view != nil {
 		relay = view.relay
+		for _, n := range m.state.Payload.Desired.Nodes {
+			if _, ok := view.users[n.Owner.ID]; ok {
+				tags[n.Tag()] = flvx.UserGroup(n.Owner.ID)
+			}
+		}
 	}
-	lives := flvxGroupLives(snapshot, relay)
+	lives := flvxGroupLives(snapshot, relay, tags)
 	users := make([]flvx.UserLimitUsage, 0, len(lives))
 	for group, l := range lives {
 		users = append(users, flvx.UserLimitUsage{UserID: strings.TrimPrefix(group, flvx.UserGroupPrefix), InboundConnections: l.current - l.relayConns, RelayConnections: l.relayConns, OnlineIPs: l.direct})

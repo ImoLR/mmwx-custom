@@ -33,9 +33,6 @@ const (
 	// A failed probe (nft missing, kernel without limit objects) is retried
 	// this rarely; until it succeeds flvx.user_rate.v1 is not advertised.
 	flvxRateProbeRetry = 10 * time.Minute
-	// Burst: a quarter second of the rate (at least 64 KiB) keeps TCP close
-	// to the rate without letting a burst run far over it.
-	flvxRateMinBurst = 64 << 10
 )
 
 // flvxRateOwner is one owner's 速率 and the ports of its live nodes.
@@ -69,14 +66,19 @@ type flvxRateLimiter struct {
 }
 
 func newFLVXRateLimiter() *flvxRateLimiter {
-	return &flvxRateLimiter{nft: defaultFLVXRateNft(), now: time.Now}
+	return &flvxRateLimiter{nft: flvxRateNftCommand("nft"), now: time.Now}
 }
 
-func defaultFLVXRateNft() flvxRateNft {
+// flvxRateNftCommand runs nft as argv (tests prefix it with a namespace).
+func flvxRateNftCommand(argv ...string) flvxRateNft {
+	command := func(ctx context.Context, args ...string) *exec.Cmd {
+		full := append(append([]string{}, argv[1:]...), args...)
+		return exec.CommandContext(ctx, argv[0], full...)
+	}
 	run := func(ctx context.Context, script []byte, args ...string) error {
-		command := exec.CommandContext(ctx, "nft", args...)
-		command.Stdin = bytes.NewReader(script)
-		if output, err := command.CombinedOutput(); err != nil {
+		cmd := command(ctx, args...)
+		cmd.Stdin = bytes.NewReader(script)
+		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("nft %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 		}
 		return nil
@@ -86,25 +88,13 @@ func defaultFLVXRateNft() flvxRateNft {
 		check: func(ctx context.Context, script []byte) error { return run(ctx, script, "-c", "-f", "-") },
 		remove: func(ctx context.Context) error {
 			// Absent is fine; only our own table is ever deleted.
-			_ = exec.CommandContext(ctx, "nft", "delete", "table", "inet", flvxRateTable).Run()
+			_ = command(ctx, "delete", "table", "inet", flvxRateTable).Run()
 			return nil
 		},
 		present: func(ctx context.Context) bool {
-			return exec.CommandContext(ctx, "nft", "list", "table", "inet", flvxRateTable).Run() == nil
+			return command(ctx, "list", "table", "inet", flvxRateTable).Run() == nil
 		},
 	}
-}
-
-// flvxRateBurst is the token bucket depth in bytes for a rate.
-func flvxRateBurst(rate int64) int64 {
-	burst := rate / 4
-	if burst < flvxRateMinBurst {
-		burst = flvxRateMinBurst
-	}
-	if burst > 1<<32-1 {
-		burst = 1<<32 - 1
-	}
-	return burst
 }
 
 func flvxRateObject(owner, direction string) string {
@@ -121,6 +111,8 @@ func flvxPortList(ports []int) string {
 
 // renderFLVXRateNft builds one atomic batch that replaces the whole table.
 // owners must be sorted with sorted, non-empty port lists; nil = no table.
+// No burst is set: a byte limit's bucket then holds one second of the rate,
+// the same 1 s burst FLVX's own limiter allows.
 func renderFLVXRateNft(owners []flvxRateOwner) string {
 	if len(owners) == 0 {
 		return ""
@@ -137,10 +129,9 @@ func renderFLVXRateNft(owners []flvxRateOwner) string {
 	line("add chain %s input { type filter hook input priority 0; policy accept; }", table)
 	line("add chain %s output { type filter hook output priority 0; policy accept; }", table)
 	for _, o := range owners {
-		burst := flvxRateBurst(o.Bytes)
 		up, down := flvxRateObject(o.Owner, "up"), flvxRateObject(o.Owner, "down")
-		line("add limit %s %s { rate over %d bytes/second burst %d bytes }", table, up, o.Bytes, burst)
-		line("add limit %s %s { rate over %d bytes/second burst %d bytes }", table, down, o.Bytes, burst)
+		line("add limit %s %s { rate over %d bytes/second }", table, up, o.Bytes)
+		line("add limit %s %s { rate over %d bytes/second }", table, down, o.Bytes)
 		for _, proto := range []struct {
 			name  string
 			ports []int
