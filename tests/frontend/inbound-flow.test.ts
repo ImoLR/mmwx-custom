@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, nodeInboundFlow, normalizeInboundFlow, relayPortChangeWarning, stripRealityLeftovers } from "../../frontend/src/inbound-flow.ts";
+import { checkInboundPort, listeningUnreachable } from "../../frontend/src/inbound-port-check.ts";
 import { nodeManagedServer } from "../../frontend/src/node-card-logic.ts";
 import type { XrayNode, XrayObject } from "../../frontend/src/types.ts";
 
@@ -95,9 +96,9 @@ function compileSave(component: string, name: string, dependencies: Record<strin
   const scope = component ? file.statements.find((value: any) => ts.isFunctionDeclaration(value) && value.name?.text === component) : file;
   const handler = find(scope, (value) => (ts.isFunctionDeclaration(value) || ts.isVariableDeclaration(value)) && value.name?.text === name);
   assert.ok(handler, `${component} ${name} handler exists`);
-  const helpers = file.statements.filter((value: any) => ts.isFunctionDeclaration(value) && ["asString", "asNumber", "asObject", "sanitizeInbound", "replaceInboundFlow", "managementAssignments", "getError"].includes(value.name?.text));
+  const helpers = file.statements.filter((value: any) => ts.isFunctionDeclaration(value) && ["asString", "asNumber", "asObject", "sanitizeInbound", "replaceInboundFlow", "managementAssignments", "getError", "inboundTransportMode"].includes(value.name?.text));
   const code = ts.transpileModule(`${helpers.map((value: any) => value.getText(file)).join("\n")}\n${ts.isVariableDeclaration(handler) ? "const " : ""}${handler.getText(file)}`, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
-  const deps = { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, normalizeInboundFlow, nodeInboundFlow, nodeManagedServer, stripRealityLeftovers, ...dependencies };
+  const deps = { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, normalizeInboundFlow, nodeInboundFlow, nodeManagedServer, stripRealityLeftovers, checkInboundPort, listeningUnreachable, fetchListeningPorts: async () => listeningUnreachable, ...dependencies };
   return new Function(...Object.keys(deps), `${code}\nreturn ${name};`)(...Object.values(deps));
 }
 
@@ -187,6 +188,7 @@ test("the real editor displays both mixed-flow and relay port warnings, and card
   const deps = {
     React, useCallback: React.useCallback,
     useState: (initial: unknown) => React.useState(stateIndex++ === 0 ? { ...inbound, port: 10021 } : initial),
+    useListeningPorts: () => ({ report: null, refresh: async () => listeningUnreachable, fetchedAt: { current: 0 } }),
     inboundFlowWarning, relayPortChangeWarning,
     InboundStructuredEditor: noop, X: noop, Eye: noop, Save: noop, Braces: noop,
   };

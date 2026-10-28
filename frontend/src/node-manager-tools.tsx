@@ -32,7 +32,9 @@ import {
   fetchNodeURIs,
   fetchPackageNodeTrafficName,
   fetchRemoteRouting,
+  fetchListeningPorts,
   fetchRoutedOutbounds,
+  fetchXrayInbounds,
   fetchXrayNodes,
   mutateRemoteInbound,
   mutateRemoteOutbound,
@@ -52,6 +54,7 @@ import type {
   XrayNode,
 } from "./types";
 import { chainNodePayload, chainProxyCandidates, relayGroupCandidates, relayGroupPayload } from "./node-manager-logic";
+import { checkInboundPort, listeningUnreachable } from "./inbound-port-check";
 import { ManagedNodeCreateDialog, nodeToOutbound } from "./xray-manager";
 import { routedLabelFor } from "./node-routing-logic";
 
@@ -159,7 +162,12 @@ export function TunnelManagerDialog({ token, servers, nodes, onChanged, onClose,
       const ip = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(target.trim()) || target.includes(":"); await mutateRemoteRouting(token, sid, { action: "add_rule", rule: { inboundTag: [reuseTag], outboundTag: tag, ...(ip ? { ip: [target.trim()] } : { domain: [target.trim()] }) } });
     } else {
       if (!port || port < 1 || port > 65535) throw new Error("监听端口必须是 1-65535");
-      await mutateRemoteInbound(token, sid, { action: "add", inbound: { tag: `tunnel-${clean}`, protocol: "tunnel", port, settings: { address: target.trim(), network: "tcp,udp", port: destinationPort } } });
+      const inbound = { tag: `tunnel-${clean}`, protocol: "tunnel", port, settings: { address: target.trim(), network: "tcp,udp", port: destinationPort } };
+      // Same machine port check as the inbound editor, right before the write.
+      const [report, inboundResult] = await Promise.all([fetchListeningPorts(token, sid).catch(() => listeningUnreachable), fetchXrayInbounds(token, sid).catch(() => ({ inbounds: [] }))]);
+      const check = checkInboundPort(report, inbound, { originalPort: 0, usedPorts: (inboundResult.inbounds || []).map((item) => Number(item.port) || 0).filter(Boolean) });
+      if (check.blocking) throw new Error(check.message);
+      await mutateRemoteInbound(token, sid, { action: "add", inbound });
     }
     const selectedNode = nodes.find((node) => String(node.id) === targetNodeId);
     const entryHost = serverEntryHost(servers.find((server) => server.id === sid));

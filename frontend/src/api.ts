@@ -702,6 +702,14 @@ export function fetchDetailedConnections(token: string, serverId: number, signal
   });
 }
 
+export function fetchListeningPorts(token: string, serverId: number, signal?: AbortSignal) {
+  return requestCustomApi<import("./inbound-port-check").ListeningPortsResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/listening-ports`), {
+    signal,
+    cache: "no-store",
+    headers: { "MM-Authorization": token },
+  });
+}
+
 export function updateDetailedConnectionSettings(token: string, serverId: number, settings: ServerConnectionSettings) {
   return requestCustomApi<DetailedConnectionResponse>(joinUrl(MMWX_CUSTOM_API_BASE_URL, `/api/custom/servers/${serverId}/connections`), {
     method: "PUT",
