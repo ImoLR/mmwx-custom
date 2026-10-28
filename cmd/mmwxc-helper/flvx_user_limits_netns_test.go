@@ -221,39 +221,7 @@ func TestFLVXUserLimitsNetnsE2E(t *testing.T) {
 	}
 	os.MkdirAll(base, 0755)
 	os.Chmod(base, 0755)
-	n := flvxNetns{t, base}
-	c, l, d := "mmwxul-c", "mmwxul-l", "mmwxul-t"
-	flvxNetnsCleanup(c, l, d)
-	t.Cleanup(func() { flvxNetnsCleanup(c, l, d) })
-	for _, ns := range []string{c, l, d} {
-		n.sh("ip", "netns", "add", ns)
-		n.sh("ip", "-n", ns, "link", "set", "lo", "up")
-	}
-	n.sh("ip", "link", "add", "mmwxul-c0", "type", "veth", "peer", "name", "mmwxul-l0")
-	n.sh("ip", "link", "set", "mmwxul-c0", "netns", c)
-	n.sh("ip", "link", "set", "mmwxul-l0", "netns", l)
-	n.sh("ip", "link", "add", "mmwxul-l1", "type", "veth", "peer", "name", "mmwxul-t0")
-	n.sh("ip", "link", "set", "mmwxul-l1", "netns", l)
-	n.sh("ip", "link", "set", "mmwxul-t0", "netns", d)
-	for _, a := range []string{"203.0.113.50/24", "203.0.113.51/24", "203.0.113.52/24", ulRelay + "/24"} {
-		n.sh("ip", "-n", c, "addr", "add", a, "dev", "mmwxul-c0")
-	}
-	n.sh("ip", "-n", l, "addr", "add", ulLanding+"/24", "dev", "mmwxul-l0")
-	n.sh("ip", "-n", l, "addr", "add", "11.77.0.1/24", "dev", "mmwxul-l1")
-	n.sh("ip", "-n", d, "addr", "add", ulTarget+"/24", "dev", "mmwxul-t0")
-	for _, link := range [][2]string{{c, "mmwxul-c0"}, {l, "mmwxul-l0"}, {l, "mmwxul-l1"}, {d, "mmwxul-t0"}} {
-		n.sh("ip", "-n", link[0], "link", "set", link[1], "up")
-	}
-	// 20 ms round trip between client and landing, like a real client path
-	// (TCP's reaction to the rate limiter depends on it).
-	n.sh("ip", "netns", "exec", c, "tc", "qdisc", "add", "dev", "mmwxul-c0", "root", "netem", "delay", "10ms")
-	n.sh("ip", "netns", "exec", l, "tc", "qdisc", "add", "dev", "mmwxul-l0", "root", "netem", "delay", "10ms")
-	os.WriteFile(filepath.Join(base, "target.py"), []byte(ulTargetServer), 0644)
-	target := exec.Command("ip", "netns", "exec", d, "python3", filepath.Join(base, "target.py"))
-	if err := target.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { target.Process.Kill(); target.Wait() })
+	c, l, _ := ulLabNetns(t, base)
 
 	a1, a2, b1 := netnsNode("A1", 31001, 0), netnsNode("A2", 31002, 0), netnsNode("B1", 31004, 0)
 	a1.Owner, a2.Owner, b1.Owner = flvx.Owner{ID: "26", Name: "alice"}, flvx.Owner{ID: "26", Name: "alice"}, flvx.Owner{ID: "31", Name: "bob"}
@@ -297,52 +265,13 @@ func TestFLVXUserLimitsNetnsE2E(t *testing.T) {
 	}
 
 	evidence := map[string]any{"core_sha256": mustHash(t, bin), "started_at": time.Now().UTC().Format(time.RFC3339)}
-	// Client: dokodemo 127.0.0.1:port → SS2022 node with a chosen source.
-	ss := func(n flvx.Node) string { return n.SS2022.ServerKey + ":" + n.SS2022.UserKey }
-	type route struct {
-		node   flvx.Node
-		source string
-		port   int
-	}
-	ports := map[string]int{}
-	var inbounds, outbounds, rules []any
-	add := func(name string, node flvx.Node, source string, targetPort int) {
-		p := 22001 + len(inbounds)
-		ports[name] = p
-		inbounds = append(inbounds, map[string]any{"tag": "in-" + name, "listen": "127.0.0.1", "port": p, "protocol": "dokodemo-door", "settings": map[string]any{"address": ulTarget, "port": targetPort, "network": "tcp"}})
-		outbounds = append(outbounds, map[string]any{"tag": "out-" + name, "protocol": "shadowsocks", "sendThrough": source, "settings": map[string]any{"servers": []any{map[string]any{"address": ulLanding, "port": node.Port, "method": node.SS2022.Method, "password": ss(node)}}}})
-		rules = append(rules, map[string]any{"type": "field", "inboundTag": []string{"in-" + name}, "outboundTag": "out-" + name})
-	}
-	for _, node := range nodes {
-		for _, src := range []string{"203.0.113.50", "203.0.113.51", "203.0.113.52", ulRelay} {
-			add(node.ID+"@"+src, node, src, 8080)
-		}
-		add(node.ID+"-down", node, "203.0.113.50", 9000)
-		add(node.ID+"-up", node, "203.0.113.50", 9002)
-	}
 	// The client side may run another build (MMWXC_UL_CLIENT_CORE).
 	clientBin := bin
 	if v := os.Getenv("MMWXC_UL_CLIENT_CORE"); v != "" {
 		clientBin = v
 	}
 	evidence["client_core_sha256"] = mustHash(t, clientBin)
-	flvxNetnsCore(t, c, clientBin, filepath.Join(base, "client.json"), "", map[string]any{"log": map[string]any{"loglevel": "warning"}, "inbounds": inbounds, "outbounds": outbounds, "routing": map[string]any{"rules": rules}}, true)
-	os.WriteFile(filepath.Join(base, "driver.py"), []byte(ulClientDriver), 0644)
-	ctl := filepath.Join(base, "driver.sock")
-	driver := exec.Command("ip", "netns", "exec", c, "python3", filepath.Join(base, "driver.py"), ctl)
-	driverLog, _ := os.Create(filepath.Join(base, "driver.log"))
-	driver.Stdout, driver.Stderr = driverLog, driverLog
-	if err := driver.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { driver.Process.Kill(); driver.Wait() })
-	var dconn net.Conn
-	flvxWait(t, func() bool {
-		var err error
-		dconn, err = net.Dial("unix", ctl)
-		return err == nil
-	})
-	dr := &ulDriver{t: t, conn: dconn, r: bufio.NewReader(dconn)}
+	dr, ports := ulLabClient(t, base, c, clientBin, nodes)
 	conns := func(node, src string, count int) []int {
 		out := make([]int, count)
 		for i := range out {
@@ -376,28 +305,10 @@ func TestFLVXUserLimitsNetnsE2E(t *testing.T) {
 	}
 	two, seven, zero, one, oneIP := int64(2), int64(7), int64(0), int64(1), 1
 
-	if pause := os.Getenv("MMWXC_UL_E2E_PAUSE"); pause != "" {
-		d, _ := time.ParseDuration(pause)
-		time.Sleep(d)
-	}
 	// 0. Release day: leases open before the owner has budgets are not in the
 	// Core's group; the Helper counts them from the identities, so budget 2
 	// with 2 relays + 1 direct open admits exactly 1 more direct.
 	result("release_day_open_before_budgets", dr.open(conns("A1", ulRelay, 2)[0], conns("A1", ulRelay, 2)[1], ports["A1@203.0.113.50"]), 3)
-	if os.Getenv("MMWXC_UL_E2E_FAILFAST") == "1" && t.Failed() {
-		snap, _ := m.core.snapshot(ctx)
-		raw, _ := json.Marshal(snap)
-		t.Logf("landing snapshot: %s", raw)
-		for _, ns := range []string{c, l, d} {
-			out, _ := exec.Command("ip", "netns", "exec", ns, "ss", "-tanp").CombinedOutput()
-			t.Logf("%s sockets:\n%s", ns, out)
-		}
-		probe, _ := exec.Command("ip", "netns", "exec", c, "python3", "-c", fmt.Sprintf("import socket;c=socket.create_connection(('127.0.0.1',%d),timeout=3);c.settimeout(5);print(repr(c.recv(100)))", ports["A1@"+ulRelay])).CombinedOutput()
-		t.Logf("probe: %s", probe)
-		probe, _ = exec.Command("ip", "netns", "exec", l, "python3", "-c", "import socket;c=socket.create_connection(('11.77.0.2',8080),timeout=3);c.settimeout(5);print(repr(c.recv(100)))").CombinedOutput()
-		t.Logf("landing → target: %s", probe)
-		t.FailNow()
-	}
 
 	budgets(flvx.UserLimitBudget{UserID: "26", MaxInboundConnections: &two})
 	pass()
@@ -419,9 +330,6 @@ func TestFLVXUserLimitsNetnsE2E(t *testing.T) {
 	budgets(flvx.UserLimitBudget{UserID: "26", MaxInboundConnections: &hundred})
 	pass()
 	result("relays_open", dr.open(append(conns("A1", ulRelay, 2), conns("A2", ulRelay, 2)...)...), 4)
-	if os.Getenv("MMWXC_UL_E2E_FAILFAST") == "1" && t.Failed() {
-		t.FailNow()
-	}
 	budgets(flvx.UserLimitBudget{UserID: "26", MaxInboundConnections: &two})
 	pass()
 	// What the Core itself holds for the group: 2 + 4 live relays.
@@ -590,6 +498,86 @@ func TestFLVXUserLimitsNetnsE2E(t *testing.T) {
 		os.WriteFile(out, raw, 0644)
 	}
 	t.Logf("evidence (%d keys):\n%s", len(keys), raw)
+}
+
+// ulLabNetns builds the three namespaces (client with direct and relay
+// sources, landing, target), a 20 ms client path (TCP's reaction to the rate
+// limiter depends on it) and starts the target services.
+func ulLabNetns(t *testing.T, base string) (c, l, d string) {
+	t.Helper()
+	n := flvxNetns{t, base}
+	c, l, d = "mmwxul-c", "mmwxul-l", "mmwxul-t"
+	flvxNetnsCleanup(c, l, d)
+	t.Cleanup(func() { flvxNetnsCleanup(c, l, d) })
+	for _, ns := range []string{c, l, d} {
+		n.sh("ip", "netns", "add", ns)
+		n.sh("ip", "-n", ns, "link", "set", "lo", "up")
+	}
+	n.sh("ip", "link", "add", "mmwxul-c0", "type", "veth", "peer", "name", "mmwxul-l0")
+	n.sh("ip", "link", "set", "mmwxul-c0", "netns", c)
+	n.sh("ip", "link", "set", "mmwxul-l0", "netns", l)
+	n.sh("ip", "link", "add", "mmwxul-l1", "type", "veth", "peer", "name", "mmwxul-t0")
+	n.sh("ip", "link", "set", "mmwxul-l1", "netns", l)
+	n.sh("ip", "link", "set", "mmwxul-t0", "netns", d)
+	for _, a := range []string{"203.0.113.50/24", "203.0.113.51/24", "203.0.113.52/24", ulRelay + "/24"} {
+		n.sh("ip", "-n", c, "addr", "add", a, "dev", "mmwxul-c0")
+	}
+	n.sh("ip", "-n", l, "addr", "add", ulLanding+"/24", "dev", "mmwxul-l0")
+	n.sh("ip", "-n", l, "addr", "add", "11.77.0.1/24", "dev", "mmwxul-l1")
+	n.sh("ip", "-n", d, "addr", "add", ulTarget+"/24", "dev", "mmwxul-t0")
+	for _, link := range [][2]string{{c, "mmwxul-c0"}, {l, "mmwxul-l0"}, {l, "mmwxul-l1"}, {d, "mmwxul-t0"}} {
+		n.sh("ip", "-n", link[0], "link", "set", link[1], "up")
+	}
+	n.sh("ip", "netns", "exec", c, "tc", "qdisc", "add", "dev", "mmwxul-c0", "root", "netem", "delay", "10ms")
+	n.sh("ip", "netns", "exec", l, "tc", "qdisc", "add", "dev", "mmwxul-l0", "root", "netem", "delay", "10ms")
+	os.WriteFile(filepath.Join(base, "target.py"), []byte(ulTargetServer), 0644)
+	target := exec.Command("ip", "netns", "exec", d, "python3", filepath.Join(base, "target.py"))
+	if err := target.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { target.Process.Kill(); target.Wait() })
+	return c, l, d
+}
+
+// ulLabClient starts the client Core (dokodemo 127.0.0.1:port → SS2022 node
+// from a chosen source) and the driver. Ports: "<node id>@<source>" hold a
+// connection, "<node id>-down" / "-up" transfer.
+func ulLabClient(t *testing.T, base, c, bin string, nodes []flvx.Node) (*ulDriver, map[string]int) {
+	t.Helper()
+	ss := func(n flvx.Node) string { return n.SS2022.ServerKey + ":" + n.SS2022.UserKey }
+	ports := map[string]int{}
+	var inbounds, outbounds, rules []any
+	add := func(name string, node flvx.Node, source string, targetPort int) {
+		p := 22001 + len(inbounds)
+		ports[name] = p
+		inbounds = append(inbounds, map[string]any{"tag": "in-" + name, "listen": "127.0.0.1", "port": p, "protocol": "dokodemo-door", "settings": map[string]any{"address": ulTarget, "port": targetPort, "network": "tcp"}})
+		outbounds = append(outbounds, map[string]any{"tag": "out-" + name, "protocol": "shadowsocks", "sendThrough": source, "settings": map[string]any{"servers": []any{map[string]any{"address": ulLanding, "port": node.Port, "method": node.SS2022.Method, "password": ss(node)}}}})
+		rules = append(rules, map[string]any{"type": "field", "inboundTag": []string{"in-" + name}, "outboundTag": "out-" + name})
+	}
+	for _, node := range nodes {
+		for _, src := range []string{"203.0.113.50", "203.0.113.51", "203.0.113.52", ulRelay} {
+			add(node.ID+"@"+src, node, src, 8080)
+		}
+		add(node.ID+"-down", node, "203.0.113.50", 9000)
+		add(node.ID+"-up", node, "203.0.113.50", 9002)
+	}
+	flvxNetnsCore(t, c, bin, filepath.Join(base, "client.json"), "", map[string]any{"log": map[string]any{"loglevel": "warning"}, "inbounds": inbounds, "outbounds": outbounds, "routing": map[string]any{"rules": rules}}, true)
+	os.WriteFile(filepath.Join(base, "driver.py"), []byte(ulClientDriver), 0644)
+	ctl := filepath.Join(base, "driver.sock")
+	driver := exec.Command("ip", "netns", "exec", c, "python3", filepath.Join(base, "driver.py"), ctl)
+	driverLog, _ := os.Create(filepath.Join(base, "driver.log"))
+	driver.Stdout, driver.Stderr = driverLog, driverLog
+	if err := driver.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { driver.Process.Kill(); driver.Wait() })
+	var dconn net.Conn
+	flvxWait(t, func() bool {
+		var err error
+		dconn, err = net.Dial("unix", ctl)
+		return err == nil
+	})
+	return &ulDriver{t: t, conn: dconn, r: bufio.NewReader(dconn)}, ports
 }
 
 // lastCoreConfig reads back what the pass sent: the Core echoes its limits
