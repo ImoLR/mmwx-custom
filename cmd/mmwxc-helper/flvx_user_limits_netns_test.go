@@ -27,7 +27,7 @@ import (
 //
 // Owner 26 has SS2022 nodes A1 31001 and A2 31002, owner 31 node B1 31004.
 // Budgets reach the manager exactly as from an upload answer (signed
-// envelope); per-user 速率 runs through the Helper's nft table in the landing
+// envelope); per-user 速率 runs through the Helper's tc shaper in the landing
 // namespace. The numbers mirror FLVX's own lab (go-gost/x/landing/
 // user_limits_netns_test.go). Opt-in: root, MMWXC_TEST_FLVX_CORE_FIXED;
 // MMWXC_UL_E2E_OUT receives the evidence JSON.
@@ -209,7 +209,7 @@ func TestFLVXUserLimitsNetnsE2E(t *testing.T) {
 	if bin == "" || os.Geteuid() != 0 {
 		t.Skip("set MMWXC_TEST_FLVX_CORE_FIXED and run as root")
 	}
-	for _, tool := range []string{"python3", "ip", "nft"} {
+	for _, tool := range []string{"python3", "ip", "tc"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skip(tool + " missing")
 		}
@@ -238,7 +238,7 @@ func TestFLVXUserLimitsNetnsE2E(t *testing.T) {
 	now := time.Now()
 	m.clock = func() time.Time { return now }
 	m.config = config{Token: "helper-e2e", ServerID: "7"}
-	m.rate = &flvxRateLimiter{nft: flvxRateNftCommand("ip", "netns", "exec", l, "nft"), now: m.now}
+	m.rate = flvxRateLimiterIn(l, m.now)
 	ctx := context.Background()
 	sequence := int64(1793200000000)
 	budgets := func(users ...flvx.UserLimitBudget) {
@@ -404,8 +404,10 @@ func TestFLVXUserLimitsNetnsE2E(t *testing.T) {
 	result("conn_mode_inbound_limit_2", dr.open(conns("B1", "203.0.113.50", 3)...), 2)
 	drain()
 
-	// 6. 速率 per owner: A1 + A2 share 20 Mbps each direction; B1 unlimited;
-	// removing the rate frees it within one pass; expiry fails open.
+	// 6. 速率 per owner: A1 + A2 share 20 Mbps each direction and split it
+	// fairly; one download alone gets (almost) all of it; B1 unlimited;
+	// removing the rate frees it within one pass; expiry fails open and the
+	// pass after leaves no tc object behind.
 	twenty := 20
 	budgets(flvx.UserLimitBudget{UserID: "26", MaxRateMbps: &twenty})
 	pass()
@@ -443,11 +445,26 @@ func TestFLVXUserLimitsNetnsE2E(t *testing.T) {
 	senderSide := <-done
 	up := []float64{float64(u1["flvxl-A1"]-u0["flvxl-A1"]) / 8 / flvx.RateBytesPerMbps, float64(u1["flvxl-A2"]-u0["flvxl-A2"]) / 8 / flvx.RateBytesPerMbps}
 	rates["owner26_upload_sender_side"] = senderSide
+	alone := dr.rate("download", 8, 3, ports["A1-down"])
 	other := dr.rate("download", 5, 1, ports["B1-down"])
-	rates["owner26_download_two_nodes"], rates["owner26_upload_two_nodes"], rates["owner31_download"] = down, up, other
+	rates["owner26_download_two_nodes"], rates["owner26_upload_two_nodes"], rates["owner26_download_alone"], rates["owner31_download"] = down, up, alone, other
+	fair := func(v []float64) float64 {
+		lo, hi := v[0], v[0]
+		for _, x := range v {
+			lo, hi = min(lo, x), max(hi, x)
+		}
+		if hi == 0 {
+			return 0
+		}
+		return lo / hi
+	}
+	rates["fair_download"], rates["fair_upload"] = fair(down), fair(up)
 	sumDown, sumUp := down[0]+down[1], up[0]+up[1]
-	if sumDown < 17 || sumDown > 23 || sumUp < 17 || sumUp > 23 || down[0] < 4 || down[1] < 4 || up[0] < 4 || up[1] < 4 {
+	if sumDown < 17 || sumDown > 23 || sumUp < 17 || sumUp > 23 || fair(down) < 0.9 || fair(up) < 0.9 {
 		t.Errorf("shared 20 Mbps: download %v (sum %.1f) upload %v (sum %.1f)", down, sumDown, up, sumUp)
+	}
+	if alone[0] < 18 || alone[0] > 23 {
+		t.Errorf("one download alone: %v (want ≥ 90 %% of 20)", alone)
 	}
 	if other[0] < 100 {
 		t.Errorf("other owner limited: %v", other)
@@ -455,8 +472,15 @@ func TestFLVXUserLimitsNetnsE2E(t *testing.T) {
 	if usage := m.userLimitsUpload(); len(usage.Users) == 0 || !usage.Users[0].RateApplied {
 		t.Errorf("rate_applied missing: %+v", usage)
 	}
-	table, _ := exec.Command("ip", "netns", "exec", l, "nft", "list", "table", "inet", flvxRateTable).CombinedOutput()
-	evidence["nft_table"] = string(table)
+	tcState := func() string {
+		var out []string
+		for _, args := range [][]string{{"-s", "class", "show", "dev", flvxRateIfbUp}, {"-s", "class", "show", "dev", flvxRateIfbDown}, {"qdisc", "show"}, {"filter", "show", "dev", "mmwxul-l0", "ingress"}, {"filter", "show", "dev", "mmwxul-l0", "egress"}} {
+			raw, _ := exec.Command("ip", append([]string{"netns", "exec", l, "tc"}, args...)...).CombinedOutput()
+			out = append(out, "$ tc "+strings.Join(args, " "), string(raw))
+		}
+		return strings.Join(out, "\n")
+	}
+	evidence["tc_state"] = tcState()
 	budgets(flvx.UserLimitBudget{UserID: "26"})
 	pass()
 	freed := dr.rate("download", 4, 1, ports["A1-down"])
@@ -474,8 +498,10 @@ func TestFLVXUserLimitsNetnsE2E(t *testing.T) {
 	if limited[0] > 23 || expired[0] < 100 {
 		t.Errorf("expiry: before %v after %v", limited, expired)
 	}
-	if out, err := exec.Command("ip", "netns", "exec", l, "nft", "list", "table", "inet", flvxRateTable).CombinedOutput(); err == nil {
-		t.Errorf("rate table left after expiry: %s", out)
+	now = now.Add(5 * time.Second)
+	pass()
+	if left := tcState(); strings.Contains(left, "htb") || strings.Contains(left, "clsact") || strings.Contains(left, "flower") {
+		t.Errorf("tc objects left after expiry:\n%s", left)
 	}
 	if cfg := lastCoreConfig(t, m, ctx); len(cfg.ManagementMappings) != 0 {
 		t.Errorf("groups left after expiry: %+v", cfg.ManagementMappings)

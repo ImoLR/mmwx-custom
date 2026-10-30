@@ -82,7 +82,7 @@ func TestFLVXUserLimitsCoreCost(t *testing.T) {
 	nodes := fixture.state.Payload.Desired.Nodes
 	m, core := flvxNetnsManager(t, ns, bin, base, 39874, nodes)
 	m.config = config{Token: "t", ServerID: "7"}
-	m.rate = &flvxRateLimiter{nft: flvxRateNftCommand("ip", "netns", "exec", ns, "nft"), now: time.Now}
+	m.rate = flvxRateLimiterIn(ns, time.Now)
 	ctx := context.Background()
 	pass := func() {
 		t.Helper()

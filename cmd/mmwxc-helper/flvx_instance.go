@@ -764,10 +764,8 @@ func (m *flvxManager) removeInstance(ctx context.Context) error {
 	if err := systemctl(ctx, "daemon-reload"); err != nil {
 		return err
 	}
-	if m.rate != nil {
-		if err := m.rate.ensure(ctx, nil); err != nil {
-			return err
-		}
+	if err := m.rate.release(ctx); err != nil {
+		return err
 	}
 	return os.RemoveAll(m.dir)
 }

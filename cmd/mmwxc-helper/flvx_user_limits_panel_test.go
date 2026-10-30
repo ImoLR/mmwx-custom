@@ -119,7 +119,7 @@ func TestFLVXUserLimitsPanelE2E(t *testing.T) {
 	m, core := flvxNetnsManager(t, l, bin, base, 39873, nil)
 	m.state.Payload = flvx.Payload{}
 	m.config = config{CustomAPIURL: customURL, ServerID: "uuid-7", Token: helperToken}
-	m.rate = &flvxRateLimiter{nft: flvxRateNftCommand("ip", "netns", "exec", l, "nft"), now: time.Now}
+	m.rate = flvxRateLimiterIn(l, time.Now)
 	oldCaps := []string{"helper.update", "flvx.share", "flvx.egress.v1", flvxProtocolsCapability, flvxGuardCapability}
 	newCaps := append(append([]string{}, oldCaps...), flvx.UserLimitsCapability, flvx.UserRateCapability)
 	var mu sync.Mutex
