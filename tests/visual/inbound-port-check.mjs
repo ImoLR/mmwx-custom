@@ -32,6 +32,8 @@ const listening = {
   success: true, available: true, supported: true, helper_version: "v0.7.14",
   listening: { scanned_at: fixture.now, ports: [
     { port: 22, protocol: "tcp", address: "*", pid: 521, process: "sshd" },
+    // Fixture-only: nginx on 443 holds the VLESS default port.
+    { port: 443, protocol: "tcp", address: "*", pid: 610, process: "nginx" },
     core(10015, "wings ss"), core(10015, "wings ss", "udp"), core(10016, "自己用 ss-10016"), core(10016, "自己用 ss-10016", "udp"),
     { port: 10017, protocol: "tcp", address: "*", pid: 212883, process: "lkbk-core" }, { port: 10017, protocol: "udp", address: "*", pid: 212883, process: "lkbk-core" },
     core(10018, "king ss-10017"), core(10018, "king ss-10017", "udp"),
@@ -81,6 +83,16 @@ try {
     else if (endpoint === "/api/admin/certificates/valid") response = { certificates: [] };
     else if (endpoint.endsWith("/nginx/servers-list")) response = { domains: [] };
     else if (endpoint === "/api/admin/server-nics") response = { nics: [] };
+    else if (endpoint === "/api/admin/tunnels") response = { success: true, tunnels: [], chains: [] };
+    // Enough of the node page for its Tunnel 管理 dialog.
+    else if (endpoint === "/api/user/config") response = { node_order: nodes.map((node) => node.id) };
+    else if (endpoint === "/api/admin/nodes/tags") response = { tags: [] };
+    else if (endpoint === "/api/admin/nodes/package-membership") response = { memberships: {}, packages: [] };
+    else if (endpoint === "/api/admin/node-probe") response = { enabled: false, states: {} };
+    else if (endpoint === "/api/custom/nodes/owners") response = { owners: {} };
+    else if (endpoint === "/api/admin/node-unlocks") response = { nodes: {} };
+    else if (endpoint === "/api/admin/speedtest/results") response = { results: [] };
+    else if (endpoint === "/api/traffic/summary") response = { total_uplink: 0, total_downlink: 0, total_traffic: 0 };
     else if (endpoint === "/api/custom/flvx/admin") response = { shares: [], servers, integration: {} };
     else if (endpoint.startsWith("/api/custom/")) response = { success: true, metrics: {}, connections: {}, groups: [], plans: [] };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(response) });
@@ -97,7 +109,7 @@ try {
     await page.screenshot({ path: path.join(evidence, `${name}.png`) });
     assert.deepEqual(issues, [], `${name}: visible text below ${fontFloor}px`);
   };
-  const openEditor = async (name) => {
+  const openXray = async (name) => {
     await page.goto(base);
     await page.getByRole("button", { name: "打开菜单", exact: true }).click();
     await page.getByRole("button", { name: "服务管理", exact: true }).click();
@@ -107,6 +119,10 @@ try {
     await xray.locator(".xray-json-editor").waitFor();
     await xray.getByRole("button", { name: /^入站 \d+$/ }).click();
     await xray.locator(".xray-loading").waitFor({ state: "hidden" });
+    return xray;
+  };
+  const openEditor = async (name) => {
+    const xray = await openXray(name);
     await xray.getByRole("button", { name: "添加入站", exact: true }).click();
     await editor().waitFor();
   };
@@ -118,6 +134,11 @@ try {
   for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
     await openEditor("Boil HKT 99u");
+    // The new VLESS inbound's default 443 is held by nginx: it moves to the next free port without asking.
+    await editor().locator(".xray-assistant-note").filter({ hasText: "已自动换成" }).waitFor();
+    check(`${width} new inbound default 443 auto-advances`, (await editor().locator(".xray-assistant-note").allInnerTexts()).includes("端口 443 已被占用，已自动换成空闲端口 10000"));
+    await editor().getByRole("button", { name: "专家模式", exact: true }).click();
+    check(`${width} auto-advanced port is in the field`, (await portInput().inputValue()) === "10000");
     // Switch VLESS-Reality → SS-2022 at once, before the X25519 answer (1.5 s).
     await editor().locator("label").filter({ hasText: "协议 *" }).locator("select").selectOption("shadowsocks2022");
     await page.waitForTimeout(2200);
@@ -133,9 +154,14 @@ try {
     await scrollToPort();
     await typePort(10017);
     check(`${width} 10017 names lkbk-core while typing`, (await warning().allInnerTexts()).some((text) => text.includes("端口 10017 已被本机进程 lkbk-core (PID 212883) 占用，请换一个端口")));
+    check(`${width} 10017 is a typed port and stays`, (await portInput().inputValue()) === "10017");
+    check(`${width} 10017 offers the next free port`, (await warning().getByRole("button").allInnerTexts()).join() === "换成 10019");
     await shot(`${width}-port-10017-lkbk-core`);
+    await warning().getByRole("button", { name: "换成 10019", exact: true }).click();
+    await page.waitForTimeout(700);
+    check(`${width} 换成 fills 10019 and clears the warning`, (await portInput().inputValue()) === "10019" && (await warning().count()) === 0);
     await typePort(10016);
-    check(`${width} 10016 is another inbound`, (await warning().allInnerTexts()).some((text) => text.includes("端口 10016 已被当前服务器的其他入站占用")));
+    check(`${width} 10016 is another inbound`, (await warning().allInnerTexts()).some((text) => text.includes("端口 10016 已被当前服务器的其他入站占用")) && (await warning().getByRole("button").allInnerTexts()).join() === "换成 10019");
     await shot(`${width}-port-10016-other-inbound`);
     await typePort(20000);
     check(`${width} 20000 has no warning`, (await warning().count()) === 0);
@@ -150,12 +176,29 @@ try {
     const before = requests.length;
     await editor().getByRole("button", { name: "保存", exact: true }).click();
     await editor().locator(".xray-field-error").waitFor();
-    check(`${width} save blocked with the message`, (await editor().locator(".xray-field-error").innerText()) === "端口 10017 已被本机进程 lkbk-core (PID 212883) 占用");
+    check(`${width} save blocked with the message`, (await editor().locator(".xray-field-error").innerText()) === "端口 10017 已被本机进程 lkbk-core (PID 212883) 占用，可换成 10019");
+    check(`${width} save kept the typed port`, (await portInput().inputValue()) === "10017");
     const after = requests.slice(before);
     check(`${width} save re-fetched the report`, after.some((item) => item.endpoint === "/api/custom/servers/2/listening-ports"));
     check(`${width} save wrote nothing`, !after.some((item) => item.method !== "GET" && item.endpoint !== "/api/v3"), JSON.stringify(after.map((item) => `${item.method} ${item.endpoint}`)));
     await editor().locator(".xray-field-error").evaluate((el) => el.scrollIntoView({ block: "center" }));
     await shot(`${width}-save-blocked`);
+    await editor().getByRole("button", { name: "取消", exact: true }).click();
+
+    // An existing inbound is never moved: king (10018) typed to 10017 only gets the warning and 「换成」.
+    const xray = await openXray("Boil HKT 99u");
+    await xray.getByRole("button", { name: "king ss-10017 更多操作", exact: true }).click();
+    await page.getByRole("button", { name: "编辑", exact: true }).click();
+    await editor().waitFor();
+    await page.waitForTimeout(700);
+    check(`${width} existing inbound on its own port has no warning`, (await warning().count()) === 0);
+    await editor().getByRole("button", { name: "专家模式", exact: true }).click();
+    await scrollToPort();
+    await typePort(10017);
+    await page.waitForTimeout(500);
+    check(`${width} existing inbound keeps the typed port`, (await portInput().inputValue()) === "10017");
+    check(`${width} existing inbound is offered its own port back`, (await warning().getByRole("button").allInnerTexts()).join() === "换成 10018");
+    await shot(`${width}-existing-inbound-10017`);
     await editor().getByRole("button", { name: "取消", exact: true }).click();
 
     // A Helper that does not report yet: neutral note, saving stays possible.
@@ -167,6 +210,32 @@ try {
     await shot(`${width}-helper-not-reporting`);
     await editor().getByRole("button", { name: "取消", exact: true }).click();
   }
+  // 端口转发: a held listen port is refused before the write and 「换成」 fills the free one.
+  await page.goto(base);
+  await page.getByRole("button", { name: "打开菜单", exact: true }).click();
+  await page.getByRole("button", { name: "节点管理", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".node-manager")?.getAttribute("aria-busy") === "false");
+  await page.getByRole("button", { name: "节点管理菜单" }).click();
+  await page.getByRole("menuitem", { name: "Tunnel 管理" }).click();
+  const tunnel = page.getByRole("dialog").filter({ hasText: "Tunnel 管理" }).last();
+  await tunnel.getByRole("button", { name: "端口转发", exact: true }).click();
+  const field = (name) => tunnel.locator("label").filter({ has: page.locator("span", { hasText: new RegExp(`^${name}$`) }) }).locator("input, select").first();
+  const hk = servers.find((item) => item.name === "Boil HKT 99u");
+  await field("服务器").selectOption(String(hk.id));
+  await field("标识").fill("port-check");
+  await field("监听端口").fill("10017");
+  await field("目标地址").fill("203.0.113.9");
+  await field("目标端口").fill("443");
+  const beforeTunnel = requests.length;
+  await tunnel.getByRole("button", { name: /^(确认|创建)$/ }).click();
+  const hint = tunnel.locator(".node-port-hint");
+  await hint.waitFor();
+  check("端口转发 10017 names lkbk-core and offers 10019", (await hint.innerText()).includes("端口 10017 已被本机进程 lkbk-core (PID 212883) 占用") && (await hint.getByRole("button").innerText()) === "换成 10019");
+  check("端口转发 wrote nothing", !requests.slice(beforeTunnel).some((item) => item.method !== "GET" && item.endpoint !== "/api/v3"));
+  await page.screenshot({ path: path.join(evidence, "tunnel-port-10017.png") });
+  await hint.getByRole("button", { name: "换成 10019", exact: true }).click();
+  check("端口转发 换成 fills 10019", (await field("监听端口").inputValue()) === "10019" && (await hint.count()) === 0);
+
   check("no page errors", errors.length === 0, errors.join("; "));
   check("no write requests at all", !requests.some((item) => item.method !== "GET" && !["/api/v3", "/api/admin/xray/generate-x25519"].includes(item.endpoint)), JSON.stringify(requests.filter((item) => item.method !== "GET").map((item) => item.endpoint)));
   saveReport();

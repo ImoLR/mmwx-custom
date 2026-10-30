@@ -105,13 +105,60 @@ export function unavailablePorts(report: ListeningPortsResponse | null | undefin
   return ports;
 }
 
-// 随机 stays below the Linux ephemeral range (32768–60999): a port picked there
-// can later be held by an outbound connection and keep Xray from binding.
+// 随机 prefers ports below the Linux ephemeral range (32768–60999): a port
+// picked there can later be held by an outbound connection and keep Xray from
+// binding. The preference is not a wall: when it is full the picker falls back
+// to 61000–65535, then to any port from 1024 outside the ephemeral range.
 export const RANDOM_PORT_START = 10000;
 export const RANDOM_PORT_END = 32767;
+export const FALLBACK_PORT_START = 61000;
+// The Helper does not report the machine's ip_local_port_range yet, so the
+// Linux default stands in for it.
+export const LINUX_EPHEMERAL_RANGE: PortRange = [32768, 60999];
+export const noFreePortMessage = "没有可用的空闲端口（10000–32767、61000–65535 和 1024 以上的其余端口都已被占用）";
 
-export function pickAvailablePort(unavailable: Set<number>, random = Math.random) {
-  const candidates: number[] = [];
-  for (let port = RANDOM_PORT_START; port <= RANDOM_PORT_END; port++) if (!unavailable.has(port)) candidates.push(port);
-  return candidates[Math.floor(random() * candidates.length)] || 0;
+export type PortRange = [number, number];
+
+// portStages are the ranges in the order they are tried; the last one skips
+// the ephemeral range.
+function portStages(ephemeral: PortRange): PortRange[][] {
+  const [low, high] = ephemeral;
+  return [[[RANDOM_PORT_START, RANDOM_PORT_END]], [[FALLBACK_PORT_START, 65535]], [[1024, low - 1], [high + 1, 65535]].filter(([start, end]) => start <= end) as PortRange[]];
+}
+
+function freeIn(ranges: PortRange[], unavailable: Set<number>) {
+  const ports: number[] = [];
+  for (const [start, end] of ranges) for (let port = start; port <= end; port++) if (!unavailable.has(port)) ports.push(port);
+  return ports;
+}
+
+// pickAvailablePort draws a random free port from the first stage that has
+// one; null when every stage is full.
+export function pickAvailablePort(unavailable: Set<number>, random = Math.random, ephemeral = LINUX_EPHEMERAL_RANGE): number | null {
+  for (const ranges of portStages(ephemeral)) {
+    const candidates = freeIn(ranges, unavailable);
+    if (candidates.length) return candidates[Math.floor(random() * candidates.length)];
+  }
+  return null;
+}
+
+// nextFreePort is the port 「换成」 offers for a held port: the next free one
+// upward from it inside its stage (wrapping round), the preferred stage first,
+// then the fallback stages; null when every stage is full.
+export function nextFreePort(unavailable: Set<number>, from: number, ephemeral = LINUX_EPHEMERAL_RANGE): number | null {
+  for (const ranges of portStages(ephemeral)) {
+    const candidates = freeIn(ranges, unavailable);
+    if (candidates.length) return candidates.find((port) => port > from) ?? candidates[0];
+  }
+  return null;
+}
+
+// suggestFreePort pairs nextFreePort with the same unavailable set 随机 uses.
+export function suggestFreePort(report: ListeningPortsResponse | null | undefined, usedPorts: number[], originalPort: number, from: number) {
+  return nextFreePort(unavailablePorts(report, usedPorts, originalPort), from);
+}
+
+// portBlockedMessage adds the free port to offer (or says none is left).
+export function portBlockedMessage(message: string, free: number | null) {
+  return free ? `${message}，可换成 ${free}` : `${message}；${noFreePortMessage}`;
 }

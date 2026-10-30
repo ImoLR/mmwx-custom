@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, nodeInboundFlow, normalizeInboundFlow, relayPortChangeWarning, stripRealityLeftovers } from "../../frontend/src/inbound-flow.ts";
-import { checkInboundPort, listeningUnreachable } from "../../frontend/src/inbound-port-check.ts";
+import { checkInboundPort, listeningUnreachable, portBlockedMessage, suggestFreePort } from "../../frontend/src/inbound-port-check.ts";
 import { nodeManagedServer } from "../../frontend/src/node-card-logic.ts";
 import type { XrayNode, XrayObject } from "../../frontend/src/types.ts";
 
@@ -98,7 +98,7 @@ function compileSave(component: string, name: string, dependencies: Record<strin
   assert.ok(handler, `${component} ${name} handler exists`);
   const helpers = file.statements.filter((value: any) => ts.isFunctionDeclaration(value) && ["asString", "asNumber", "asObject", "sanitizeInbound", "replaceInboundFlow", "managementAssignments", "getError", "inboundTransportMode"].includes(value.name?.text));
   const code = ts.transpileModule(`${helpers.map((value: any) => value.getText(file)).join("\n")}\n${ts.isVariableDeclaration(handler) ? "const " : ""}${handler.getText(file)}`, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
-  const deps = { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, normalizeInboundFlow, nodeInboundFlow, nodeManagedServer, stripRealityLeftovers, checkInboundPort, listeningUnreachable, fetchListeningPorts: async () => listeningUnreachable, ...dependencies };
+  const deps = { inboundFlowNeedsRepair, inboundFlowRepairWarning, inboundFlowWarning, inboundSecurityMode, normalizeInboundFlow, nodeInboundFlow, nodeManagedServer, stripRealityLeftovers, checkInboundPort, suggestFreePort, portBlockedMessage, listeningUnreachable, fetchListeningPorts: async () => listeningUnreachable, ...dependencies };
   return new Function(...Object.keys(deps), `${code}\nreturn ${name};`)(...Object.values(deps));
 }
 
@@ -120,7 +120,7 @@ test("all three actual inbound save paths normalize every client, including unch
       onCreated: noop, onInboundCreated: undefined, onSaved: noop, onClose: noop,
     };
     const save = path.startsWith("inbound-") ? compileSave("", "saveEditor", dependencies) : compileSave(path === "node-add" ? "ManagedNodeCreateDialog" : "ManagedNodeEditDialog", "save", dependencies);
-    await save(item);
+    await save(item, { portTyped: true });
     assert.deepEqual(errors, [], `${path} ${protocol} ${mode}`);
     assert.deepEqual(payloads.map((p) => p.action), path.endsWith("add") ? ["add"] : ["replace", "update"]);
     const values = payloads[0].inbound.settings.clients;

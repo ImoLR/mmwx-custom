@@ -5526,6 +5526,31 @@ button {
   font-size: var(--xray-font-min);
 }
 
+.xray-port-warning,
+.node-port-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.xray-port-warning button,
+.node-port-hint button {
+  min-height: 32px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line));
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--text);
+  padding: 0 10px;
+  font-size: var(--xray-font-min);
+  font-weight: 600;
+  cursor: pointer;
+}
+.node-port-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--danger) 7%, var(--card));
+  color: var(--danger);
+  padding: 8px 10px;
+  font-size: var(--node-font-min, 14px);
+}
+
 .xray-client-list { min-width: 0; display: grid; gap: 10px; }
 .xray-client-list > p { margin: 0; text-align: center; padding: 12px; }
 .xray-client-list article { min-width: 0; display: grid; gap: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--fill); padding: 10px; }

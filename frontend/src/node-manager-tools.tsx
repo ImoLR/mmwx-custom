@@ -54,7 +54,7 @@ import type {
   XrayNode,
 } from "./types";
 import { chainNodePayload, chainProxyCandidates, relayGroupCandidates, relayGroupPayload } from "./node-manager-logic";
-import { checkInboundPort, listeningUnreachable } from "./inbound-port-check";
+import { checkInboundPort, listeningUnreachable, noFreePortMessage, pickAvailablePort, portBlockedMessage, suggestFreePort, unavailablePorts } from "./inbound-port-check";
 import { ManagedNodeCreateDialog, nodeToOutbound } from "./xray-manager";
 import { routedLabelFor } from "./node-routing-logic";
 
@@ -132,6 +132,8 @@ export function TunnelManagerDialog({ token, servers, nodes, onChanged, onClose,
   const [serverId, setServerId] = useState(servers[0] ? String(servers[0].id) : "");
   const [reuseTag, setReuseTag] = useState("");
   const [listenPort, setListenPort] = useState("");
+  // The held listen port's message and the free port 「换成」 offers.
+  const [portHint, setPortHint] = useState<{ port: string; message: string; free: number | null } | null>(null);
   const [target, setTarget] = useState("");
   const [targetPort, setTargetPort] = useState("");
   const [label, setLabel] = useState("");
@@ -152,7 +154,7 @@ export function TunnelManagerDialog({ token, servers, nodes, onChanged, onClose,
     await load(); onNotice("success", "Tunnel 已删除并重新读取");
   };
   const createPort = async () => {
-    const sid = Number(serverId); const destinationPort = Number(targetPort); const port = Number(listenPort); const clean = label.trim().replace(/^tunnel-/, "");
+    const sid = Number(serverId); const destinationPort = Number(targetPort); const typed = listenPort.trim() !== ""; let port = Number(listenPort); const clean = label.trim().replace(/^tunnel-/, "");
     if (!sid || !target.trim() || !destinationPort || !clean) throw new Error("服务器、标识、目标地址和目标端口不能为空");
     if (destinationPort < 1 || destinationPort > 65535) throw new Error("目标端口必须是 1-65535");
     setBusy(true);
@@ -161,12 +163,20 @@ export function TunnelManagerDialog({ token, servers, nodes, onChanged, onClose,
       const tag = `tunnel-${clean}`; await mutateRemoteOutbound(token, sid, { action: "add", outbound: { protocol: "freedom", settings: { domainStrategy: "AsIs", redirect: `${target.trim()}:${destinationPort}` }, tag } });
       const ip = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(target.trim()) || target.includes(":"); await mutateRemoteRouting(token, sid, { action: "add_rule", rule: { inboundTag: [reuseTag], outboundTag: tag, ...(ip ? { ip: [target.trim()] } : { domain: [target.trim()] }) } });
     } else {
-      if (!port || port < 1 || port > 65535) throw new Error("监听端口必须是 1-65535");
-      const inbound = { tag: `tunnel-${clean}`, protocol: "tunnel", port, settings: { address: target.trim(), network: "tcp,udp", port: destinationPort } };
+      if (typed && (!Number.isInteger(port) || port < 1 || port > 65535)) throw new Error("监听端口必须是 1-65535");
       // Same machine port check as the inbound editor, right before the write.
       const [report, inboundResult] = await Promise.all([fetchListeningPorts(token, sid).catch(() => listeningUnreachable), fetchXrayInbounds(token, sid).catch(() => ({ inbounds: [] }))]);
-      const check = checkInboundPort(report, inbound, { originalPort: 0, usedPorts: (inboundResult.inbounds || []).map((item) => Number(item.port) || 0).filter(Boolean) });
-      if (check.blocking) throw new Error(check.message);
+      const usedPorts = (inboundResult.inbounds || []).map((item) => Number(item.port) || 0).filter(Boolean);
+      // An empty listen port takes a free one from the preferred range.
+      if (!typed) port = pickAvailablePort(unavailablePorts(report, usedPorts, 0)) ?? 0;
+      if (!port) throw new Error(noFreePortMessage);
+      const inbound = { tag: `tunnel-${clean}`, protocol: "tunnel", port, settings: { address: target.trim(), network: "tcp,udp", port: destinationPort } };
+      const check = checkInboundPort(report, inbound, { originalPort: 0, usedPorts });
+      if (check.blocking) {
+        const free = suggestFreePort(report, usedPorts, 0, port);
+        setPortHint({ port: listenPort, message: check.message, free });
+        throw new Error(portBlockedMessage(check.message, free));
+      }
       await mutateRemoteInbound(token, sid, { action: "add", inbound });
     }
     const selectedNode = nodes.find((node) => String(node.id) === targetNodeId);
@@ -240,10 +250,11 @@ export function TunnelManagerDialog({ token, servers, nodes, onChanged, onClose,
     </div> : <>
       {mode === "list" && <div className="node-dialog-actions"><button onClick={() => setMode("chain")}><Network />转发链</button><button onClick={() => setMode("port")}><Link2 />端口转发</button><button onClick={() => void load()}><RefreshCw />刷新</button></div>}
       {mode !== "list" && <div className="node-subpanel"><h3>{mode === "chain" ? "新建转发链" : "新建端口转发"}</h3><div className="node-form-grid">
-        {mode === "port" && <label><span>服务器</span><select value={serverId} onChange={(event) => setServerId(event.target.value)}>{servers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</select></label>}
+        {mode === "port" && <label><span>服务器</span><select value={serverId} onChange={(event) => { setServerId(event.target.value); setPortHint(null); }}>{servers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</select></label>}
         {mode === "port" && <label><span>复用现有 Tunnel</span><select value={reuseTag} onChange={(event) => setReuseTag(event.target.value)}><option value="">新建监听端口</option>{tunnels.filter((item) => item.kind === "inbound" && String(item.server_id) === serverId).map((item) => <option key={item.tag} value={item.tag}>{item.tag} :{item.listen_port}</option>)}</select></label>}
         <label><span>标识</span><input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="例如 hk-forward" /></label>
-        <label><span>监听端口</span><input inputMode="numeric" value={listenPort} onChange={(event) => setListenPort(event.target.value)} placeholder={mode === "chain" ? "0 表示自动" : reuseTag ? "复用时无需填写" : "1-65535"} /></label>
+        <label><span>监听端口</span><input inputMode="numeric" value={listenPort} onChange={(event) => setListenPort(event.target.value)} placeholder={mode === "chain" ? "0 表示自动" : reuseTag ? "复用时无需填写" : "留空自动选空闲端口"} /></label>
+        {mode === "port" && !reuseTag && portHint && portHint.port === listenPort && <p className="node-port-hint" role="alert"><span>{portHint.message}{portHint.free ? "，请换一个端口" : `；${noFreePortMessage}`}</span>{portHint.free && <button type="button" onClick={() => { setListenPort(String(portHint.free)); setPortHint(null); }}>换成 {portHint.free}</button>}</p>}
         <label className="wide"><span>目标节点（可选）</span><select value={targetNodeId} onChange={(event) => selectTargetNode(event.target.value)}><option value="">手动填写目标地址</option>{targetNodes.map((node) => { const endpoint = nodeEndpoint(node); return <option key={node.id} value={node.id}>{node.node_name}{endpoint ? ` (${endpoint.server}:${endpoint.port || "--"})` : ""}</option>; })}</select></label>
         <label><span>目标地址</span><input value={target} onChange={(event) => { setTarget(event.target.value); setTargetNodeId(""); }} placeholder="IP 或域名" /></label>
         <label><span>目标端口</span><input inputMode="numeric" value={targetPort} onChange={(event) => setTargetPort(event.target.value)} placeholder="1-65535" /></label>

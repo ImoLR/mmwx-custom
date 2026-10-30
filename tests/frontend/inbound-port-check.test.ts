@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { checkInboundPort, inboundListenProtocols, listeningUnavailableMessage, listeningUnreachable, pickAvailablePort, unavailablePorts, type ListeningPortsResponse } from "../../frontend/src/inbound-port-check.ts";
+import { checkInboundPort, inboundListenProtocols, listeningUnavailableMessage, listeningUnreachable, nextFreePort, noFreePortMessage, pickAvailablePort, portBlockedMessage, suggestFreePort, unavailablePorts, type ListeningPortsResponse } from "../../frontend/src/inbound-port-check.ts";
 import type { XrayObject } from "../../frontend/src/types.ts";
 
 // 「Boil HKT 99u」(2) on 2026-10-28 as Helper v0.7.14 reports it: the External
@@ -92,29 +92,83 @@ test("a missing, old, stale or failed Helper report never blocks and says so neu
   assert.equal(checkInboundPort(listeningUnreachable, ss2022(10016), create).message, "端口 10016 已被其他入站占用");
 });
 
+const range = (start: number, end: number) => Array.from({ length: end - start + 1 }, (_, index) => start + index);
+
 test("随机 skips other inbounds and every busy machine port", () => {
   const busy = unavailablePorts(report, usedPorts, 10018);
   for (const port of [10015, 10016, 10017, 22, 38889, 40100, 51820, 46736]) assert.ok(busy.has(port), `port ${port} must be skipped`);
   assert.ok(!busy.has(10018), "the edited inbound's own port stays available");
   assert.ok(unavailablePorts(listeningUnreachable, usedPorts, 0).has(10016));
-  const none = new Set(Array.from({ length: 22768 }, (_, index) => index + 10000));
-  none.delete(10017);
-  assert.equal(pickAvailablePort(none, () => 0), 10017);
-  none.add(10017);
-  assert.equal(pickAvailablePort(none, () => 0.5), 0);
   for (let draw = 0; draw < 200; draw++) {
     const port = pickAvailablePort(busy);
-    assert.ok(port >= 10000 && port <= 32767 && !busy.has(port));
+    assert.ok(port !== null && port >= 10000 && port <= 32767 && !busy.has(port));
   }
 });
 
-test("every Custom form that creates or edits an inbound port runs the machine check on save", () => {
+test("随机 prefers 10000–32767 but falls back to 61000–65535, then 1024+ outside the ephemeral range, and says when nothing is left", () => {
+  const full = new Set(range(10000, 32767));
+  full.delete(10017);
+  assert.equal(pickAvailablePort(full, () => 0), 10017);
+  full.add(10017);
+  // Preferred range exhausted: the high fallback, never the ephemeral range.
+  for (const draw of [0, 0.5, 0.999]) {
+    const port = pickAvailablePort(full, () => draw)!;
+    assert.ok(port >= 61000 && port <= 65535, `fallback ${port}`);
+  }
+  for (const port of range(61000, 65535)) full.add(port);
+  assert.equal(pickAvailablePort(full, () => 0), 1024);
+  for (const port of range(1024, 9999)) full.add(port);
+  assert.equal(pickAvailablePort(full, () => 0), null, "32768–60999 stays untouched");
+  // A server reporting a narrower ephemeral range opens the rest.
+  assert.equal(pickAvailablePort(full, () => 0, [40000, 60999]), 32768);
+  assert.equal(noFreePortMessage, "没有可用的空闲端口（10000–32767、61000–65535 和 1024 以上的其余端口都已被占用）");
+});
+
+test("「换成」 searches upward from the held port, wraps inside the preferred range, then falls back", () => {
+  const busy = unavailablePorts(report, usedPorts, 0);
+  // 「Boil HKT 99u」(2): 10017 is lkbk-core, 10018 is king's inbound.
+  assert.equal(nextFreePort(busy, 10017), 10019);
+  assert.equal(nextFreePort(busy, 10015), 10019);
+  assert.equal(nextFreePort(busy, 20000), 20001);
+  // Wrap: the top of the range is held, the search restarts at 10000.
+  assert.equal(nextFreePort(new Set([32767]), 32767), 10000);
+  assert.equal(nextFreePort(new Set([...range(10000, 10010), 32766, 32767]), 32766), 10011);
+  // Ports outside the preferred range (443, 8388, 62000) still get the preferred range first.
+  assert.equal(nextFreePort(busy, 443), 10000);
+  assert.equal(nextFreePort(busy, 62000), 10000);
+  // Preferred range full: next free above the held port in 61000–65535, wrapping there too.
+  const full = new Set(range(10000, 32767));
+  assert.equal(nextFreePort(full, 20000), 61000);
+  assert.equal(nextFreePort(new Set([...full, 61000, 62000]), 62000), 62001);
+  assert.equal(nextFreePort(new Set([...full, 65535]), 65535), 61000);
+  for (const port of range(61000, 65535)) full.add(port);
+  assert.equal(nextFreePort(full, 8000), 8001);
+  assert.equal(nextFreePort(new Set([...full, ...range(1024, 9999)]), 8000), null);
+});
+
+test("new and existing inbounds: the existing inbound's own port is free to keep, other ports are offered, never 0", () => {
+  // Editing king (10018) and typing lkbk-core's 10017: its own port 10018 is free to go back to; a new inbound gets 10019.
+  assert.equal(suggestFreePort(report, usedPorts, 10018, 10017), 10018);
+  assert.equal(suggestFreePort(report, usedPorts, 0, 10017), 10019);
+  // Without a Helper report only the config's inbounds are skipped.
+  assert.equal(suggestFreePort(listeningUnreachable, [10016, 10017], 0, 10016), 10018);
+  assert.equal(portBlockedMessage("端口 10017 已被本机进程 lkbk-core (PID 212883) 占用", 10019), "端口 10017 已被本机进程 lkbk-core (PID 212883) 占用，可换成 10019");
+  assert.equal(portBlockedMessage("端口 10017 已被其他入站占用", null), `端口 10017 已被其他入站占用；${noFreePortMessage}`);
+});
+
+test("every Custom form that creates or edits an inbound port runs the machine check on save and offers a free port", () => {
   const editor = readFileSync(new URL("../../frontend/src/xray-manager.tsx", import.meta.url), "utf8");
   const tools = readFileSync(new URL("../../frontend/src/node-manager-tools.tsx", import.meta.url), "utf8");
-  // ObjectEditor (Xray 管理 create/edit + node page create/edit) re-reads the report before saving.
-  assert.match(editor, /checkInboundPort\(await listening\.refresh\(\), next, \{ originalPort, usedPorts \}\)/);
-  // A multi-server create checks every further server against its own inbounds.
-  assert.match(editor, /fetchListeningPorts\(token, target\.id\)[\s\S]{0,400}checkInboundPort\(report, next, \{ originalPort: 0, usedPorts:/);
-  // 端口转发 (tunnel) creation checks before its write.
-  assert.match(tools, /checkInboundPort\(report, inbound,[\s\S]{0,200}if \(check\.blocking\) throw new Error\(check\.message\);\s*await mutateRemoteInbound\(token, sid, \{ action: "add", inbound \}\)/);
+  // ObjectEditor (Xray 管理 create/edit + node page create/edit) re-reads the report before saving;
+  // only a new inbound whose port was not typed moves by itself.
+  assert.match(editor, /const report = await listening\.refresh\(\);\s*const check = checkInboundPort\(report, next, \{ originalPort, usedPorts \}\);/);
+  assert.match(editor, /const autoPort = !editor\.originalTag && !portTyped && !advanced;/);
+  assert.match(editor, /if \(!autoPort \|\| !free\) throw new Error\(portBlockedMessage\(check\.message, free\)\);/);
+  // A multi-server create checks every further server and gives each its own free port; a typed port asks first.
+  assert.match(editor, /fetchListeningPorts\(token, target\.id\)[\s\S]{0,600}checkInboundPort\(report, next, \{ originalPort: 0, usedPorts: targetUsed \}\)[\s\S]{0,300}suggestFreePort\(report, targetUsed, 0,/);
+  assert.match(editor, /if \(portTyped && moved\.length && !window\.confirm\(/);
+  assert.match(editor, /inbound: port \? \{ \.\.\.inbound, port \} : inbound/);
+  // 端口转发 (tunnel) creation checks before its write and offers 「换成」.
+  assert.match(tools, /const check = checkInboundPort\(report, inbound, \{ originalPort: 0, usedPorts \}\);\s*if \(check\.blocking\) \{[\s\S]{0,250}throw new Error\(portBlockedMessage\(check\.message, free\)\);\s*\}\s*await mutateRemoteInbound\(token, sid, \{ action: "add", inbound \}\)/);
+  assert.match(tools, /换成 \{portHint\.free\}/);
 });
