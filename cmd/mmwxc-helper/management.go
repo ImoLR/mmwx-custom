@@ -190,8 +190,8 @@ func (executor *commandExecutor) status(ctx context.Context) agentStatus {
 		Takeover:  executor.state.Takeover, MachineID: executor.state.MachineID,
 		Logs: executor.logHousekeeping.snapshot(ctx),
 	}
-	// landing-user-limits-v1 §7: only while nft and the kernel take the
-	// FLVX rate table (probed once, cached).
+	// landing-user-limits-v1 §7: only while ip / tc and the kernel take the
+	// FLVX rate shaper (probed once, cached).
 	if executor.flvx.rateCapable(ctx) {
 		status.Capabilities = append(status.Capabilities, flvx.UserRateCapability)
 	}

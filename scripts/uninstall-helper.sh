@@ -57,6 +57,21 @@ if [[ "${1:-}" != "--finish" ]]; then
       if nft list table inet "$table" >/dev/null 2>&1; then nft delete table inet "$table"; fi
     done
   fi
+  # FLVX per-user 速率 (tc): our filters first (a redirect into a missing IFB
+  # drops packets), then the IFBs; a clsact only when nothing else is on it.
+  if command -v tc >/dev/null 2>&1; then
+    for dev in $(tc qdisc show 2>/dev/null | awk '$2 == "clsact" { print $5 }'); do
+      for hook in ingress egress; do
+        tc filter del dev "$dev" "$hook" pref 61870 2>/dev/null || true
+        tc filter del dev "$dev" "$hook" pref 61871 2>/dev/null || true
+      done
+      if [[ -z "$(tc filter show dev "$dev" ingress 2>/dev/null)$(tc filter show dev "$dev" egress 2>/dev/null)" ]]; then
+        tc qdisc del dev "$dev" clsact 2>/dev/null || true
+      fi
+    done
+    ip link del mmwxcr-up 2>/dev/null || true
+    ip link del mmwxcr-dn 2>/dev/null || true
+  fi
   rm -f /etc/systemd/system/mmwxc-core.service /etc/systemd/system/mmwxc-core.service.bak
   systemctl daemon-reload
   [[ "${1:-}" == "--prepare" ]] && exit 0
