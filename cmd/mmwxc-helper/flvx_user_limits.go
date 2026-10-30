@@ -76,19 +76,41 @@ func (m *flvxManager) submitUserLimits(e *flvx.UserLimitsEnvelope) error {
 	return nil
 }
 
-// reportBudgetExpiry logs once when budgets expired (FLVX stopped the
-// exchange) and once when budgets are in force again.
+// budgetExpiry is what the last expired budgets mean for the log.
+type budgetExpiry uint8
+
+const (
+	budgetsLive budgetExpiry = iota // in force, or none since the start
+	// Expired with limited users: FLVX stopped the exchange while limits
+	// existed (FLVX gone), reported like any periodic failure.
+	budgetsLost
+	// Expired empty: when the last limit goes away FLVX sends one empty list
+	// and stops calling (§7.2), so nothing is limited here. Said once.
+	budgetsIdle
+	budgetsIdleLogged
+)
+
+// reportBudgetExpiry logs lost budgets (FLVX stopped the exchange) through
+// the periodic limiter, an idle share once, and budgets in force again once.
 func (m *flvxManager) reportBudgetExpiry() {
 	m.budgetMu.Lock()
-	expired, held := m.budgetsExpired, m.budgets != nil
+	expiry, held := m.budgetsExpired, m.budgets != nil
 	if held {
-		m.budgetsExpired = false
+		m.budgetsExpired = budgetsLive
+	} else if expiry == budgetsIdle {
+		m.budgetsExpired = budgetsIdleLogged
 	}
 	m.budgetMu.Unlock()
-	if expired && !held {
-		m.logs.report("FLVX user limits", errors.New("budgets expired without a FLVX exchange; node and port limits only"))
-	} else if held {
+	switch {
+	case held && expiry == budgetsIdleLogged:
+		m.logs.print("[mmwxc-helper] FLVX user limits: budgets in force again")
+	case held:
 		m.logs.report("FLVX user limits", nil)
+	case expiry == budgetsLost:
+		m.logs.report("FLVX user limits", errors.New("budgets expired without a FLVX exchange; node and port limits only"))
+	case expiry == budgetsIdle:
+		m.logs.report("FLVX user limits", nil)
+		m.logs.print("[mmwxc-helper] FLVX user limits: no limited users on this share, FLVX stopped the exchange as expected")
 	}
 }
 
@@ -109,8 +131,11 @@ func (m *flvxManager) budgetView() *flvxBudgetView {
 	defer m.budgetMu.Unlock()
 	e := m.budgets
 	if e != nil && e.ExpiresAt <= m.now().UnixMilli() {
+		m.budgetsExpired = budgetsLost
+		if len(e.Payload.Users) == 0 {
+			m.budgetsExpired = budgetsIdle
+		}
 		m.budgets, e = nil, nil
-		m.budgetsExpired = true
 	}
 	if e == nil {
 		m.budgetCache = nil

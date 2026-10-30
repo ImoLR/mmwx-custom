@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -266,6 +267,99 @@ func TestFLVXBudgetsMemoryOnlyAndExpiry(t *testing.T) {
 	// After expiry an older sequence is taken (FLVX restarted with an earlier clock).
 	if err := m.submitUserLimits(signedBudgets(m, now, 5, nil, flvx.UserLimitBudget{UserID: "26", MaxInboundConnections: ulInt64(4)})); err != nil || m.heldBudgetSequence() != 5 {
 		t.Fatalf("post-expiry budgets: %v %d", err, m.heldBudgetSequence())
+	}
+}
+
+// When the last limit goes away FLVX sends one empty list and stops calling
+// (§7.2): its expiry is said once, not every 10 minutes; budgets coming back
+// are said once and applied as before. Budgets that expire while users are
+// limited (FLVX gone) still fail open and stay reported, rate-limited.
+func TestFLVXBudgetExpiryLogs(t *testing.T) {
+	m, f := fakeFLVXManager(t)
+	now := time.Now()
+	m.clock = func() time.Time { return now }
+	m.logs.now = m.clock
+	var lines []string
+	m.logs.print = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	m.state.Payload.Desired.Nodes = []flvx.Node{ownedNode("a1", 30001, "26")}
+	// passes runs the loop's pass for d at its 5 s ticker, budgets untouched.
+	passes := func(d time.Duration) {
+		t.Helper()
+		for end := now.Add(d); now.Before(end); now = now.Add(5 * time.Second) {
+			if err := m.reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			m.reportBudgetExpiry()
+		}
+	}
+	count := func(part string) int {
+		n := 0
+		for _, line := range lines {
+			if strings.Contains(line, part) {
+				n++
+			}
+		}
+		return n
+	}
+
+	m.submitUserLimits(signedBudgets(m, now, 1, nil, flvx.UserLimitBudget{UserID: "26", MaxInboundConnections: ulInt64(4)}))
+	passes(time.Minute)
+	m.submitUserLimits(signedBudgets(m, now, 2, nil))
+	passes(time.Minute)
+	if groupLimit(f.limits, "flvx-user-26") != nil || len(lines) != 0 {
+		t.Fatalf("empty list: %+v %q", f.limits.ManagementLimits, lines)
+	}
+	// FLVX stopped calling: the empty list expires, then 30 minutes of passes.
+	passes(flvx.UserLimitsTTL + 30*time.Minute)
+	if len(lines) != 1 || count("no limited users") != 1 {
+		t.Fatalf("idle share logged %q", lines)
+	}
+
+	lines = nil
+	m.submitUserLimits(signedBudgets(m, now, 3, nil, flvx.UserLimitBudget{UserID: "26", MaxInboundConnections: ulInt64(5)}))
+	passes(time.Minute)
+	if deref64(groupLimit(f.limits, "flvx-user-26").MaxInboundConnections) != int64(5) {
+		t.Fatalf("budgets not applied again: %+v", f.limits.ManagementLimits)
+	}
+	if len(lines) != 1 || count("in force again") != 1 {
+		t.Fatalf("budgets back logged %q", lines)
+	}
+
+	// FLVX gone while user 26 is limited: fail open, reported as before
+	// (once, then a summary per 10 minutes) until budgets come back.
+	lines = nil
+	passes(flvx.UserLimitsTTL + 30*time.Minute)
+	if len(f.limits.ManagementMappings) != 0 || len(f.limits.ManagementLimits) != 0 || m.heldBudgetSequence() != 0 {
+		t.Fatalf("lost budgets still applied: %+v", f.limits.ManagementLimits)
+	}
+	if count("budgets expired without a FLVX exchange") != 1 || count("repeated") < 3 || count("no limited users") != 0 {
+		t.Fatalf("lost budgets logged %q", lines)
+	}
+	lines = nil
+	m.submitUserLimits(signedBudgets(m, now, 4, nil, flvx.UserLimitBudget{UserID: "26", MaxInboundConnections: ulInt64(6)}))
+	passes(time.Minute)
+	if len(lines) != 1 || count("recovered") != 1 || deref64(groupLimit(f.limits, "flvx-user-26").MaxInboundConnections) != int64(6) {
+		t.Fatalf("recovery logged %q, limits %+v", lines, f.limits.ManagementLimits)
+	}
+}
+
+// A rejected upload answer (main.go's "FLVX user limits rejected") is still
+// logged, once and then per 10 minutes.
+func TestFLVXRejectedBudgetsStillLogged(t *testing.T) {
+	m, _ := fakeFLVXManager(t)
+	now := time.Now()
+	m.clock = func() time.Time { return now }
+	m.logs.now = m.clock
+	var lines []string
+	m.logs.print = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	forged := signedBudgets(m, now, 1, nil, flvx.UserLimitBudget{UserID: "26"})
+	forged.Payload.Sequence = 2
+	for end := now.Add(21 * time.Minute); now.Before(end); now = now.Add(5 * time.Second) {
+		m.logs.report("FLVX user limits rejected", m.submitUserLimits(forged))
+		m.reportBudgetExpiry()
+	}
+	if len(lines) != 3 || !strings.Contains(lines[0], "invalid FLVX user limits signature") || !strings.Contains(lines[1], "repeated") || !strings.Contains(lines[2], "repeated") {
+		t.Fatalf("rejected budgets logged %q", lines)
 	}
 }
 

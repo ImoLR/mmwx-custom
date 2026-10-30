@@ -115,7 +115,7 @@ type flvxManager struct {
 	// fields belong to the pass, userLimits is published under mu.
 	budgetMu       sync.Mutex
 	budgets        *flvx.UserLimitsEnvelope
-	budgetsExpired bool
+	budgetsExpired budgetExpiry
 	budgetCache    *flvxBudgetView
 	budgetCacheOf  *flvx.UserLimitsEnvelope
 	appliedBudget  int64
