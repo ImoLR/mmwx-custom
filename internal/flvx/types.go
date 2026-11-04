@@ -150,6 +150,9 @@ type Desired struct {
 	Nodes        []Node  `json:"nodes"`
 	Egress       *Egress `json:"egress,omitempty"`
 	RealityGuard *bool   `json:"reality_guard,omitempty"`
+	// landing-scan-guard-v1 §9, likewise omitted when absent and stripped by
+	// Custom for Helpers without flvx.scan_guard.v1.
+	ScanGuard *ScanGuard `json:"scan_guard,omitempty"`
 }
 
 type Config struct {
@@ -217,6 +220,8 @@ type Status struct {
 	// landing-reality-guard-v1, reported while FLVX asks for the guard and
 	// the share has VLESS Reality nodes.
 	RealityGuard *RealityGuardStatus `json:"reality_guard,omitempty"`
+	// landing-scan-guard-v1 §9, reported by Helpers with flvx.scan_guard.v1.
+	ScanGuard *ScanGuardStatus `json:"scan_guard,omitempty"`
 }
 
 // Report sequence and generation belong only to the authenticated Helper channel.
