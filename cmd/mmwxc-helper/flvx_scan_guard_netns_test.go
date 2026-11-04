@@ -362,12 +362,12 @@ func TestFLVXScanGuardNetnsE2E(t *testing.T) {
 	}()
 
 	// 0. Guard off (FLVX sends none): a 120-host scan reaches every host and
-	// /v1/scan is never read.
+	// /v1/scan is read once for this Core epoch only.
 	pass()
 	check("off_features", m.scanCapable(), m.state.CoreFeatures)
 	check("off_scan_120_reached", lab.scan(portA, horizontalTargets(9, 120, 22)) == 120, "120 hosts")
 	pass()
-	check("off_no_reads", m.scan.reads == 0, m.scan.reads)
+	check("off_one_read", m.scan.reads == 1, m.scan.reads)
 	check("off_state", m.state.Report.ScanGuard.State == "off" && m.state.Report.ScanGuard.CoreReady, m.state.Report.ScanGuard)
 
 	// 1. Guard on (FLVX's defaults): normal use stays fine.
@@ -469,6 +469,44 @@ func TestFLVXScanGuardNetnsE2E(t *testing.T) {
 	reached = lab.scan(portA, horizontalTargets(20, 150, 22))
 	check("second_scan_caught", reached == 99, reached)
 	pass()
+
+	// 7. The Core block is sticky: FLVX records the hit, disables A and
+	// switches the guard off, the Helper restarts (the Core keeps running),
+	// then 解除禁用 still lifts the block.
+	st = m.state.Report.ScanGuard
+	check("sticky_off_hit", len(st.Hits) == 1 && st.Hits[0].ID == "A", st)
+	off := recorded
+	off.Enabled, off.Seen = false, st.Hits[0].Seq
+	setGuard(&off, map[string]bool{"A": false, "B": true})
+	pass()
+	check("sticky_off_A_off", !lab.probe(portA, false), "A off")
+	m.scan = flvxScanPass{} // Helper restart
+	setGuard(&off, both)
+	pass()
+	pass()
+	check("sticky_off_core_clear", len(m.state.Report.ScanGuard.Blocked) == 0, m.state.Report.ScanGuard.Blocked)
+	check("sticky_off_A_works", lab.probe(portA, false), "A ok after restart + 解除禁用")
+	reads := m.scan.reads
+	for i := 0; i < 5; i++ {
+		pass()
+	}
+	check("sticky_off_no_more_reads", m.scan.reads == reads, [2]int{reads, m.scan.reads})
+
+	// 8. Same with FLVX dropping the guard while the Helper is down.
+	on := off
+	on.Enabled = true
+	setGuard(&on, both)
+	pass()
+	reached = lab.scan(portA, horizontalTargets(40, 120, 22))
+	check("sticky_drop_caught", reached == 99, reached)
+	pass()
+	check("sticky_drop_blocked", strings.Join(m.state.Report.ScanGuard.Blocked, ",") == "flvxl-A", m.state.Report.ScanGuard)
+	m.scan = flvxScanPass{} // Helper restart
+	setGuard(nil, both)
+	pass()
+	pass()
+	check("sticky_drop_core_clear", len(m.state.Report.ScanGuard.Blocked) == 0, m.state.Report.ScanGuard.Blocked)
+	check("sticky_drop_A_works", lab.probe(portA, false), "A ok after restart + guard dropped")
 	evidence["final_status"] = m.state.Report.ScanGuard
 	evidence["scan_reads"] = m.scan.reads
 }

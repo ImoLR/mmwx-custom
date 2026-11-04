@@ -30,8 +30,14 @@ Per pass of a running FLVX Core (every 5 s), mirroring FLVX's
   Core that refuses them after all gets today's body for the rest of its
   epoch and the share reports `core_update`.
 - `scan_guard.identities` = FLVX's identities that are rendered right now.
-- `GET /v1/scan?after=` only while the guard is on or a Core block is still to
-  be lifted; `after` lives in memory per Core epoch.
+- `GET /v1/scan?after=` once per Core epoch after the Helper starts, whatever
+  the guard state (v0.7.19): a Core block is sticky (§8), so after a Helper
+  restart the Helper must learn it before 解除禁用 or a dropped guard can lift
+  it (v0.7.18 never read with the guard off and left such a node refused until
+  the Core restarted). A failed read is retried on the next pass. After that
+  first successful read: only while the guard is on or a Core block is still
+  to be lifted. A Core without `scan_guard.v1` is never read. `after` and the
+  blocks live in memory per Core epoch.
 - Hits FLVX has not recorded (`seq > seen`) are kept in `state.json`
   (`scan_pending`, ≤ 256) and their tags go into `blocked_identities`, so a Core
   or Helper restart cannot lift the block before FLVX saw the hit.
@@ -49,9 +55,12 @@ offered and ships the Core built from the Core source as
 ## Tests
 
 - `internal/flvx`: wire shape, storage round trip, validation, report bounds.
-- Helper unit tests (`TestFLVXScanGuard*`): guard off byte-identical and no
-  reads, full cycle incl. Helper / Core restart, unblock rules, old Core,
-  refused fields, invalid guard, read failure.
+- Helper unit tests (`TestFLVXScanGuard*`): guard off byte-identical with one
+  read per Core epoch (none for an old Core), failed read retried, full cycle
+  incl. Helper / Core restart, sticky block lifted after a Helper restart with
+  the guard off or dropped, unblock rules, old Core, refused fields, invalid
+  guard, read failure.
 - `TestFLVXScanGuardNetnsE2E` (root, `MMWXC_TEST_FLVX_CORE_SCAN`): the real
-  Core through the Helper's reconcile in three namespaces.
+  Core through the Helper's reconcile in three namespaces, incl. the sticky
+  block after a Helper restart (steps 7–8).
 - Custom (PostgreSQL) `TestFLVXScanGuardPostgres`, `TestReleaseFetchFLVXCoreChannel`.

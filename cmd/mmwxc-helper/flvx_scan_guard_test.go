@@ -100,7 +100,9 @@ func pass(t *testing.T, m *flvxManager) {
 }
 
 // Guard off (FLVX sends none, or a Core without the feature): the /v1/config
-// body is today's, byte for byte, and /v1/scan is never read.
+// body is today's (v0.7.17's), byte for byte. A Core with the feature is read
+// once per epoch (a sticky block may predate a Helper restart), an old Core
+// never.
 func TestFLVXScanGuardOffUnchanged(t *testing.T) {
 	settings := defaultConnectionSettings()
 	v := int64(5)
@@ -111,7 +113,9 @@ func TestFLVXScanGuardOffUnchanged(t *testing.T) {
 	if !bytes.Equal(old, wrapped) {
 		t.Fatalf("wrapper changed the body:\n%s\n%s", old, wrapped)
 	}
-	for name, features := range map[string][]string{"capable core": {"anytls.downlink_stats", flvx.CoreScanGuardFeature}, "old core": {"anytls.downlink_stats"}} {
+	bodies := map[string][][]byte{}
+	for _, name := range []string{"capable core", "old core"} {
+		features := map[string][]string{"capable core": {"anytls.downlink_stats", flvx.CoreScanGuardFeature}, "old core": {"anytls.downlink_stats"}}[name]
 		t.Run(name, func(t *testing.T) {
 			m, f, _ := scanManager(t, features)
 			for i := 0; i < 20; i++ {
@@ -119,15 +123,132 @@ func TestFLVXScanGuardOffUnchanged(t *testing.T) {
 				if bytes.Contains(f.raw, []byte("scan_")) {
 					t.Fatalf("scan fields sent: %s", f.raw)
 				}
+				// The body is exactly a coreConfig (v0.7.17's type) encoding.
+				var limits coreConfig
+				if err := json.Unmarshal(f.raw, &limits); err != nil {
+					t.Fatal(err)
+				}
+				if again, _ := json.Marshal(limits); !bytes.Equal(again, f.raw) {
+					t.Fatalf("body is not today's:\n%s\n%s", f.raw, again)
+				}
+				bodies[name] = append(bodies[name], append([]byte(nil), f.raw...))
 			}
-			if len(f.scans) != 0 {
-				t.Fatalf("/v1/scan read %d times with the guard off", len(f.scans))
+			if want := map[string]int{"capable core": 1, "old core": 0}[name]; len(f.scans) != want {
+				t.Fatalf("/v1/scan read %d times with the guard off, want %d", len(f.scans), want)
+			}
+			// A new Core epoch is read once again.
+			f.epoch = f.epoch.Add(time.Minute)
+			for i := 0; i < 5; i++ {
+				pass(t, m)
+			}
+			if want := map[string]int{"capable core": 2, "old core": 0}[name]; len(f.scans) != want {
+				t.Fatalf("/v1/scan read %d times after a Core restart, want %d", len(f.scans), want)
 			}
 			st := m.state.Report.ScanGuard
 			if st == nil || st.State != "off" || st.CoreReady != (name == "capable core") || len(st.Hits) != 0 {
 				t.Fatalf("status %+v", st)
 			}
 		})
+	}
+	if !reflect.DeepEqual(bodies["capable core"], bodies["old core"]) {
+		t.Fatal("capable and old Core got different /v1/config bodies with the guard off")
+	}
+}
+
+// A read that fails with the guard off is retried on the next pass, and only
+// until one succeeds.
+func TestFLVXScanGuardOffReadRetried(t *testing.T) {
+	m, f, _ := scanManager(t, []string{flvx.CoreScanGuardFeature})
+	ok := f.scan
+	f.scan = func(string) (int, any) { return 500, map[string]string{"error": "boom"} }
+	pass(t, m)
+	pass(t, m)
+	if len(f.scans) != 2 {
+		t.Fatalf("reads %d", len(f.scans))
+	}
+	if st := m.state.Report.ScanGuard; st.State != "off" {
+		t.Fatalf("status %+v", st)
+	}
+	f.scan = ok
+	for i := 0; i < 5; i++ {
+		pass(t, m)
+	}
+	if len(f.scans) != 3 {
+		t.Fatalf("reads %d", len(f.scans))
+	}
+}
+
+// The Core's block is sticky (§8): FLVX records a hit and switches the guard
+// off (or drops it), the Helper restarts while the Core keeps running, then
+// 解除禁用 must still lift the block.
+func TestFLVXScanGuardStickyBlockAfterHelperRestart(t *testing.T) {
+	for _, name := range []string{"guard off", "guard dropped"} {
+		t.Run(name, func(t *testing.T) {
+			m, f, core := scanManager(t, []string{flvx.CoreScanGuardFeature})
+			g := &flvx.ScanGuard{Enabled: true, Identities: []string{"flvxl-one"}}
+			setScanGuard(m, g, true)
+			pass(t, m)
+			core.hit("flvxl-one", 77)
+			pass(t, m)
+			if !reflect.DeepEqual(m.state.Report.ScanGuard.Blocked, []string{"flvxl-one"}) {
+				t.Fatalf("status %+v", m.state.Report.ScanGuard)
+			}
+			// FLVX records the hit, disables the node and switches the guard
+			// off; or it drops the guard while the Helper is down (applied, a
+			// dropped guard lifts every block at once).
+			var next *flvx.ScanGuard
+			if name == "guard off" {
+				next = &flvx.ScanGuard{Enabled: false, Identities: []string{"flvxl-one"}, Seen: 77}
+				setScanGuard(m, next, false)
+				pass(t, m)
+				if _, unblock := sent(t, f); unblock != nil {
+					t.Fatalf("disabled node unblocked: %v", unblock)
+				}
+			}
+			// Helper restart; the Core (and its block) keeps running.
+			m.scan = flvxScanPass{}
+			setScanGuard(m, next, true) // 解除禁用
+			var unblock []coreScanUnblock
+			for i := 0; i < 5 && unblock == nil; i++ {
+				pass(t, m)
+				_, unblock = sent(t, f)
+			}
+			if !reflect.DeepEqual(unblock, []coreScanUnblock{{Identity: "flvxl-one", Seq: 77}}) {
+				t.Fatalf("sticky block not lifted after a Helper restart: unblock %v, reads %d", unblock, len(f.scans))
+			}
+			if blockedIdentity(f, "flvxl-one", "") {
+				t.Fatal("re-enabled node still blocked by the Helper")
+			}
+			// Lifted: back to no reads with the guard off.
+			delete(core.blocked, "flvxl-one")
+			pass(t, m)
+			reads := len(f.scans)
+			for i := 0; i < 5; i++ {
+				pass(t, m)
+			}
+			if _, unblock := sent(t, f); unblock != nil || len(f.scans) != reads {
+				t.Fatalf("after lift: unblock %v, reads %d → %d", unblock, reads, len(f.scans))
+			}
+		})
+	}
+}
+
+// Guard on: a Helper restart re-learns the Core's blocks on its first read.
+func TestFLVXScanGuardOnHelperRestartRelearns(t *testing.T) {
+	m, f, core := scanManager(t, []string{flvx.CoreScanGuardFeature})
+	g := &flvx.ScanGuard{Enabled: true, Identities: []string{"flvxl-one"}}
+	setScanGuard(m, g, true)
+	core.hit("flvxl-one", 5)
+	pass(t, m)
+	recorded := *g
+	recorded.Seen = 5
+	setScanGuard(m, &recorded, false)
+	pass(t, m)
+	m.scan = flvxScanPass{}
+	setScanGuard(m, &recorded, true)
+	pass(t, m)
+	if _, unblock := sent(t, f); !reflect.DeepEqual(unblock, []coreScanUnblock{{Identity: "flvxl-one", Seq: 5}}) {
+		t.Fatalf("unblock %v", unblock)
 	}
 }
 

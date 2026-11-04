@@ -20,8 +20,10 @@ import (
 // Core's hits once per pass, keep a hit's node blocked until FLVX has
 // recorded it, then let the node's enabled flag decide. Only a Core build
 // listing scan_guard.v1 gets scan_guard / scan_unblock (an older one rejects
-// the whole /v1/config), and /v1/scan is read only while the guard is on or a
-// block is still to be lifted. Nothing is logged per connection or per hit.
+// the whole /v1/config), and /v1/scan is read once per Core epoch after the
+// Helper starts (a block is sticky and survives a Helper restart), then only
+// while the guard is on or a block is still to be lifted. Nothing is logged
+// per connection or per hit.
 
 // coreScanHit / coreScanReport are the Core's GET /v1/scan wire shape (§8.2).
 type coreScanHit struct {
@@ -58,11 +60,12 @@ type flvxCoreConfig struct {
 
 // flvxScanPass is the guard state of the running Core (memory only: after a
 // Core restart its ring and blocks are empty, after a Helper restart one read
-// of the bounded ring catches up).
+// of the bounded ring catches up, whatever the guard state).
 type flvxScanPass struct {
 	epoch    string
 	after    int64            // highest seq read from /v1/scan in epoch
 	blocked  map[string]int64 // Core-blocked tag -> seq of its hit
+	synced   bool             // a /v1/scan read of epoch succeeded
 	err      string
 	rejected string // epoch whose Core refused the scan fields
 	reads    int
@@ -118,7 +121,9 @@ func (m *flvxManager) scanGuard() (*flvx.ScanGuard, bool) {
 // scanPass runs once per reconcile of a running Core, before the limits are
 // pushed: the Core's new hits and current blocks (one control-socket GET,
 // empty lists in the steady state), then the pending hits FLVX has recorded
-// are dropped.
+// are dropped. The first read of an epoch happens even with the guard off:
+// a Core block is sticky (§8), so after a Helper restart it would otherwise
+// never be learnt, and 解除禁用 or dropping the guard could not lift it.
 func (m *flvxManager) scanPass(ctx context.Context, epoch string) {
 	if m.scan.epoch != epoch {
 		m.scan = flvxScanPass{epoch: epoch, rejected: m.scan.rejected}
@@ -128,7 +133,7 @@ func (m *flvxManager) scanPass(ctx context.Context, epoch string) {
 	m.scan.err = ""
 	if !m.scanCapable() {
 		m.scan.blocked = nil
-	} else if g != nil && g.Enabled || len(m.scan.blocked) > 0 {
+	} else if g != nil && g.Enabled || len(m.scan.blocked) > 0 || !m.scan.synced {
 		m.scan.reads++
 		read := m.readScan
 		if read == nil {
@@ -138,6 +143,7 @@ func (m *flvxManager) scanPass(ctx context.Context, epoch string) {
 		if err != nil {
 			m.scan.err = "FLVX Core scan report unavailable"
 		} else {
+			m.scan.synced = true
 			m.scan.blocked = map[string]int64{}
 			for _, b := range report.Blocked {
 				if strings.HasPrefix(b.Identity, "flvxl-") && b.Seq > 0 && b.Seq <= flvx.MaxScanSeq {
