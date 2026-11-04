@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -29,6 +30,14 @@ type fakeFLVXCore struct {
 	writes        int
 	// snap is served as the Core snapshot (users, management groups).
 	snap coreSnapshotResponse
+	// raw is the last /v1/config body; features / scan answer /v1/features
+	// and /v1/scan when set (landing-scan-guard-v1 §9 tests).
+	raw      []byte
+	features []string
+	scan     func(after string) (int, any)
+	scans    []string
+	// reject answers a /v1/config body with HTTP 400 and its text when set.
+	reject func(raw []byte) string
 }
 
 func helperFLVXNode(id string, port int) flvx.Node {
@@ -47,8 +56,28 @@ func fakeFLVXManager(t *testing.T) (*flvxManager, *fakeFLVXCore) {
 		t.Fatal(err)
 	}
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/features" && f.features != nil {
+			json.NewEncoder(w).Encode(map[string]any{"features": f.features})
+			return
+		}
+		if r.URL.Path == "/v1/scan" && f.scan != nil {
+			f.scans = append(f.scans, r.URL.Query().Get("after"))
+			status, body := f.scan(r.URL.Query().Get("after"))
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(body)
+			return
+		}
 		if r.URL.Path == "/v1/config" {
-			if err := json.NewDecoder(r.Body).Decode(&f.limits); err != nil {
+			f.raw, _ = io.ReadAll(r.Body)
+			if f.reject != nil {
+				if text := f.reject(f.raw); text != "" {
+					w.WriteHeader(http.StatusBadRequest)
+					json.NewEncoder(w).Encode(map[string]string{"error": text})
+					return
+				}
+			}
+			f.limits = coreConfig{}
+			if err := json.Unmarshal(f.raw, &f.limits); err != nil {
 				t.Error(err)
 			}
 			if f.limits.BlockedIdentities != nil {

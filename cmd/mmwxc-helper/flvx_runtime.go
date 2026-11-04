@@ -270,9 +270,19 @@ func (m *flvxManager) limits(ctx context.Context, snapshot coreSnapshotResponse,
 			seen[identity] = true
 		}
 	}
+	// 禁止端口扫描: a hit FLVX has not recorded keeps its node blocked here
+	// too, whatever the Core restarts.
+	for _, tag := range m.scanHeld() {
+		for _, user := range []string{tag, ""} {
+			if identity := (coreIdentity{InboundTag: tag, User: user}); !seen[identity] {
+				settings.BlockedIdentities = append(settings.BlockedIdentities, identity)
+				seen[identity] = true
+			}
+		}
+	}
 	// This instance must support v7 blocks. Never fall back to old interfaces
 	// which could leave established sessions alive after pause or quota expiry.
-	if _, err := m.core.applyConfig(ctx, settings.coreConfig()); err != nil {
+	if err := m.applyFLVXConfig(ctx, settings, wanted); err != nil {
 		return err
 	}
 	if view != nil {
@@ -330,6 +340,7 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 	m.state.Report.Protocols = flvxProtocolCaps(m.coreFeatures())
 	m.state.Report.Listening = m.listening()
 	m.state.Report.RealityGuard = m.guardStatus()
+	m.state.Report.ScanGuard = m.scanStatus()
 	m.recordUserLimits(snapshot)
 	m.state.Report.Nodes = []flvx.NodeStatus{}
 	for _, id := range ids {
@@ -485,6 +496,7 @@ func (m *flvxManager) reconcile(ctx context.Context) (result error) {
 		return err
 	}
 	epoch := flvxEpoch(snapshot)
+	m.scanPass(ctx, epoch)
 	if m.state.AppliedEpoch != epoch {
 		checkInbounds = true
 		m.state.Applied = map[string]string{}

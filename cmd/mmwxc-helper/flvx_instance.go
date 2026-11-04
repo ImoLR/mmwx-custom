@@ -53,6 +53,9 @@ type flvxLocalState struct {
 	// rules the rule set applied in AppliedEpoch holds. See flvx_guard.go.
 	Guards         map[int]flvx.Guard `json:"reality_guards,omitempty"`
 	GuardRulePorts []int              `json:"guard_rule_ports,omitempty"`
+	// landing-scan-guard-v1 §9: Core hits FLVX has not recorded yet (seq >
+	// seen); their nodes stay blocked by the Helper. See flvx_scan_guard.go.
+	ScanPending []flvx.ScanHit `json:"scan_pending,omitempty"`
 }
 
 type flvxRealityPin struct {
@@ -121,6 +124,9 @@ type flvxManager struct {
 	appliedBudget  int64
 	userLimits     flvxUserLimitsPublished
 	rate           *flvxRateLimiter
+	// landing-scan-guard-v1 §9; readScan is injected by tests.
+	scan     flvxScanPass
+	readScan func(context.Context, int64) (coreScanReport, error)
 	// pickPort returns a free loopback TCP port; tests inject a fake.
 	pickPort func() (int, error)
 	// The real transport is the fixed Core CLI's gRPC client; tests inject a fake.
