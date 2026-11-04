@@ -29,6 +29,10 @@ type componentVersions struct {
 	CustomVersion string `json:"custom_version"`
 	HelperVersion string `json:"helper_version"`
 	CoreVersion   string `json:"core_version"`
+	// Optional: the FLVX shared Core build when it differs from the Core the
+	// release offers External servers (assets mmwxc-flvx-core-linux-<arch>).
+	// Absent = the same Core.
+	FLVXCoreVersion string `json:"flvx_core_version,omitempty"`
 }
 
 type releaseArtifact struct {
@@ -43,7 +47,21 @@ type cachedReleaseInfo struct {
 	CoreVersion     string                     `json:"latest_core_version"`
 	HelperArtifacts map[string]releaseArtifact `json:"helper_artifacts"`
 	CoreArtifacts   map[string]releaseArtifact `json:"core_artifacts"`
-	FetchedAt       time.Time                  `json:"fetched_at"`
+	// FLVX shared Core channel (「升级 FLVX Core」, new shares); empty = the
+	// Core above. A release may move it without offering External servers a
+	// Core upgrade.
+	FLVXCoreVersion   string                     `json:"latest_flvx_core_version,omitempty"`
+	FLVXCoreArtifacts map[string]releaseArtifact `json:"flvx_core_artifacts,omitempty"`
+	FetchedAt         time.Time                  `json:"fetched_at"`
+}
+
+// flvxCore is the FLVX shared Core of the release: its own channel when the
+// release carries one, else the Core it offers External servers.
+func (info cachedReleaseInfo) flvxCore() (string, map[string]releaseArtifact) {
+	if info.FLVXCoreVersion != "" && len(info.FLVXCoreArtifacts) > 0 {
+		return info.FLVXCoreVersion, info.FLVXCoreArtifacts
+	}
+	return info.CoreVersion, info.CoreArtifacts
 }
 
 type releaseCacheResponse struct {
@@ -159,6 +177,19 @@ func (cache *releaseCache) fetch(ctx context.Context) (cachedReleaseInfo, error)
 		}
 		info.HelperArtifacts[arch] = releaseArtifact{URL: assets[helperName], SHA256: checksums[helperName]}
 		info.CoreArtifacts[arch] = releaseArtifact{URL: assets[coreName], SHA256: checksums[coreName]}
+		if versions.FLVXCoreVersion != "" {
+			flvxName := "mmwxc-flvx-core-linux-" + arch
+			if assets[flvxName] == "" || checksums[flvxName] == "" {
+				return cachedReleaseInfo{}, fmt.Errorf("latest release FLVX Core metadata is incomplete for %s", arch)
+			}
+			if info.FLVXCoreArtifacts == nil {
+				info.FLVXCoreArtifacts = map[string]releaseArtifact{}
+			}
+			info.FLVXCoreArtifacts[arch] = releaseArtifact{URL: assets[flvxName], SHA256: checksums[flvxName]}
+		}
+	}
+	if versions.FLVXCoreVersion != "" {
+		info.FLVXCoreVersion = versions.FLVXCoreVersion
 	}
 	if info.Tag == "" || info.CustomVersion == "" || info.HelperVersion == "" || info.CoreVersion == "" {
 		return cachedReleaseInfo{}, errors.New("latest release component versions are incomplete")

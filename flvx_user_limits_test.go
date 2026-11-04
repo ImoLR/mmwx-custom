@@ -89,7 +89,7 @@ func TestFLVXUserLimitsCapabilityPostgres(t *testing.T) {
 func TestFLVXConnModeDesiredPostgres(t *testing.T) {
 	a, token := flvxUserLimitsApp(t)
 	ctx := context.Background()
-	before, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, false, nil)
+	before, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, false, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestFLVXConnModeDesiredPostgres(t *testing.T) {
 	if w := flvxTestRequest(a, "PUT", "/api/custom/flvx/v1/shares/7/desired", token, d); w.Code != 200 {
 		t.Fatalf("conn_mode inbound: %d %s", w.Code, w.Body.String())
 	}
-	old, _ := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, false, nil)
+	old, _ := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, false, false, nil)
 	raw, _ := json.Marshal(old.Payload.Desired)
 	if strings.Contains(string(raw), "conn_mode") {
 		t.Fatalf("conn_mode reached an old Helper: %s", raw)
@@ -114,7 +114,7 @@ func TestFLVXConnModeDesiredPostgres(t *testing.T) {
 	if oldNodes, _ := json.Marshal(old.Payload.Desired.Nodes); string(beforeNodes) != string(oldNodes) {
 		t.Fatalf("old Helper nodes changed:\n%s\n%s", beforeNodes, oldNodes)
 	}
-	current, _ := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, nil)
+	current, _ := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, false, nil)
 	if current.Payload.Desired.Nodes[0].ConnMode != flvx.ConnModeInbound || !current.Verify("helper", "7", time.Now()) {
 		t.Fatal("conn_mode not sent to a capable Helper")
 	}
@@ -207,7 +207,7 @@ func TestFLVXUserLimitsEndpointPostgres(t *testing.T) {
 	if strings.Contains(raw, "max_inbound_connections") || strings.Contains(raw, "relay_ip_reserve") {
 		t.Fatalf("budgets persisted: %s", raw)
 	}
-	e, _ := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, nil)
+	e, _ := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, false, nil)
 	if signed, _ := json.Marshal(e.Payload); strings.Contains(string(signed), "relay_ip_reserve") {
 		t.Fatal("budgets in the desired payload")
 	}
@@ -315,7 +315,7 @@ func TestFLVXInboundConnectionsReportPostgres(t *testing.T) {
 	four, negative := int64(4), int64(-3)
 	r := flvx.Report{Generation: "g", Sequence: 1, Period: flvx.Period(time.Now(), 1), Status: flvx.Status{AppliedRevision: 1, Core: flvx.Core{State: "running"}, CollectedAt: time.Now().UnixMilli(),
 		Nodes: []flvx.NodeStatus{{ID: "11", State: "active", Connections: 9, InboundConnections: &four}, {ID: "12", State: "removed", InboundConnections: &negative}}}}
-	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, &r); err != nil {
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, false, &r); err != nil {
 		t.Fatal(err)
 	}
 	w := flvxTestRequest(a, "GET", "/api/custom/flvx/v1/shares/7/status", token, nil)
@@ -326,7 +326,7 @@ func TestFLVXInboundConnectionsReportPostgres(t *testing.T) {
 		t.Fatalf("negative inbound kept: %s", w.Body.String())
 	}
 	r.Sequence, r.Nodes = 2, []flvx.NodeStatus{{ID: "12", State: "removed"}}
-	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, &r); err != nil {
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, false, &r); err != nil {
 		t.Fatal(err)
 	}
 	s, _ := readFLVXShare(ctx, a.flvxDB(), 7, false)

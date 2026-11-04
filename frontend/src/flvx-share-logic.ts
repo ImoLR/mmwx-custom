@@ -65,3 +65,18 @@ export function flvxRealityGuard(capable: boolean, plan: FLVXGuardPlan | undefin
   if (report.state === "error") return { text: "未生效 · 目前不拦截", status: "应用失败", tone: "error", note };
   return { text: `已开启 · ${report.nodes} 个 Reality 节点受保护`, status: "已生效", tone: "online", note };
 }
+
+// 禁止端口扫描 (landing-scan-guard-v1 §9): FLVX switches it per server; the
+// FLVX Core blocks a node by itself once it scans and FLVX disables it.
+// The scanned hosts are FLVX's to show, not this page's.
+export type FLVXScanPlan = { supported: boolean; requested: boolean; nodes: number; state: "" | "off" | "on" | "core_update" | "error"; core_ready: boolean; blocked: number; pending: number; error?: string };
+
+export function flvxScanGuard(plan: FLVXScanPlan | undefined) {
+  if (!plan?.supported) return { text: plan?.requested ? "升级 Helper 后生效 · 目前不拦截" : "升级 Helper 后可用", status: "", tone: "", note: "" };
+  if (!plan.core_ready) return { text: plan.requested ? "升级 FLVX Core 后生效 · 目前不拦截" : "升级 FLVX Core 后可用", status: plan.requested ? "需升级 Core" : "", tone: "", note: "" };
+  const blocked = plan.blocked ? ` · ${plan.blocked} 个节点因扫描被封` : "";
+  if (!plan.requested) return { text: `FLVX 未开启${blocked}`, status: "", tone: "", note: "" };
+  if (plan.state === "error") return { text: `已开启 · ${plan.nodes} 个节点${blocked}`, status: "读取失败", tone: "error", note: plan.error || "" };
+  if (plan.state !== "on") return { text: `已开启 · ${plan.nodes} 个节点`, status: "等待 Helper 应用", tone: "", note: "" };
+  return { text: `已开启 · ${plan.nodes} 个节点受保护${blocked}`, status: "已生效", tone: "online", note: plan.pending ? `${plan.pending} 条命中等待 FLVX 处理` : "" };
+}

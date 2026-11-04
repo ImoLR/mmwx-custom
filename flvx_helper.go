@@ -10,10 +10,10 @@ import (
 	"github.com/ImoLR/mmwx-custom/internal/flvx"
 )
 
-// egress / protocols / guard / limits report whether this Helper advertises
-// flvx.egress.v1 / flvx.protocols.v1 / flvx.reality_guard.v1 /
-// flvx.user_limits.v1.
-func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, egress, protocols, guard, limits bool, report *flvx.Report) (*flvx.Envelope, error) {
+// egress / protocols / guard / limits / scan report whether this Helper
+// advertises flvx.egress.v1 / flvx.protocols.v1 / flvx.reality_guard.v1 /
+// flvx.user_limits.v1 / flvx.scan_guard.v1.
+func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, egress, protocols, guard, limits, scan bool, report *flvx.Report) (*flvx.Envelope, error) {
 	if a.flvxDB() == nil {
 		return nil, nil
 	}
@@ -63,7 +63,7 @@ func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, 
 		if a.helperState != nil {
 			artifact.GitHubAccelerator = a.helperState.githubAccelerator()
 		}
-		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: s.Config, Desired: flvxHelperConnMode(flvxHelperGuard(flvxHelperProtocols(flvxHelperEgress(s, egress), protocols), guard), limits), OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
+		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: s.Config, Desired: flvxHelperScanGuard(flvxHelperConnMode(flvxHelperGuard(flvxHelperProtocols(flvxHelperEgress(s, egress), protocols), guard), limits), scan), OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
 		envelope.Sign(token)
 		return nil
 	})
@@ -127,5 +127,34 @@ func flvxHelperGuard(d flvx.Desired, supported bool) flvx.Desired {
 	if !supported {
 		d.RealityGuard = nil
 	}
+	return d
+}
+
+// flvxHelperScanGuard strips 禁止端口扫描 (landing-scan-guard-v1 §9) for a
+// Helper without flvx.scan_guard.v1: it would reject the signed payload on
+// the unknown field. Such a Helper reports no scan_guard, so the share does
+// not advertise the guard and FLVX sees it is not in force.
+// Identities of nodes withheld from this Helper are dropped as well, so the
+// Helper's own identity check never rejects the guard over them.
+func flvxHelperScanGuard(d flvx.Desired, supported bool) flvx.Desired {
+	if !supported || d.ScanGuard == nil {
+		d.ScanGuard = nil
+		return d
+	}
+	tags := map[string]bool{}
+	for _, n := range d.Nodes {
+		tags[n.Tag()] = true
+	}
+	g := *d.ScanGuard
+	g.Identities = []string{}
+	for _, id := range d.ScanGuard.Identities {
+		if tags[id] {
+			g.Identities = append(g.Identities, id)
+		}
+	}
+	if d.ScanGuard.Identities == nil {
+		g.Identities = nil
+	}
+	d.ScanGuard = &g
 	return d
 }

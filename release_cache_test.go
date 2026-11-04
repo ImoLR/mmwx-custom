@@ -75,3 +75,67 @@ func TestReleaseFetchBuildsVerifiedComponentArtifacts(t *testing.T) {
 		t.Fatalf("release artifacts=%#v %#v", info.HelperArtifacts, info.CoreArtifacts)
 	}
 }
+
+// flvxReleaseRoundTripper serves a release whose FLVX shared Core differs
+// from the Core it offers External servers (landing-scan-guard-v1 §9).
+type flvxReleaseRoundTripper struct{ withAssets bool }
+
+func (f flvxReleaseRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	base := "https://github.com/ImoLR/mmwx-custom/releases/download/v1.4.84/"
+	body := ""
+	switch {
+	case strings.Contains(request.URL.Path, "/releases/latest"):
+		names := []string{"component-versions.json", "checksums.txt", "mmwxc-helper-linux-amd64", "mmwxc-helper-linux-arm64", "mmwxc-core-linux-amd64", "mmwxc-core-linux-arm64"}
+		if f.withAssets {
+			names = append(names, "mmwxc-flvx-core-linux-amd64", "mmwxc-flvx-core-linux-arm64")
+		}
+		assets := []string{}
+		for _, name := range names {
+			assets = append(assets, `{"name":"`+name+`","browser_download_url":"`+base+name+`"}`)
+		}
+		body = `{"tag_name":"v1.4.84","assets":[` + strings.Join(assets, ",") + `]}`
+	case strings.HasSuffix(request.URL.Path, "/component-versions.json"):
+		body = `{"custom_version":"v1.4.84","helper_version":"v0.7.18","core_version":"2bf03c9","flvx_core_version":"f6f5844"}`
+	case strings.HasSuffix(request.URL.Path, "/checksums.txt"):
+		for i, name := range []string{"mmwxc-helper-linux-amd64", "mmwxc-helper-linux-arm64", "mmwxc-core-linux-amd64", "mmwxc-core-linux-arm64", "mmwxc-flvx-core-linux-amd64", "mmwxc-flvx-core-linux-arm64"} {
+			body += strings.Repeat(string(rune('a'+i)), 64) + "  " + name + "\n"
+		}
+	default:
+		return nil, errors.New("unexpected release request")
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+}
+
+// External servers keep being offered the release's Core; the FLVX shared
+// Core channel (「升级 FLVX Core」, new shares) moves on its own.
+func TestReleaseFetchFLVXCoreChannel(t *testing.T) {
+	cache := &releaseCache{client: &http.Client{Transport: flvxReleaseRoundTripper{withAssets: true}}}
+	info, err := cache.fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.CoreVersion != "2bf03c9" || info.CoreArtifacts["amd64"].SHA256 != strings.Repeat("c", 64) || !strings.HasSuffix(info.CoreArtifacts["amd64"].URL, "/mmwxc-core-linux-amd64") {
+		t.Fatalf("External Core moved: %#v", info)
+	}
+	version, assets := info.flvxCore()
+	if version != "f6f5844" || assets["amd64"].SHA256 != strings.Repeat("e", 64) || assets["arm64"].SHA256 != strings.Repeat("f", 64) || !strings.HasSuffix(assets["arm64"].URL, "/mmwxc-flvx-core-linux-arm64") {
+		t.Fatalf("FLVX Core channel %s %#v", version, assets)
+	}
+	if pin := flvxReleaseCore(info); pin == nil || pin.Version != "f6f5844" || pin.Artifacts["amd64"].SHA256 != strings.Repeat("e", 64) {
+		t.Fatalf("FLVX pin %#v", pin)
+	}
+	// A declared channel without its assets is an incomplete release.
+	cache = &releaseCache{client: &http.Client{Transport: flvxReleaseRoundTripper{}}}
+	if _, err = cache.fetch(context.Background()); err == nil {
+		t.Fatal("FLVX Core version without assets accepted")
+	}
+	// Releases (and caches written by older Customs) without the channel
+	// pin the release's Core, as before.
+	old, err := (&releaseCache{client: &http.Client{Transport: releaseRoundTripper{}}}).fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version, assets = old.flvxCore(); version != "47b0a95" || assets["amd64"].SHA256 != strings.Repeat("c", 64) || old.FLVXCoreArtifacts != nil {
+		t.Fatalf("fallback %s %#v", version, assets)
+	}
+}

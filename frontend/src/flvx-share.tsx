@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Copy, KeyRound, Layers, Plus, RefreshCw, Route, Server, ShieldCheck, Users } from "lucide-react";
+import { AlertTriangle, Copy, KeyRound, Layers, Plus, Radar, RefreshCw, Route, Server, ShieldCheck, Users } from "lucide-react";
 import { CompactSegments, CompactSheet } from "./compact-ui";
 import { dispatchCustomAgentAction, fetchCustomReleaseInfo, requestFLVXAdmin } from "./api";
-import { flvxCoreIssue, flvxExtraProtocols, flvxHelperIssue, flvxHelperUpgradable, flvxProtocolName, flvxRealityGuard, flvxStateText, type FLVXGuardPlan, type FLVXGuardReport, type FLVXHelper, type FLVXProtocolCaps } from "./flvx-share-logic";
+import { flvxCoreIssue, flvxExtraProtocols, flvxHelperIssue, flvxHelperUpgradable, flvxProtocolName, flvxRealityGuard, flvxScanGuard, flvxStateText, type FLVXGuardPlan, type FLVXScanPlan, type FLVXGuardReport, type FLVXHelper, type FLVXProtocolCaps } from "./flvx-share-logic";
 import "./flvx-share.css";
 
 type ShareConfig = { port_min: number; port_max: number; traffic_limit_bytes: number; reset_day: number; max_connections: number; share_until: number | null; memory_mb: number; cpu_percent: number };
@@ -11,7 +11,7 @@ type NodeStatus = { id: string; state: "active" | "error" | "removed" | "pending
 type ShareNode = { id: string; owner: { id: string; name: string }; name: string; protocol: string; port: number; expires_at: number | null; max_connections: number; status: NodeStatus };
 type EgressReport = { state: "none" | "applied" | "error"; error: string; applied_revision: number; warnings: string[] };
 type EgressPlan = { active: boolean; outbounds: number; outbound_types: string[]; rules: number; covered_nodes: number };
-type SharedServer = { server_id: number; name: string; hosts: { ipv4: string; ipv6: string; domain: string }; status: ShareStatus; config: ShareConfig; traffic_used_bytes: number; traffic_limit_bytes: number; connections: number; max_connections: number; core: { state: string; version: string }; dual_install: boolean; native_landing?: boolean; nodes: ShareNode[]; report: { collected_at: number; applied_revision: number; egress?: EgressReport; reality_guard?: FLVXGuardReport }; allow_egress?: boolean; egress?: { versions: number[]; allowed: boolean; geoip: boolean; geosite: boolean }; egress_plan?: EgressPlan; helper?: FLVXHelper; protocol_caps?: FLVXProtocolCaps; server_mode?: "embedded" | "external"; busy_ports?: number[]; core_pin?: { pinned: string; latest: string; upgradable: boolean }; core_error?: string; reality_guard?: { versions: number[] }; reality_guard_plan?: FLVXGuardPlan };
+type SharedServer = { server_id: number; name: string; hosts: { ipv4: string; ipv6: string; domain: string }; status: ShareStatus; config: ShareConfig; traffic_used_bytes: number; traffic_limit_bytes: number; connections: number; max_connections: number; core: { state: string; version: string }; dual_install: boolean; native_landing?: boolean; nodes: ShareNode[]; report: { collected_at: number; applied_revision: number; egress?: EgressReport; reality_guard?: FLVXGuardReport }; allow_egress?: boolean; egress?: { versions: number[]; allowed: boolean; geoip: boolean; geosite: boolean }; egress_plan?: EgressPlan; helper?: FLVXHelper; protocol_caps?: FLVXProtocolCaps; server_mode?: "embedded" | "external"; busy_ports?: number[]; core_pin?: { pinned: string; latest: string; upgradable: boolean }; core_error?: string; reality_guard?: { versions: number[] }; reality_guard_plan?: FLVXGuardPlan; scan_guard_plan?: FLVXScanPlan };
 type AvailableServer = { server_id: number; name: string; hosts: SharedServer["hosts"]; official_ports: number[]; ports_known: boolean; dual_install: boolean; native_landing: boolean; detection_error: boolean; helper?: FLVXHelper; server_mode?: "embedded" | "external" };
 export type FLVXData = { shares: SharedServer[]; servers: AvailableServer[]; integration: { token_configured: boolean; last_api_at: number } };
 
@@ -44,6 +44,13 @@ function GuardLine({ share: s }: { share: SharedServer }) {
   const guard = flvxRealityGuard(Boolean(s.reality_guard), s.reality_guard_plan, s.report.reality_guard);
   const status = guard.status ? <span className={`flvx-status ${guard.tone === "online" ? "online" : guard.tone === "error" ? "flvx-status-error" : ""}`}>{guard.status}</span> : null;
   return <div className="flvx-egress"><ShieldCheck /><div><span>Reality 防盗</span><strong>{guard.text}</strong>{guard.note && <small>{guard.note}</small>}</div>{status}</div>;
+}
+
+// 禁止端口扫描: FLVX's switch for this server and what the Helper reports.
+function ScanLine({ share: s }: { share: SharedServer }) {
+  const scan = flvxScanGuard(s.scan_guard_plan);
+  const status = scan.status ? <span className={`flvx-status ${scan.tone === "online" ? "online" : scan.tone === "error" ? "flvx-status-error" : ""}`}>{scan.status}</span> : null;
+  return <div className="flvx-egress"><Radar /><div><span>禁止端口扫描</span><strong>{scan.text}</strong>{scan.note && <small>{scan.note}</small>}</div>{status}</div>;
 }
 
 // 扩展协议 (AnyTLS / Snell / Mieru in the FLVX Core), the server mode, busy
@@ -144,6 +151,7 @@ function ShareCard({ share: s, token, busy, onError, onReload, onEdit, onStatus,
     <div className="flvx-card-facts"><span>端口 {s.config.port_min}–{s.config.port_max} <b>已用 {usedPorts}</b></span><span>{owners.length} 位用户 · {s.nodes.length} 个节点</span><span>共享至 {date(s.config.share_until)}</span></div>
     {s.status !== "revoked" && <EgressLine share={s} />}
     {s.status !== "revoked" && <GuardLine share={s} />}
+    {s.status !== "revoked" && <ScanLine share={s} />}
     {s.status !== "revoked" && <ProtocolsLine share={s} token={token} onError={onError} onReload={onReload} />}
     {pending && <p className="flvx-inline-warning">已提交，等待 Helper 确认停用节点。</p>}
     <div className="flvx-card-actions">{helperIssue && flvxHelperUpgradable(s.helper) && <HelperUpgradeButton token={token} serverID={s.server_id} helper={s.helper!} onError={onError} onDone={onReload} />}<button type="button" disabled={busy || s.status === "revoked"} onClick={onEdit}>设置</button>{s.status !== "revoked" && <><button type="button" disabled={busy || Boolean(s.native_landing)} onClick={() => onStatus(s.status === "paused" ? "active" : "paused")}>{s.status === "paused" ? "恢复" : "暂停共享"}</button><button type="button" className="flvx-text-danger" disabled={busy} onClick={onCancel}>取消共享</button></>}</div>

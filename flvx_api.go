@@ -222,6 +222,47 @@ func flvxPublicStatus(s flvx.Status, helperReady bool) map[string]any {
 	if g := s.RealityGuard; g != nil {
 		result["reality_guard"] = map[string]any{"state": g.State, "nodes": g.Nodes}
 	}
+	// landing-scan-guard-v1 §9: the native Status.scan_guard object.
+	if g := s.ScanGuard; g != nil && helperReady {
+		hits, blocked := g.Hits, g.Blocked
+		if hits == nil {
+			hits = []flvx.ScanHit{}
+		}
+		if blocked == nil {
+			blocked = []string{}
+		}
+		scan := map[string]any{"state": g.State, "hits": hits, "blocked": blocked}
+		if g.Error != "" {
+			scan["error"] = g.Error
+		}
+		result["scan_guard"] = scan
+	}
+	return result
+}
+
+// flvxScanGuardCapability is the landing-scan-guard-v1 §9 advertisement: only
+// while the share's Helper applies the guard and its FLVX Core build has
+// scan_guard.v1, so FLVX sends nothing new to an old Helper or Core.
+func flvxScanGuardCapability(s flvxShare, helper flvxHelper) map[string]any {
+	if !helper.Ready || !helper.ScanGuard || s.Status.ScanGuard == nil || !s.Status.ScanGuard.CoreReady {
+		return nil
+	}
+	return map[string]any{"versions": []int{flvx.ScanGuardVersion}}
+}
+
+// flvxScanGuardSummary tells the operator page whether FLVX asked for the
+// guard, on how many nodes, and what the Helper reports.
+func flvxScanGuardSummary(s flvxShare, helper flvxHelper) map[string]any {
+	result := map[string]any{"supported": helper.Ready && helper.ScanGuard, "requested": s.Desired.ScanGuardOn(), "nodes": 0, "state": "", "core_ready": false, "blocked": 0, "pending": 0}
+	if g := s.Desired.ScanGuard; g != nil && g.Enabled {
+		result["nodes"] = len(g.Identities)
+	}
+	if g := s.Status.ScanGuard; g != nil {
+		result["state"], result["core_ready"], result["blocked"], result["pending"] = g.State, g.CoreReady, len(g.Blocked), len(g.Hits)
+		if g.Error != "" {
+			result["error"] = g.Error
+		}
+	}
 	return result
 }
 
@@ -319,6 +360,7 @@ func (a *app) putFLVXDesired(ctx context.Context, id int64, d flvx.Desired) erro
 		}
 		options := flvx.DesiredOptions{Protocols: flvxShareProtocols(s, helper), Busy: flvxBusyListening(s), Now: time.Now()}
 		problems := append(flvx.ValidateDesiredWith(d, s.Config, server.OfficialPorts, options), flvxEgressProblems(s, d)...)
+		problems = append(problems, flvx.ValidateScanGuard(d)...)
 		if len(problems) > 0 {
 			return flvxValidationErrors(problems)
 		}
@@ -562,7 +604,7 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 	latestCore := ""
 	if a.releaseCache != nil {
 		info, _ := a.releaseCache.snapshot()
-		latestCore = info.CoreVersion
+		latestCore, _ = info.flvxCore()
 	}
 	for i := range servers {
 		detectFLVXDual(ctx, &servers[i], h, lookup)
@@ -604,6 +646,9 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 		if capability := flvxUserLimitsCapability(server.Helper); capability != nil {
 			item["user_limits"] = capability
 		}
+		if capability := flvxScanGuardCapability(s, server.Helper); capability != nil {
+			item["scan_guard"] = capability
+		}
 		// landing-protocols-v1 §2. protocols above stays the v1 list: older
 		// FLVX copies it into a share and validates it against v1 names.
 		if protocols := flvxShareProtocols(s, server.Helper); protocols != nil {
@@ -635,6 +680,7 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 			item["core_pin"] = flvxCorePinSummary(s, latestCore)
 			item["reality_guard_plan"] = flvxGuardSummary(s)
 			item["user_limits_plan"] = a.flvxUserLimitsSummary(id, server.Helper)
+			item["scan_guard_plan"] = flvxScanGuardSummary(s, server.Helper)
 			if s.State != "revoked" && s.Status.Core.Error != "" {
 				item["core_error"] = s.Status.Core.Error
 			}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { flvxCoreIssue, flvxExtraProtocols, flvxHelperIssue, flvxHelperUpgradable, flvxProtocolName, flvxRealityGuard, flvxStateText, type FLVXHelper } from "../../frontend/src/flvx-share-logic.ts";
+import { flvxCoreIssue, flvxExtraProtocols, flvxHelperIssue, flvxHelperUpgradable, flvxProtocolName, flvxRealityGuard, flvxScanGuard, flvxStateText, type FLVXHelper, type FLVXScanPlan } from "../../frontend/src/flvx-share-logic.ts";
 
 const ready: FLVXHelper = { installed: true, version: "v0.7.5", architecture: "amd64", flvx_ready: true, upgrading: false };
 const outdated: FLVXHelper = { ...ready, version: "v0.7.4", flvx_ready: false };
@@ -67,4 +67,18 @@ test("Reality guard line follows capability, FLVX switch and Helper report", () 
   assert.equal(flvxRealityGuard(true, { ...plan, error: "端口 41001 启动失败" }, { state: "on", nodes: 1 }).note, "端口 41001 启动失败");
   assert.deepEqual(flvxRealityGuard(true, { ...plan, error: "x" }, { state: "error", nodes: 0 }), { text: "未生效 · 目前不拦截", status: "应用失败", tone: "error", note: "x" });
   assert.deepEqual(flvxRealityGuard(true, plan, { state: "restart_required", nodes: 0 }), { text: "重启 FLVX Core 后生效 · 目前不拦截", status: "待重启", tone: "", note: "" });
+});
+
+test("scan guard line: Helper, then FLVX Core, then FLVX's switch", () => {
+  const plan: FLVXScanPlan = { supported: true, requested: true, nodes: 2, state: "on", core_ready: true, blocked: 0, pending: 0 };
+  assert.equal(flvxScanGuard(undefined).text, "升级 Helper 后可用");
+  assert.equal(flvxScanGuard({ ...plan, supported: false }).text, "升级 Helper 后生效 · 目前不拦截");
+  assert.deepEqual(flvxScanGuard({ ...plan, core_ready: false, state: "core_update" }), { text: "升级 FLVX Core 后生效 · 目前不拦截", status: "需升级 Core", tone: "", note: "" });
+  assert.equal(flvxScanGuard({ ...plan, requested: false, core_ready: false, state: "off" }).text, "升级 FLVX Core 后可用");
+  assert.equal(flvxScanGuard({ ...plan, requested: false, state: "off" }).text, "FLVX 未开启");
+  assert.equal(flvxScanGuard({ ...plan, requested: false, state: "off", blocked: 1 }).text, "FLVX 未开启 · 1 个节点因扫描被封");
+  assert.deepEqual(flvxScanGuard(plan), { text: "已开启 · 2 个节点受保护", status: "已生效", tone: "online", note: "" });
+  assert.deepEqual(flvxScanGuard({ ...plan, blocked: 1, pending: 1 }), { text: "已开启 · 2 个节点受保护 · 1 个节点因扫描被封", status: "已生效", tone: "online", note: "1 条命中等待 FLVX 处理" });
+  assert.deepEqual(flvxScanGuard({ ...plan, state: "error", error: "FLVX Core scan report unavailable" }), { text: "已开启 · 2 个节点", status: "读取失败", tone: "error", note: "FLVX Core scan report unavailable" });
+  assert.equal(flvxScanGuard({ ...plan, state: "off" }).status, "等待 Helper 应用");
 });

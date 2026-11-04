@@ -59,14 +59,15 @@ type flvxPinnedCore struct {
 }
 
 func flvxReleaseCore(info cachedReleaseInfo) *flvxPinnedCore {
-	if info.CoreVersion == "" || len(info.CoreArtifacts) == 0 {
+	version, assets := info.flvxCore()
+	if version == "" || len(assets) == 0 {
 		return nil
 	}
 	artifacts := map[string]releaseArtifact{}
-	for arch, artifact := range info.CoreArtifacts {
+	for arch, artifact := range assets {
 		artifacts[arch] = artifact
 	}
-	return &flvxPinnedCore{Version: info.CoreVersion, Artifacts: artifacts}
+	return &flvxPinnedCore{Version: version, Artifacts: artifacts}
 }
 
 // flvxShareProtocols is what the share may carry of landing-protocols-v1: the
@@ -225,6 +226,10 @@ type flvxHelper struct {
 	// "flvx.user_limits.v1") and polices per-user 速率 ("flvx.user_rate.v1").
 	UserLimits bool `json:"flvx_user_limits"`
 	UserRate   bool `json:"flvx_user_rate"`
+	// Helper applies 禁止端口扫描 (landing-scan-guard-v1 §9,
+	// "flvx.scan_guard.v1"); the share advertises it only while its FLVX Core
+	// build has scan_guard.v1 too.
+	ScanGuard bool `json:"flvx_scan_guard"`
 }
 
 func (a *app) flvxHelpers() map[int64]flvxHelper {
@@ -241,7 +246,7 @@ func (a *app) flvxHelpers() map[int64]flvxHelper {
 			continue
 		}
 		installed := status.Helper.Installed && s.data.Servers[id].HelperTokenHash != ""
-		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1"), RealityGuard: installed && hasCapability(status, "flvx.reality_guard.v1"), UserLimits: installed && hasCapability(status, flvx.UserLimitsCapability), UserRate: installed && hasCapability(status, flvx.UserRateCapability)}
+		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1"), RealityGuard: installed && hasCapability(status, "flvx.reality_guard.v1"), UserLimits: installed && hasCapability(status, flvx.UserLimitsCapability), UserRate: installed && hasCapability(status, flvx.UserRateCapability), ScanGuard: installed && hasCapability(status, flvx.ScanGuardCapability)}
 	}
 	return result
 }
@@ -469,6 +474,8 @@ func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r 
 	if r.Generation == "" || len(r.Generation) > 64 || r.Sequence < 1 || r.AppliedRevision > s.Desired.Revision || !r.Egress.Valid() || r.Egress != nil && r.Egress.AppliedRevision > s.Desired.Revision || !r.Listening.Valid() || !r.RealityGuard.Valid() {
 		return errors.New("invalid FLVX report")
 	}
+	// Bounded, never fatal: a malformed scan report must not stop billing.
+	r.ScanGuard = flvx.SanitizeScanGuardStatus(r.ScanGuard)
 	r.Protocols = flvx.SanitizeProtocols(r.Protocols)
 	r.Core.Error = flvxSanitizeCoreError(r.Core.Error)
 	if r.RealityGuard != nil {
