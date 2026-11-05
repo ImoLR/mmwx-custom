@@ -233,6 +233,9 @@ type flvxHelper struct {
 	// Helper applies 节点总连接数 next to the node limit and reports the
 	// per-node TCP breakdown (landing-node-total-v1, "flvx.node_total.v1").
 	NodeTotal bool `json:"flvx_node_total"`
+	// Helper applies memory_mb / cpu_percent 0 as 不限制
+	// ("flvx.core_unlimited.v1"); older ones get 4096 MB / 400 %.
+	CoreUnlimited bool `json:"flvx_core_unlimited"`
 }
 
 func (a *app) flvxHelpers() map[int64]flvxHelper {
@@ -249,7 +252,7 @@ func (a *app) flvxHelpers() map[int64]flvxHelper {
 			continue
 		}
 		installed := status.Helper.Installed && s.data.Servers[id].HelperTokenHash != ""
-		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1"), RealityGuard: installed && hasCapability(status, "flvx.reality_guard.v1"), UserLimits: installed && hasCapability(status, flvx.UserLimitsCapability), UserRate: installed && hasCapability(status, flvx.UserRateCapability), ScanGuard: installed && hasCapability(status, flvx.ScanGuardCapability), NodeTotal: installed && hasCapability(status, flvx.NodeTotalCapability)}
+		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1"), RealityGuard: installed && hasCapability(status, "flvx.reality_guard.v1"), UserLimits: installed && hasCapability(status, flvx.UserLimitsCapability), UserRate: installed && hasCapability(status, flvx.UserRateCapability), ScanGuard: installed && hasCapability(status, flvx.ScanGuardCapability), NodeTotal: installed && hasCapability(status, flvx.NodeTotalCapability), CoreUnlimited: installed && hasCapability(status, flvx.CoreUnlimitedCapability)}
 	}
 	return result
 }

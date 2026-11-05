@@ -46,8 +46,9 @@ func ValidateConfig(c Config) error {
 	if c.ShareUntil != nil && (*c.ShareUntil <= 0 || *c.ShareUntil > 253402300799999) {
 		return fmt.Errorf("共享到期时间无效")
 	}
-	if c.MemoryMB < 64 || c.MemoryMB > 4096 || c.CPUPercent < 1 || c.CPUPercent > 400 {
-		return fmt.Errorf("内存须为 64–4096 MB，CPU 须为 1–400%%")
+	// 0 = 不限制 (core_limits.go).
+	if c.MemoryMB != 0 && (c.MemoryMB < MinCoreMemoryMB || c.MemoryMB > MaxCoreMemoryMB) || c.CPUPercent < 0 || c.CPUPercent > MaxCoreCPUPercent {
+		return fmt.Errorf("内存须为 0（不限制）或 64–4096 MB，CPU 须为 0（不限制）或 1–400%%")
 	}
 	return nil
 }

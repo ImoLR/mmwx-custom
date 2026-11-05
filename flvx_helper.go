@@ -10,10 +10,11 @@ import (
 	"github.com/ImoLR/mmwx-custom/internal/flvx"
 )
 
-// egress / protocols / guard / limits / scan / nodeTotal report whether this
-// Helper advertises flvx.egress.v1 / flvx.protocols.v1 / flvx.reality_guard.v1
-// / flvx.user_limits.v1 / flvx.scan_guard.v1 / flvx.node_total.v1.
-func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, egress, protocols, guard, limits, scan, nodeTotal bool, report *flvx.Report) (*flvx.Envelope, error) {
+// egress / protocols / guard / limits / scan / nodeTotal / coreUnlimited
+// report whether this Helper advertises flvx.egress.v1 / flvx.protocols.v1 /
+// flvx.reality_guard.v1 / flvx.user_limits.v1 / flvx.scan_guard.v1 /
+// flvx.node_total.v1 / flvx.core_unlimited.v1.
+func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, egress, protocols, guard, limits, scan, nodeTotal, coreUnlimited bool, report *flvx.Report) (*flvx.Envelope, error) {
 	if a.flvxDB() == nil {
 		return nil, nil
 	}
@@ -63,7 +64,11 @@ func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, 
 		if a.helperState != nil {
 			artifact.GitHubAccelerator = a.helperState.githubAccelerator()
 		}
-		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: s.Config, Desired: flvxHelperScanGuard(flvxHelperNodeTotal(flvxHelperConnMode(flvxHelperGuard(flvxHelperProtocols(flvxHelperEgress(s, egress), protocols), guard), limits), nodeTotal), scan), OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
+		config := s.Config
+		if !coreUnlimited {
+			config = flvx.LegacyCoreLimits(config)
+		}
+		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: config, Desired: flvxHelperScanGuard(flvxHelperNodeTotal(flvxHelperConnMode(flvxHelperGuard(flvxHelperProtocols(flvxHelperEgress(s, egress), protocols), guard), limits), nodeTotal), scan), OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
 		envelope.Sign(token)
 		return nil
 	})

@@ -508,12 +508,8 @@ func (a *app) saveFLVXShare(ctx context.Context, id int64, c flvx.Config, state 
 		if c.PortMin == 0 && s.Version > 0 {
 			c = s.Config
 		}
-		if c.MemoryMB == 0 {
-			c.MemoryMB = 256
-		}
-		if c.CPUPercent == 0 {
-			c.CPUPercent = 50
-		}
+		// memory_mb / cpu_percent 0 (or omitted) = 不限制; see flvx.LegacyCoreLimits
+		// for Helpers that predate it.
 		if err = flvx.ValidateConfig(c); err != nil {
 			return flvxAPIError{422, "invalid_config", err.Error()}
 		}

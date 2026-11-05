@@ -563,9 +563,7 @@ ExecStart=%s run -config %s
 RuntimeDirectory=%s
 RuntimeDirectoryMode=0700
 UMask=0077
-MemoryMax=%dM
-CPUQuota=%d%%
-NoNewPrivileges=yes
+%sNoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
@@ -580,7 +578,34 @@ RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-`, socket, binary, configPath, filepath.Base(runtime), c.MemoryMB, c.CPUPercent, runtime)
+`, socket, binary, configPath, filepath.Base(runtime), flvxUnitLimits(c), runtime)
+}
+
+// flvxUnitLimits is the unit's resource lines: 0 = 不限制 writes none, so a
+// limited share renders the same unit as before.
+func flvxUnitLimits(c flvx.Config) string {
+	lines := ""
+	if c.MemoryMB > 0 {
+		lines += fmt.Sprintf("MemoryMax=%dM\n", c.MemoryMB)
+	}
+	if c.CPUPercent > 0 {
+		lines += fmt.Sprintf("CPUQuota=%d%%\n", c.CPUPercent)
+	}
+	return lines
+}
+
+// flvxRuntimeLimits is the matching set-property --runtime assignments for
+// the running Core: infinity / an empty CPUQuota lift a limit (also one an
+// operator set at runtime) without restarting it.
+func flvxRuntimeLimits(c flvx.Config) []string {
+	memory, cpu := "MemoryMax=infinity", "CPUQuota="
+	if c.MemoryMB > 0 {
+		memory = fmt.Sprintf("MemoryMax=%dM", c.MemoryMB)
+	}
+	if c.CPUPercent > 0 {
+		cpu = fmt.Sprintf("CPUQuota=%d%%", c.CPUPercent)
+	}
+	return []string{memory, cpu}
 }
 
 func flvxFileHash(path string) (string, error) {
@@ -710,7 +735,7 @@ func (m *flvxManager) ensureService(ctx context.Context) error {
 		if err = systemctl(ctx, "daemon-reload"); err != nil {
 			return err
 		}
-		if err = systemctl(ctx, "set-property", "--runtime", m.service, fmt.Sprintf("MemoryMax=%dM", m.state.Payload.Config.MemoryMB), fmt.Sprintf("CPUQuota=%d%%", m.state.Payload.Config.CPUPercent)); err != nil {
+		if err = systemctl(ctx, append([]string{"set-property", "--runtime", m.service}, flvxRuntimeLimits(m.state.Payload.Config)...)...); err != nil {
 			return err
 		}
 	}

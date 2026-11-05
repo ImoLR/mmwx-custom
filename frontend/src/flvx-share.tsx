@@ -163,6 +163,12 @@ function NodeTable({ nodes, helper }: { nodes: ShareNode[]; helper?: FLVXHelper 
   return <table className="flvx-node-table"><thead><tr>{["名称", "协议", "端口", "已用 / 上限 GB", "连接", "状态", "到期"].map((title) => <th key={title}>{title}</th>)}</tr></thead><tbody>{nodes.map((node) => <tr key={node.id}><td className="flvx-node-name">{node.name}</td><td data-label="协议">{flvxProtocolName(node.protocol)}</td><td data-label="端口">{node.port}</td><td data-label="已用 / 上限 GB" title="节点流量上限由 FLVX 管理，v1 接口未提供">{gb(node.status.up_bytes + node.status.down_bytes)} / <span className="flvx-muted">未提供</span></td><td data-label="连接">{node.status.connections} / {limit(node.max_connections)}</td><td data-label="状态" title={node.status.error}><span className={`flvx-status ${node.status.state === "active" ? "online" : ""}`}>{flvxStateText(node.status.state, helper)}</span>{node.status.error && <small className="flvx-node-error">{node.status.error}</small>}</td><td data-label="到期">{date(node.expires_at)}</td></tr>)}</tbody></table>;
 }
 
+// 0 = 不限制 (no MemoryMax / CPUQuota on the FLVX Core).
+function resourceText(c: ShareConfig) {
+  if (!c.memory_mb && !c.cpu_percent) return "不限制";
+  return `内存 ${c.memory_mb ? `${c.memory_mb} MB` : "不限制"} / CPU ${c.cpu_percent ? `${c.cpu_percent}%` : "不限制"}`;
+}
+
 function availableRange(ports: number[]): [number, number] {
   const occupied = new Set(ports || []);
   for (let start = 30000; start <= 64536; start += 1000) if (Array.from({ length: 1000 }, (_, i) => start + i).every((p) => !occupied.has(p))) return [start, start + 999];
@@ -173,7 +179,7 @@ function availableRange(ports: number[]): [number, number] {
 
 function ShareEditor({ token, share, servers, shares, onRefresh, onClose, onSaved }: { token: string; share?: SharedServer; servers: AvailableServer[]; shares: SharedServer[]; onRefresh: () => Promise<void>; onClose: () => void; onSaved: () => Promise<void> }) {
   const [serverID, setServerID] = useState(share?.server_id || 0);
-  const [config, setConfig] = useState<ShareConfig>(share?.config || { port_min: 30000, port_max: 30999, traffic_limit_bytes: 0, reset_day: 1, max_connections: 0, share_until: null, memory_mb: 256, cpu_percent: 50 });
+  const [config, setConfig] = useState<ShareConfig>(share?.config || { port_min: 30000, port_max: 30999, traffic_limit_bytes: 0, reset_day: 1, max_connections: 0, share_until: null, memory_mb: 0, cpu_percent: 0 });
   const [trafficGB, setTrafficGB] = useState(share ? share.config.traffic_limit_bytes / GB : 0);
   const [expiry, setExpiry] = useState(share?.config.share_until ? new Date(share.config.share_until + 8 * 3600_000).toISOString().slice(0, 10) : "");
   const [allowEgress, setAllowEgress] = useState(share?.allow_egress ?? true);
@@ -200,7 +206,7 @@ function ShareEditor({ token, share, servers, shares, onRefresh, onClose, onSave
       <label className="flvx-field">共享到期<select value={expiry ? "date" : "none"} onChange={(e) => setExpiry(e.target.value === "none" ? "" : new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10))}><option value="none">不限</option><option value="date">指定日期</option></select></label>
       {expiry && <label className="flvx-field">共享截止日期<input type="date" required value={expiry} onChange={(e) => setExpiry(e.target.value)} /><small>当日 23:59:59（台湾时间）</small></label>}
       <label className="flvx-switch"><span><strong>允许自定义出站与路由</strong><small>{allowEgress ? "FLVX 可为这台服务器上的节点设置出站（如 WARP、代理）和分流规则；共享的内存、CPU、流量和连接上限照常生效。" : "关闭后 FLVX 不能设置出站与路由，节点一律从本机直连。"}</small></span><input type="checkbox" role="switch" checked={allowEgress} onChange={(e) => setAllowEgress(e.target.checked)} /></label>
-      <details className="flvx-advanced"><summary>高级 · 资源上限</summary><div className="flvx-form-row"><label className="flvx-field">内存 MB<input type="number" min={64} max={4096} required value={config.memory_mb} onChange={(e) => setNumber("memory_mb", e.target.value)} /></label><label className="flvx-field">CPU %<input type="number" min={1} max={400} required value={config.cpu_percent} onChange={(e) => setNumber("cpu_percent", e.target.value)} /></label></div></details>
+      <details className="flvx-advanced"><summary>高级 · 资源上限 · {resourceText(config)}</summary><div className="flvx-form-row"><label className="flvx-field">内存 MB<input type="number" min={0} max={4096} placeholder="不限制" value={config.memory_mb || ""} onChange={(e) => setNumber("memory_mb", e.target.value)} /><small>留空为不限制，或填 64–4096</small></label><label className="flvx-field">CPU %<input type="number" min={0} max={400} placeholder="不限制" value={config.cpu_percent || ""} onChange={(e) => setNumber("cpu_percent", e.target.value)} /><small>留空为不限制，或填 1–400</small></label></div>{server?.helper && !server.helper.flvx_core_unlimited && (!config.memory_mb || !config.cpu_percent) && <p className="flvx-hint">这台的 Helper 较旧，「不限制」暂按 4096 MB / 400% 执行，升级 Helper 后自动取消。</p>}</details>
       {error && <p className="flvx-warning" role="alert">{error}</p>}<div className="flvx-dialog-actions"><button type="button" disabled={busy} onClick={onClose}>取消</button><button className="flvx-primary" type="submit" disabled={busy || unavailable}>{busy ? "正在保存…" : share ? "保存设置" : "确认共享"}</button></div>
     </form>
   </CompactSheet>;

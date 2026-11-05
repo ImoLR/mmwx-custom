@@ -1,4 +1,4 @@
-export type FLVXHelper = { installed: boolean; version: string; architecture: string; flvx_ready: boolean; upgrading: boolean; flvx_protocols?: boolean; flvx_reality_guard?: boolean };
+export type FLVXHelper = { installed: boolean; version: string; architecture: string; flvx_ready: boolean; upgrading: boolean; flvx_protocols?: boolean; flvx_reality_guard?: boolean; flvx_core_unlimited?: boolean };
 export type FLVXGuardReport = { state: "on" | "restart_required" | "error"; nodes: number };
 export type FLVXGuardPlan = { requested: boolean; reality_nodes: number; error?: string };
 export type FLVXProtocolCaps = { versions: number[]; protocols: Record<string, { udp: boolean; versions?: number[]; obfs?: string[]; transports?: string[] }> };
