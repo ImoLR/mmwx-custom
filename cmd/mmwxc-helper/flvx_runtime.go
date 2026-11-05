@@ -235,6 +235,14 @@ func (m *flvxManager) limits(ctx context.Context, snapshot coreSnapshotResponse,
 				port.MaxTotalConnections = &v
 			}
 		}
+		// landing-node-total-v1: 节点总连接数 next to the node limit; with a
+		// 入站+出站 node limit too, the smaller one.
+		if n.MaxTotalConnections > 0 {
+			v := n.MaxTotalConnections
+			if port.MaxTotalConnections == nil || *port.MaxTotalConnections > v {
+				port.MaxTotalConnections = &v
+			}
+		}
 		if n.MaxOnlineIPs > 0 {
 			v := n.MaxOnlineIPs
 			port.MaxInboundOnlineIPs = &v
@@ -302,6 +310,14 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 		v := inbound[id]
 		return &v
 	}
+	tcp := flvxTCPByNode(snapshot)
+	tcpOf := func(id string) *flvx.NodeTCP {
+		v := tcp[id]
+		if !v.ValidFor(connections[id]) {
+			return nil
+		}
+		return &v
+	}
 	statuses := map[string]flvx.NodeStatus{}
 	acknowledged := m.state.Payload.AckGeneration == m.state.Report.Generation && m.state.Payload.AckSequence >= m.state.Report.Sequence
 	for _, old := range m.state.Report.Nodes {
@@ -314,12 +330,13 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 		old.State = "removed"
 		old.Connections = connections[old.ID]
 		old.InboundConnections = inboundOf(old.ID)
+		old.TCP = tcpOf(old.ID)
 		old.Error = ""
 		old.OnlineIPCount, old.OnlineIPs = nil, nil
 		statuses[old.ID] = old
 	}
 	for _, n := range m.state.Payload.Desired.Nodes {
-		s := flvx.NodeStatus{ID: n.ID, State: "removed", Connections: connections[n.ID], InboundConnections: inboundOf(n.ID)}
+		s := flvx.NodeStatus{ID: n.ID, State: "removed", Connections: connections[n.ID], InboundConnections: inboundOf(n.ID), TCP: tcpOf(n.ID)}
 		if wanted[n.Tag()] != "" && m.state.Applied[n.Tag()] == wanted[n.Tag()] {
 			s.State = "active"
 		}

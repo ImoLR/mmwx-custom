@@ -96,7 +96,7 @@ var helperCapabilities = []string{
 	"external.takeover",
 	"core.mode.apply",
 	"connection.status", "connection.settings",
-	"flvx.share", "flvx.egress.v1", flvxProtocolsCapability, flvxGuardCapability, flvx.UserLimitsCapability, flvx.ScanGuardCapability,
+	"flvx.share", "flvx.egress.v1", flvxProtocolsCapability, flvxGuardCapability, flvx.UserLimitsCapability, flvx.ScanGuardCapability, flvx.NodeTotalCapability,
 	"machine.protection.v2",
 }
 

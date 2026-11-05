@@ -129,9 +129,13 @@ type Node struct {
 	// landing-user-limits-v1 §3: "inbound" = max_connections counts inbound
 	// connections only. Omitted when absent (入站+出站, byte-identical payload);
 	// Custom strips it for Helpers without flvx.user_limits.v1.
-	ConnMode string  `json:"conn_mode,omitempty"`
-	SS2022   *SS2022 `json:"ss2022,omitempty"`
-	VLESS    *VLESS  `json:"vless,omitempty"`
+	ConnMode string `json:"conn_mode,omitempty"`
+	// landing-node-total-v1: Core port max_total_connections next to
+	// max_connections. Omitted when 0 (byte-identical payload); Custom strips
+	// it for Helpers without flvx.node_total.v1.
+	MaxTotalConnections int64   `json:"max_total_connections,omitempty"`
+	SS2022              *SS2022 `json:"ss2022,omitempty"`
+	VLESS               *VLESS  `json:"vless,omitempty"`
 	// landing-protocols-v1. Omitted when absent, so the signed payload of a
 	// share without these nodes stays byte-identical for older Helpers.
 	AnyTLS *AnyTLS `json:"anytls,omitempty"`
@@ -203,6 +207,9 @@ type NodeStatus struct {
 	// landing-user-limits-v1 §5: Σ inbound_current of the node's tag, what a
 	// 入站 node limit counts. Absent = unknown (older Helper).
 	InboundConnections *int64 `json:"inbound_connections,omitempty"`
+	// landing-node-total-v1: the node's sockets by direction and state.
+	// Absent = unknown (older Helper).
+	TCP *NodeTCP `json:"tcp,omitempty"`
 }
 
 type Status struct {

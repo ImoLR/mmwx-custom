@@ -251,6 +251,7 @@ func (m *flvxManager) materialHash() [32]byte {
 		s.Report.Nodes[i].DownBytes = 0
 		s.Report.Nodes[i].Connections = 0
 		s.Report.Nodes[i].InboundConnections = nil
+		s.Report.Nodes[i].TCP = nil
 		s.Report.Nodes[i].OnlineIPCount, s.Report.Nodes[i].OnlineIPs = nil, nil
 	}
 	s.Report.Sequence, s.Report.CollectedAt = 0, 0

@@ -103,6 +103,9 @@ func ValidateDesiredWith(d Desired, c Config, official []int, o DesiredOptions) 
 		if n.MaxConnections < 0 || n.MaxConnections > 10000000 {
 			add(n.ID, "max_connections", "invalid connection limit")
 		}
+		if n.MaxTotalConnections < 0 || n.MaxTotalConnections > MaxNodeTotalConnections {
+			add(n.ID, "max_total_connections", "invalid node total connection limit")
+		}
 		if n.MaxOnlineIPs < 0 || n.MaxOnlineIPs > 1000000 {
 			add(n.ID, "max_online_ips", "invalid online IP limit")
 		}

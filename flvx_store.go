@@ -230,6 +230,9 @@ type flvxHelper struct {
 	// "flvx.scan_guard.v1"); the share advertises it only while its FLVX Core
 	// build has scan_guard.v1 too.
 	ScanGuard bool `json:"flvx_scan_guard"`
+	// Helper applies 节点总连接数 next to the node limit and reports the
+	// per-node TCP breakdown (landing-node-total-v1, "flvx.node_total.v1").
+	NodeTotal bool `json:"flvx_node_total"`
 }
 
 func (a *app) flvxHelpers() map[int64]flvxHelper {
@@ -246,7 +249,7 @@ func (a *app) flvxHelpers() map[int64]flvxHelper {
 			continue
 		}
 		installed := status.Helper.Installed && s.data.Servers[id].HelperTokenHash != ""
-		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1"), RealityGuard: installed && hasCapability(status, "flvx.reality_guard.v1"), UserLimits: installed && hasCapability(status, flvx.UserLimitsCapability), UserRate: installed && hasCapability(status, flvx.UserRateCapability), ScanGuard: installed && hasCapability(status, flvx.ScanGuardCapability)}
+		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1"), RealityGuard: installed && hasCapability(status, "flvx.reality_guard.v1"), UserLimits: installed && hasCapability(status, flvx.UserLimitsCapability), UserRate: installed && hasCapability(status, flvx.UserRateCapability), ScanGuard: installed && hasCapability(status, flvx.ScanGuardCapability), NodeTotal: installed && hasCapability(status, flvx.NodeTotalCapability)}
 	}
 	return result
 }
@@ -524,6 +527,9 @@ func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r 
 		if n.InboundConnections != nil && *n.InboundConnections < 0 {
 			n.InboundConnections = nil
 		}
+		if n.TCP != nil && !n.TCP.ValidFor(n.Connections) {
+			n.TCP = nil
+		}
 		ledger.Status = n
 		raw, _ = json.Marshal(ledger)
 		if _, err = tx.ExecContext(ctx, `INSERT INTO mmwxc_flvx_counters(server_id,node_id,data_json) VALUES($1,$2,$3) ON CONFLICT(server_id,node_id) DO UPDATE SET data_json=EXCLUDED.data_json`, id, n.ID, string(raw)); err != nil {
@@ -560,6 +566,7 @@ func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r 
 				zero := int64(0)
 				l.Status.InboundConnections = &zero
 			}
+			l.Status.TCP = nil
 		}
 		s.Status.Nodes = append(s.Status.Nodes, l.Status)
 	}

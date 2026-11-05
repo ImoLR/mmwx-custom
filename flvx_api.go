@@ -649,6 +649,9 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 		if capability := flvxScanGuardCapability(s, server.Helper); capability != nil {
 			item["scan_guard"] = capability
 		}
+		if capability := flvxNodeTotalCapability(server.Helper); capability != nil {
+			item["node_total"] = capability
+		}
 		// landing-protocols-v1 §2. protocols above stays the v1 list: older
 		// FLVX copies it into a share and validates it against v1 names.
 		if protocols := flvxShareProtocols(s, server.Helper); protocols != nil {

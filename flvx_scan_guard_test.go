@@ -65,7 +65,7 @@ func TestFLVXScanGuardPostgres(t *testing.T) {
 		t.Helper()
 		r := flvxProtocolsReport(seq, nil, nil, 0)
 		r.ScanGuard = st
-		if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, scan, r); err != nil {
+		if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, scan, false, r); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -80,7 +80,7 @@ func TestFLVXScanGuardPostgres(t *testing.T) {
 	if code, body := put(flvx.Desired{Revision: 1, Nodes: []flvx.Node{node}, ScanGuard: guard}); code != 200 {
 		t.Fatalf("desired with guard: %d %s", code, body)
 	}
-	stripped, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, false, nil)
+	stripped, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, false, false, nil)
 	raw, _ := json.Marshal(stripped.Payload)
 	if err != nil || strings.Contains(string(raw), "scan_guard") || !stripped.Verify("helper", "7", time.Now()) || len(stripped.Payload.Desired.Nodes) != 1 {
 		t.Fatalf("old Helper payload: %v %s", err, raw)
@@ -100,7 +100,7 @@ func TestFLVXScanGuardPostgres(t *testing.T) {
 	if cap, _ := json.Marshal(list("/api/custom/flvx/v1/shares")["scan_guard"]); string(cap) != `{"versions":[1]}` {
 		t.Fatalf("capability %s", cap)
 	}
-	payload, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, nil)
+	payload, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, false, nil)
 	if err != nil || !payload.Verify("helper", "7", time.Now()) || payload.Payload.Desired.ScanGuard == nil || payload.Payload.Desired.ScanGuard.Total != 2000 {
 		t.Fatalf("scan Helper payload: %v %+v", err, payload.Payload.Desired.ScanGuard)
 	}
@@ -156,7 +156,7 @@ func TestFLVXScanGuardPostgres(t *testing.T) {
 	if code, body := put(flvx.Desired{Revision: 2, Nodes: []flvx.Node{recorded}, ScanGuard: &seen}); code != 200 {
 		t.Fatalf("recorded: %d %s", code, body)
 	}
-	payload, _ = a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, nil)
+	payload, _ = a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, false, nil)
 	if payload.Payload.Desired.ScanGuard.Seen != seen.Seen || *payload.Payload.Desired.Nodes[0].Enabled {
 		t.Fatalf("recorded payload %+v", payload.Payload.Desired)
 	}
