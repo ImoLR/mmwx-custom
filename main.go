@@ -116,6 +116,9 @@ type app struct {
 	flvxOnline             map[int64]flvxOnlineSnapshot
 	flvxLimitsMu           sync.Mutex                     // landing-user-limits-v1, in memory:
 	flvxLimits             map[int64]*flvxUserLimitsShare // budgets + Helper usage per share
+	flvxProbesMu           sync.Mutex                     // reality-pick-v1 §1, in memory:
+	flvxProbes             map[int64]*flvxProbeJob        // the latest Reality probe per share
+	flvxPool               flvxRealityPool                // reality-pick-v1 §2 cache
 	mmwxAPITarget          *url.URL
 	officialInternalTarget *url.URL
 	publicURL              string

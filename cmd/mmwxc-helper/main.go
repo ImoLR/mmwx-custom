@@ -26,7 +26,7 @@ const (
 	defaultCoreSocket    = "/run/mmwxc/core-control.sock"
 	defaultStatePath     = "/var/lib/mmwxc-helper/state.json"
 	defaultMachineIDPath = "/var/lib/mmwxc/machine-id"
-	helperVersion        = "v0.7.21"
+	helperVersion        = "v0.7.22"
 )
 
 type config struct {
@@ -272,7 +272,7 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 	state.HelperVersion = helperVersion
 	logs.report("save heartbeat failed", saveLocalState(cfg.StatePath, *state))
 	report := &managementReport{Status: executor.status(context.Background()), Result: state.PendingResult}
-	response, err := uploadDetailedMetrics(context.Background(), client, cfg, snapshot, report, flvxUpload{Report: executor.flvx.snapshotReport(), UserLimits: executor.flvx.userLimitsUpload()})
+	response, err := uploadDetailedMetrics(context.Background(), client, cfg, snapshot, report, flvxUpload{Report: executor.flvx.snapshotReport(), UserLimits: executor.flvx.userLimitsUpload(), Probe: executor.flvx.probeReport()})
 	logs.report("upload failed", err)
 	if err != nil {
 		return
@@ -289,6 +289,7 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 	// Budgets first, so the pass the new desired state triggers applies them.
 	logs.report("FLVX user limits rejected", executor.flvx.submitUserLimits(response.FLVXUserLimits))
 	executor.flvx.submit(response.FLVX)
+	logs.report("FLVX reality probe rejected", executor.flvx.submitProbe(response.FLVXRealityProbe))
 	if response.Command != nil && !completedCommand(state.CompletedCommandIDs, response.Command.ID) {
 		commandCtx, cancelCommand := context.WithTimeout(context.Background(), 31*time.Minute)
 		result := executor.execute(commandCtx, *response.Command, cfg.Token)
@@ -516,6 +517,7 @@ func uploadMetrics(ctx context.Context, client *http.Client, cfg config, snapsho
 type flvxUpload struct {
 	Report     *flvx.Report
 	UserLimits *flvx.UserLimitsUsage
+	Probe      *flvx.ProbeReport
 }
 
 func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config, snapshot detailedConnectionSnapshot, management *managementReport, shared ...flvxUpload) (detailedMetricsResponse, error) {
@@ -532,7 +534,7 @@ func uploadDetailedMetrics(ctx context.Context, client *http.Client, cfg config,
 		ConnectionCount: legacy.ConnectionCount, Snapshot: snapshot, Management: management,
 	}
 	if len(shared) > 0 {
-		payload.FLVX, payload.FLVXUserLimits = shared[0].Report, shared[0].UserLimits
+		payload.FLVX, payload.FLVXUserLimits, payload.FLVXRealityProbe = shared[0].Report, shared[0].UserLimits, shared[0].Probe
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

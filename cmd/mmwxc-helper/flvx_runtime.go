@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -105,56 +103,6 @@ func (m *flvxManager) collect(ctx context.Context, snapshot coreSnapshotResponse
 	}
 	m.state.Report.Core = flvx.Core{State: "running", Epoch: epoch, Version: m.state.Payload.Artifact.Version, Error: m.accessIssue}
 	return nil
-}
-
-func (m *flvxManager) pinnedReality(ctx context.Context, n flvx.Node) (flvx.Node, error) {
-	if n.VLESS == nil {
-		return n, nil
-	}
-	raw, _ := json.Marshal(n)
-	hash := fmt.Sprintf("%x", sha256.Sum256(raw))
-	pin := m.state.RealityPins[n.Tag()]
-	if pin.Hash == hash && flvxValidRealityPin(pin.Dest) {
-		v := *n.VLESS
-		v.Reality.Dest = pin.Dest
-		n.VLESS = &v
-		return n, nil
-	}
-	host, port, err := net.SplitHostPort(n.VLESS.Reality.Dest)
-	if err != nil {
-		return n, err
-	}
-	child, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	lookup := m.lookupHost
-	if lookup == nil {
-		lookup = net.DefaultResolver.LookupHost
-	}
-	ips, err := lookup(child, host)
-	if err != nil || len(ips) == 0 {
-		return n, errors.New("Reality destination DNS unavailable")
-	}
-	for _, ip := range ips {
-		if net.ParseIP(ip) == nil || flvx.PrivateHost(ip) {
-			return n, errors.New("Reality destination must resolve exclusively to public addresses")
-		}
-	}
-	// Reality's camouflage dial is outside normal outbound routing. Pin its
-	// validated address to prevent DNS rebinding into private destinations.
-	sort.Strings(ips)
-	v := *n.VLESS
-	v.Reality.Dest = net.JoinHostPort(ips[0], port)
-	n.VLESS = &v
-	if m.state.RealityPins == nil {
-		m.state.RealityPins = map[string]flvxRealityPin{}
-	}
-	m.state.RealityPins[n.Tag()] = flvxRealityPin{Hash: hash, Dest: v.Reality.Dest}
-	return n, nil
-}
-
-func flvxValidRealityPin(dest string) bool {
-	host, _, err := net.SplitHostPort(dest)
-	return err == nil && net.ParseIP(host) != nil && !flvx.PrivateHost(host)
 }
 
 // wanted renders the share's admissible nodes; official are the official
@@ -358,6 +306,7 @@ func (m *flvxManager) record(snapshot coreSnapshotResponse, wanted map[string]st
 	m.state.Report.Listening = m.listening()
 	m.state.Report.RealityGuard = m.guardStatus()
 	m.state.Report.ScanGuard = m.scanStatus()
+	m.state.Report.RealityPins = m.realityPinStatus()
 	m.recordUserLimits(snapshot)
 	m.state.Report.Nodes = []flvx.NodeStatus{}
 	for _, id := range ids {
@@ -525,6 +474,7 @@ func (m *flvxManager) reconcile(ctx context.Context) (result error) {
 	// Outbounds and rules first (Reality guard rules included): a node never
 	// serves before its plan applies.
 	official, officialErr := m.readOfficial()
+	m.refreshRealityPins(ctx, epoch)
 	m.planGuards(ctx, official, officialErr)
 	m.applyEgress(ctx, epoch)
 	wanted, problems := m.wanted(ctx, official, officialErr)

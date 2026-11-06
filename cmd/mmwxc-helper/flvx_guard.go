@@ -86,6 +86,31 @@ func (m *flvxManager) planGuards(ctx context.Context, official []int, officialEr
 	conflict := func(port int) bool {
 		return port < 1024 || port > 65535 || reserved[port] || port >= p.Config.PortMin && port <= p.Config.PortMax
 	}
+	// Each candidate's group under its current pin. A live group whose nodes
+	// all moved to one new pin keeps its port and only changes its target
+	// (reality-pick-v1 §3), so those nodes are not re-added.
+	type candidate struct {
+		tag   string
+		guard flvx.Guard
+	}
+	wanted := []candidate{}
+	if candidates {
+		for _, n := range p.Desired.Nodes {
+			if n.Protocol != "vless_reality_vision" || n.VLESS == nil || !flvx.Active(p.Status, p.Config, m.state.Report.TrafficUsedBytes, n, m.now()) {
+				continue
+			}
+			node, err := m.pinnedReality(ctx, n)
+			if err != nil {
+				continue
+			}
+			wanted = append(wanted, candidate{n.Tag(), flvx.Guard{Dest: node.VLESS.Reality.Dest, Names: flvx.GuardNames(node.VLESS.Reality.ServerNames)}})
+		}
+		groups := map[string]flvx.Guard{}
+		for _, c := range wanted {
+			groups[c.tag] = c.guard
+		}
+		m.retargetGuards(groups)
+	}
 	live := m.liveGuardPorts()
 	byKey := map[string]int{}
 	for port, guard := range m.state.Guards {
@@ -97,18 +122,13 @@ func (m *flvxManager) planGuards(ctx context.Context, official []int, officialEr
 			byKey[guard.Key()] = port
 		}
 	}
-	if candidates {
-		for _, n := range p.Desired.Nodes {
-			if n.Protocol != "vless_reality_vision" || n.VLESS == nil || !flvx.Active(p.Status, p.Config, m.state.Report.TrafficUsedBytes, n, m.now()) {
-				continue
-			}
-			node, err := m.pinnedReality(ctx, n)
-			if err != nil {
-				continue
-			}
-			guard := flvx.Guard{Dest: node.VLESS.Reality.Dest, Names: flvx.GuardNames(node.VLESS.Reality.ServerNames)}
-			port, ok := byKey[guard.Key()]
-			if !ok {
+	for _, c := range wanted {
+		// A node stays on the guard it points at while that guard is its group.
+		port := flvx.GuardPortOf(m.state.Applied[c.tag])
+		if current, ok := m.state.Guards[port]; port == 0 || !ok || conflict(port) || current.Key() != c.guard.Key() {
+			var found bool
+			if port, found = byKey[c.guard.Key()]; !found {
+				var err error
 				if port, err = m.allocateGuardPort(conflict); err != nil {
 					m.logs.report("FLVX Reality guard port", err)
 					g.addIssue = "没有可用的本机端口给 Reality 防盗辅助入站，相关节点暂按未开启处理"
@@ -117,12 +137,12 @@ func (m *flvxManager) planGuards(ctx context.Context, official []int, officialEr
 				if m.state.Guards == nil {
 					m.state.Guards = map[int]flvx.Guard{}
 				}
-				m.state.Guards[port] = guard
-				byKey[guard.Key()] = port
+				m.state.Guards[port] = c.guard
+				byKey[c.guard.Key()] = port
 			}
-			g.byTag[n.Tag()] = port
-			g.rules[port] = guard
 		}
+		g.byTag[c.tag] = port
+		g.rules[port] = c.guard
 	}
 	for port := range live {
 		if guard, ok := m.state.Guards[port]; ok {

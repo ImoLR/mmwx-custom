@@ -420,22 +420,25 @@ type detailedMetricsPayload struct {
 	FLVX *flvx.Report `json:"flvx,omitempty"`
 	// landing-user-limits-v1: held / applied budgets and per-user usage of
 	// the FLVX Core instance, fresh on every upload (never stored).
-	FLVXUserLimits  *flvx.UserLimitsUsage      `json:"flvx_user_limits,omitempty"`
-	ServerID        string                     `json:"server_id"`
-	HelperVersion   string                     `json:"helper_version"`
-	TCPCount        int64                      `json:"tcp_count"`
-	UDPCount        int64                      `json:"udp_count"`
-	ConnectionCount int64                      `json:"connection_count"`
-	Snapshot        detailedConnectionSnapshot `json:"snapshot"`
-	Management      *managementReport          `json:"management,omitempty"`
+	FLVXUserLimits *flvx.UserLimitsUsage `json:"flvx_user_limits,omitempty"`
+	// reality-pick-v1 §1: the running / finished Reality target probe.
+	FLVXRealityProbe *flvx.ProbeReport          `json:"flvx_reality_probe,omitempty"`
+	ServerID         string                     `json:"server_id"`
+	HelperVersion    string                     `json:"helper_version"`
+	TCPCount         int64                      `json:"tcp_count"`
+	UDPCount         int64                      `json:"udp_count"`
+	ConnectionCount  int64                      `json:"connection_count"`
+	Snapshot         detailedConnectionSnapshot `json:"snapshot"`
+	Management       *managementReport          `json:"management,omitempty"`
 }
 
 type detailedMetricsResponse struct {
-	FLVX           *flvx.Envelope           `json:"flvx,omitempty"`
-	FLVXUserLimits *flvx.UserLimitsEnvelope `json:"flvx_user_limits,omitempty"`
-	Success        bool                     `json:"success"`
-	Settings       connectionSettings       `json:"settings"`
-	Command        *managementCommand       `json:"command,omitempty"`
+	FLVX             *flvx.Envelope           `json:"flvx,omitempty"`
+	FLVXUserLimits   *flvx.UserLimitsEnvelope `json:"flvx_user_limits,omitempty"`
+	FLVXRealityProbe *flvx.ProbeEnvelope      `json:"flvx_reality_probe,omitempty"`
+	Success          bool                     `json:"success"`
+	Settings         connectionSettings       `json:"settings"`
+	Command          *managementCommand       `json:"command,omitempty"`
 }
 
 func defaultConnectionSettings() connectionSettings {

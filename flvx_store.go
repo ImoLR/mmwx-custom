@@ -236,6 +236,10 @@ type flvxHelper struct {
 	// Helper applies memory_mb / cpu_percent 0 as 不限制
 	// ("flvx.core_unlimited.v1"); older ones get 4096 MB / 400 %.
 	CoreUnlimited bool `json:"flvx_core_unlimited"`
+	// Helper pins the fastest Reality dest IP / probes Reality targets
+	// (reality-pick-v1, "flvx.reality_pin.v1" / "flvx.reality_probe.v1").
+	RealityPin   bool `json:"flvx_reality_pin"`
+	RealityProbe bool `json:"flvx_reality_probe"`
 }
 
 func (a *app) flvxHelpers() map[int64]flvxHelper {
@@ -252,7 +256,7 @@ func (a *app) flvxHelpers() map[int64]flvxHelper {
 			continue
 		}
 		installed := status.Helper.Installed && s.data.Servers[id].HelperTokenHash != ""
-		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1"), RealityGuard: installed && hasCapability(status, "flvx.reality_guard.v1"), UserLimits: installed && hasCapability(status, flvx.UserLimitsCapability), UserRate: installed && hasCapability(status, flvx.UserRateCapability), ScanGuard: installed && hasCapability(status, flvx.ScanGuardCapability), NodeTotal: installed && hasCapability(status, flvx.NodeTotalCapability), CoreUnlimited: installed && hasCapability(status, flvx.CoreUnlimitedCapability)}
+		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1"), RealityGuard: installed && hasCapability(status, "flvx.reality_guard.v1"), UserLimits: installed && hasCapability(status, flvx.UserLimitsCapability), UserRate: installed && hasCapability(status, flvx.UserRateCapability), ScanGuard: installed && hasCapability(status, flvx.ScanGuardCapability), NodeTotal: installed && hasCapability(status, flvx.NodeTotalCapability), CoreUnlimited: installed && hasCapability(status, flvx.CoreUnlimitedCapability), RealityPin: installed && hasCapability(status, flvx.RealityPinCapability), RealityProbe: installed && hasCapability(status, flvx.RealityProbeCapability)}
 	}
 	return result
 }
@@ -483,6 +487,7 @@ func mergeFLVXReport(ctx context.Context, tx *sql.Tx, id int64, s *flvxShare, r 
 	// Bounded, never fatal: a malformed scan report must not stop billing.
 	r.ScanGuard = flvx.SanitizeScanGuardStatus(r.ScanGuard)
 	r.Protocols = flvx.SanitizeProtocols(r.Protocols)
+	r.RealityPins = flvx.SanitizeRealityPins(r.RealityPins)
 	r.Core.Error = flvxSanitizeCoreError(r.Core.Error)
 	if r.RealityGuard != nil {
 		guard := *r.RealityGuard

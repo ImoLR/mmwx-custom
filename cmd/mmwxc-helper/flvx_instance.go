@@ -38,7 +38,10 @@ type flvxLocalState struct {
 	Applied      map[string]string         `json:"applied"`
 	AppliedEpoch string                    `json:"applied_epoch"`
 	RealityPins  map[string]flvxRealityPin `json:"reality_pins,omitempty"`
-	Report       flvx.Report               `json:"report"`
+	// reality-pick-v1 §3: per Reality dest ("host:port") check state; see
+	// flvx_reality_pin.go.
+	RealityDests map[string]flvxRealityDest `json:"reality_dests,omitempty"`
+	Report       flvx.Report                `json:"report"`
 	// Landing egress plan applied in AppliedEpoch ("" = built-in default).
 	EgressApplied    string   `json:"egress_applied,omitempty"`
 	EgressCovered    []string `json:"egress_covered,omitempty"`
@@ -56,11 +59,6 @@ type flvxLocalState struct {
 	// landing-scan-guard-v1 §9: Core hits FLVX has not recorded yet (seq >
 	// seen); their nodes stay blocked by the Helper. See flvx_scan_guard.go.
 	ScanPending []flvx.ScanHit `json:"scan_pending,omitempty"`
-}
-
-type flvxRealityPin struct {
-	Hash string `json:"hash"`
-	Dest string `json:"dest"`
 }
 
 type flvxManager struct {
@@ -113,6 +111,13 @@ type flvxManager struct {
 	listeningKey   string
 	// landing-reality-guard-v1; see flvx_guard.go.
 	guards guardPass
+	// reality-pick-v1 §3: the Core epoch whose dests were fully checked ("" =
+	// Helper start); connectTime is injected by tests.
+	pinEpoch    string
+	connectTime func(context.Context, string) (time.Duration, error)
+	// reality-pick-v1 §1; see flvx_reality_probe.go.
+	probe       flvxProbeState
+	probeTarget flvxProbeFunc
 	// landing-user-limits-v1; see flvx_user_limits.go and flvx_rate.go.
 	// budgetMu guards the budgets handed over by the upload loop; the other
 	// fields belong to the pass, userLimits is published under mu.

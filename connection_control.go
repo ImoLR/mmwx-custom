@@ -261,6 +261,7 @@ type serverDetailedConnectionSnapshot struct {
 type helperDetailedMetricsRequest struct {
 	FLVX            *flvx.Report                     `json:"flvx,omitempty"`
 	FLVXUserLimits  *flvx.UserLimitsUsage            `json:"flvx_user_limits,omitempty"`
+	FLVXProbe       *flvx.ProbeReport                `json:"flvx_reality_probe,omitempty"`
 	ServerID        any                              `json:"server_id"`
 	HelperVersion   string                           `json:"helper_version"`
 	TCPCount        int64                            `json:"tcp_count"`
@@ -560,7 +561,7 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 	settings = a.trafficBlocksForHelper(settings, officialID, request.HelperVersion)
 	response := map[string]any{"success": true, "settings": sortedConnectionSettings(settingsForHelperMachine(settings, request.HelperVersion, machineV2)), "command": command}
 	if request.Management != nil {
-		share, egress, protocols, guard, limits, scan, nodeTotal, coreUnlimited := false, false, false, false, false, false, false, false
+		share, egress, protocols, guard, limits, scan, nodeTotal, coreUnlimited, probe := false, false, false, false, false, false, false, false, false
 		for _, capability := range request.Management.Status.Capabilities {
 			share = share || capability == "flvx.share"
 			egress = egress || capability == "flvx.egress.v1"
@@ -570,6 +571,7 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 			scan = scan || capability == flvx.ScanGuardCapability
 			nodeTotal = nodeTotal || capability == flvx.NodeTotalCapability
 			coreUnlimited = coreUnlimited || capability == flvx.CoreUnlimitedCapability
+			probe = probe || capability == flvx.RealityProbeCapability
 		}
 		if share {
 			id, _ := strconv.ParseInt(officialID, 10, 64)
@@ -581,6 +583,10 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 				// Helper does not hold them yet.
 				if budgets, limitsErr := a.flvxUserLimitsForHelper(r.Context(), id, serverID, token, limits, request.FLVXUserLimits); limitsErr == nil && budgets != nil {
 					response["flvx_user_limits"] = budgets
+				}
+				// reality-pick-v1 §1: the queued / running probe, until done.
+				if job := a.flvxProbeForHelper(id, serverID, token, probe, request.FLVXProbe); job != nil {
+					response["flvx_reality_probe"] = job
 				}
 			}
 		}

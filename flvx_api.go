@@ -142,6 +142,8 @@ func (a *app) flvxV1Handler(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "shares" && r.Method == http.MethodGet:
 		result, err = a.flvxList(r.Context(), false)
+	case path == "reality-pool" && r.Method == http.MethodGet:
+		result = a.realityPool(r.Context())
 	case path == "landing-hosts" && r.Method == http.MethodPut:
 		var h flvx.LandingHosts
 		err = decodeFLVX(w, r, &h)
@@ -151,6 +153,16 @@ func (a *app) flvxV1Handler(w http.ResponseWriter, r *http.Request) {
 		result = map[string]any{}
 	case strings.HasPrefix(path, "shares/"):
 		parts := strings.Split(path, "/")
+		if len(parts) == 4 && parts[2] == "reality-probe" && r.Method == http.MethodGet {
+			// reality-pick-v1 §1: poll a probe.
+			id, parseErr := strconv.ParseInt(parts[1], 10, 64)
+			if parseErr != nil || id <= 0 {
+				err = sql.ErrNoRows
+				break
+			}
+			result, err = a.flvxProbeStatus(id, parts[3])
+			break
+		}
 		if len(parts) != 3 {
 			err = sql.ErrNoRows
 			break
@@ -175,6 +187,12 @@ func (a *app) flvxV1Handler(w http.ResponseWriter, r *http.Request) {
 			var req flvx.UserLimitsRequest
 			if err = decodeFLVX(w, r, &req); err == nil {
 				result, err = a.putFLVXUserLimits(r.Context(), id, req)
+			}
+		} else if parts[2] == "reality-probe" && r.Method == http.MethodPost {
+			// reality-pick-v1 §1: queue a probe on the share's server.
+			var req flvx.ProbeRequest
+			if err = decodeFLVX(w, r, &req); err == nil {
+				result, err = a.startFLVXProbe(r.Context(), id, req)
 			}
 		} else if parts[2] == "status" && r.Method == http.MethodGet {
 			var s flvxShare
@@ -217,6 +235,10 @@ func flvxPublicStatus(s flvx.Status, helperReady bool) map[string]any {
 			warnings = []string{}
 		}
 		result["egress"] = map[string]any{"state": e.State, "error": e.Error, "applied_revision": e.AppliedRevision, "warnings": warnings}
+	}
+	// reality-pick-v1 §3: the share's Reality dest pins.
+	if len(s.RealityPins) > 0 {
+		result["reality_pins"] = s.RealityPins
 	}
 	// landing-reality-guard-v1 §5. The reason text stays operator-only.
 	if g := s.RealityGuard; g != nil {
@@ -647,6 +669,12 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 		}
 		if capability := flvxNodeTotalCapability(server.Helper); capability != nil {
 			item["node_total"] = capability
+		}
+		if capability := flvxRealityPinCapability(server.Helper); capability != nil {
+			item["reality_pin"] = capability
+		}
+		if capability := flvxRealityProbeCapability(server.Helper); capability != nil {
+			item["reality_probe"] = capability
 		}
 		// landing-protocols-v1 §2. protocols above stays the v1 list: older
 		// FLVX copies it into a share and validates it against v1 names.

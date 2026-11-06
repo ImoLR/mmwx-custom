@@ -229,6 +229,8 @@ type Status struct {
 	RealityGuard *RealityGuardStatus `json:"reality_guard,omitempty"`
 	// landing-scan-guard-v1 §9, reported by Helpers with flvx.scan_guard.v1.
 	ScanGuard *ScanGuardStatus `json:"scan_guard,omitempty"`
+	// reality-pick-v1 §3, reported by Helpers with flvx.reality_pin.v1.
+	RealityPins []RealityPinStatus `json:"reality_pins,omitempty"`
 }
 
 // Report sequence and generation belong only to the authenticated Helper channel.

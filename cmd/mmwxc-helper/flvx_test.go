@@ -103,6 +103,8 @@ func fakeFLVXManager(t *testing.T) (*flvxManager, *fakeFLVXCore) {
 		return nil
 	}
 	m.readOfficial = func() ([]int, error) { return []int{30003}, nil }
+	// Every Reality dest candidate answers alike: pins never move on their own.
+	m.connectTime = func(context.Context, string) (time.Duration, error) { return 5 * time.Millisecond, nil }
 	m.stop = func(context.Context) error { f.stops++; f.present = map[string]bool{}; return nil }
 	m.cleanup = func(context.Context) error { return os.RemoveAll(m.dir) }
 	m.apiCall = func(_ context.Context, command string, args ...string) ([]byte, error) {
@@ -408,20 +410,27 @@ func TestFLVXRealityPinSurvivesDNSAndRestarts(t *testing.T) {
 	if lookups != 2 || f.adds != 1 || f.removes != 1 || changed == initial {
 		t.Fatal("changed destination did not re-pin exactly once")
 	}
-	// Both restarts reuse the persisted pin, even while DNS is failing.
+	// Both restarts re-check the dest (reality-pick-v1 §3) and keep the
+	// persisted pin, even while DNS is failing.
 	m.state = flvxLocalState{}
+	m.pinEpoch = ""
 	if err := m.load(); err != nil {
 		t.Fatal(err)
 	}
 	tick = 64
+	f.adds, f.removes = 0, 0
 	apply()
+	if lookups != 3 || m.state.Applied[n.Tag()] != changed || f.adds != 0 || f.removes != 0 {
+		t.Fatalf("Helper restart discarded the pin: lookups=%d adds=%d removes=%d", lookups, f.adds, f.removes)
+	}
 	f.epoch = f.epoch.Add(time.Second)
 	f.present = map[string]bool{}
 	apply()
-	if lookups != 2 || m.state.Applied[n.Tag()] != changed {
-		t.Fatal("restart discarded the pin")
+	if lookups != 4 || m.state.Applied[n.Tag()] != changed {
+		t.Fatal("Core restart discarded the pin")
 	}
-	// A failed/private re-pin keeps the entire applied inbound and logs once.
+	// A failed/private re-pin keeps the entire applied inbound and logs once
+	// per cause.
 	logs := 0
 	m.logs.print = func(string, ...any) { logs++ }
 	m.state.Payload.Desired.Nodes[0].VLESS.Reality.Dest = "unavailable.example:443"
@@ -430,7 +439,9 @@ func TestFLVXRealityPinSurvivesDNSAndRestarts(t *testing.T) {
 		tick = 64 + i%2
 		apply()
 	}
-	if f.adds != 0 || f.removes != 0 || f.blocks != 0 || logs != 1 || m.state.Applied[n.Tag()] != changed || m.state.Report.Nodes[0].State != "active" {
+	// Two lines in 30 passes: the dest's DNS failure (checked at most once a
+	// minute while unpinned) and the retained inbound.
+	if f.adds != 0 || f.removes != 0 || f.blocks != 0 || logs != 2 || m.state.Applied[n.Tag()] != changed || m.state.Report.Nodes[0].State != "active" {
 		t.Fatalf("failed re-pin disrupted node: %+v logs=%d", f, logs)
 	}
 	// A new node has no public pin to fall back to.
