@@ -33,7 +33,7 @@ const (
 	// MaxProbeTargets bounds one request; a Helper probes at most
 	// ProbeConcurrency targets at once.
 	MaxProbeTargets      = 64
-	ProbeConcurrency     = 4
+	ProbeConcurrency     = 2
 	ProbeMaxIPs          = 8
 	ProbeDefaultTimeout  = 3 * time.Second
 	ProbeMaxTimeout      = 5 * time.Second

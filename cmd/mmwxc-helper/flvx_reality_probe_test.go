@@ -144,7 +144,7 @@ func TestFLVXRealityProbeAddresses(t *testing.T) {
 	}
 }
 
-// The job runs in the background with at most 4 targets at once; the report
+// The job runs in the background with at most 2 targets at once; the report
 // rides on uploads until Custom stops sending the job.
 func TestFLVXRealityProbeJob(t *testing.T) {
 	m, _ := fakeFLVXManager(t)
@@ -199,7 +199,7 @@ func TestFLVXRealityProbeJob(t *testing.T) {
 	if r.State != "done" || len(r.Results) != 10 || r.Results[0].Target != "a.example:443" || !r.Results[0].Feasible || r.Results[1].Feasible || r.FinishedAt == 0 {
 		t.Fatalf("done report %+v", r)
 	}
-	if peak > flvx.ProbeConcurrency {
+	if peak != flvx.ProbeConcurrency || flvx.ProbeConcurrency != 2 {
 		t.Fatalf("%d targets at once", peak)
 	}
 	if err := m.submitProbe(&e); err != nil || m.probeReport() == nil {

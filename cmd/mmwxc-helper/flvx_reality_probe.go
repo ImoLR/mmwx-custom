@@ -23,9 +23,11 @@ import (
 // uploads until Custom stops sending the job.
 //
 // Third-party sites: per target one DNS lookup, one TCP connect per public
-// IPv4 address (at most 8) and one TLS handshake to the fastest; at most 4
-// targets at once, no retries.
-const flvxProbeJobLimit = 2 * time.Minute
+// IPv4 address (at most 8, one at a time) and one TLS handshake to the
+// fastest; at most 2 targets at once, no retries. All sockets share the
+// Helper's quiet Reality socket cap (≤ 2 open, RST close, no TIME_WAIT).
+// The limit stays below Custom's 3 min run limit (pickup + upload ≈ 10 s).
+const flvxProbeJobLimit = 150 * time.Second
 
 type flvxProbeState struct {
 	mu      sync.Mutex
@@ -179,41 +181,32 @@ func (p flvxProber) probe(ctx context.Context, target string, timeout time.Durat
 		res.Reason = "no public IPv4 address"
 		return res
 	}
-	// One connect per IP; the first to connect is the fastest and its
-	// connection carries the TLS handshake.
-	type dialed struct {
-		ip      string
-		conn    net.Conn
-		elapsed time.Duration
-	}
-	var mu sync.Mutex
-	var winner *dialed
+	// One connect per IP, one at a time, each closed with an RST right away.
+	// The TLS handshake goes to the fastest IP: on the last IP's connection
+	// when that one is the fastest (always for a single IP), otherwise on a
+	// new connection.
 	ms := map[string]float64{}
-	var wg sync.WaitGroup
-	for _, ip := range ips {
-		wg.Add(1)
-		go func(ip string) {
-			defer wg.Done()
-			child, cancel := context.WithTimeout(ctx, flvxPinDial)
-			defer cancel()
-			start := time.Now()
-			conn, err := dial(child, "tcp", net.JoinHostPort(ip, port))
-			elapsed := time.Since(start)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				ms[ip] = -1
-				return
-			}
-			ms[ip] = flvxMS(elapsed)
-			if winner == nil {
-				winner = &dialed{ip, conn, elapsed}
-				return
-			}
-			conn.Close()
-		}(ip)
+	bestIP := ""
+	var conn net.Conn
+	var elapsed time.Duration
+	var closeConn func()
+	for i, ip := range ips {
+		c, took, closeC, err := flvxQuietDial(ctx, dial, net.JoinHostPort(ip, port), flvxPinDial)
+		if err != nil {
+			ms[ip] = -1
+			continue
+		}
+		ms[ip] = flvxMS(took)
+		faster := bestIP == "" || took < elapsed
+		if faster {
+			bestIP, elapsed = ip, took
+		}
+		if faster && i == len(ips)-1 {
+			conn, closeConn = c, closeC
+		} else {
+			closeC()
+		}
 	}
-	wg.Wait()
 	for _, ip := range ips {
 		res.IPs = append(res.IPs, flvx.ProbeIP{IP: ip, TCPMS: ms[ip]})
 	}
@@ -221,15 +214,22 @@ func (p flvxProber) probe(ctx context.Context, target string, timeout time.Durat
 		a, b := res.IPs[i].TCPMS, res.IPs[j].TCPMS
 		return a >= 0 && (b < 0 || a < b)
 	})
-	if winner == nil {
+	if bestIP == "" {
 		res.Reason = "connection failed"
 		return res
 	}
-	defer winner.conn.Close()
-	res.BestIP = winner.ip
-	_ = winner.conn.SetDeadline(time.Now().Add(timeout))
+	res.BestIP = bestIP
+	if conn == nil {
+		var err error
+		if conn, elapsed, closeConn, err = flvxQuietDial(ctx, dial, net.JoinHostPort(bestIP, port), flvxPinDial); err != nil {
+			res.Reason = "connection failed"
+			return res
+		}
+	}
+	defer closeConn()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 	start := time.Now()
-	tlsConn := tls.Client(winner.conn, &tls.Config{
+	tlsConn := tls.Client(conn, &tls.Config{
 		ServerName:         host,
 		InsecureSkipVerify: true, // verified below, with and without the name
 		NextProtos:         []string{"h2", "http/1.1"},
@@ -246,7 +246,7 @@ func (p flvxProber) probe(ctx context.Context, target string, timeout time.Durat
 		res.Reason = "TLS handshake failed: " + flvxShortError(err)
 		return res
 	}
-	res.LatencyMS = flvxMS(winner.elapsed + time.Since(start))
+	res.LatencyMS = flvxMS(elapsed + time.Since(start))
 	st := tlsConn.ConnectionState()
 	res.TLS13 = st.Version == tls.VersionTLS13
 	res.TLSVersion = flvxTLSVersion(st.Version)

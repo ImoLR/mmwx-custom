@@ -74,7 +74,7 @@ func TestFLVXRealityPickPostgres(t *testing.T) {
 	if pin, _ := json.Marshal(s["reality_pin"]); string(pin) != `{"versions":[1]}` {
 		t.Fatalf("reality_pin %s", pin)
 	}
-	if probe, _ := json.Marshal(s["reality_probe"]); string(probe) != `{"concurrency":4,"max_targets":64,"versions":[1]}` {
+	if probe, _ := json.Marshal(s["reality_probe"]); string(probe) != `{"concurrency":2,"max_targets":64,"versions":[1]}` {
 		t.Fatalf("reality_probe %s", probe)
 	}
 	for _, bad := range []map[string]any{

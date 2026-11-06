@@ -27,10 +27,11 @@ import (
 //   - Candidates per dest: the IPs nodes are pinned to, the current DNS answer
 //     and IPs DNS returned in the last week, at most 8, all public. A DNS
 //     answer with any private address is ignored (DNS rebinding protection).
-//   - Full check (one DNS lookup, one parallel TCP connect per candidate, 1 s
+//   - Full check (one DNS lookup, one TCP connect per candidate, 1 s
 //     timeout) on Helper start, on a Core restart, every 6 h and after a
 //     failed liveness check; a liveness check (one connect per pinned IP)
-//     every 10 min in between.
+//     every 10 min in between. The connects are quiet (flvxQuietDial): at
+//     most 2 open at once across the Helper, closed with an RST.
 //   - A node moves only if its IP failed or is >= 20 ms slower than the best.
 //     A guarded node moves with its whole guard group: only the loopback
 //     guard inbound is re-added with the new target, the node inbound and its
@@ -48,7 +49,7 @@ const (
 	flvxPinDial       = time.Second
 	flvxPinDNS        = 2 * time.Second
 	flvxPinRemember   = 7 * 24 * time.Hour
-	flvxPinParallel   = 4
+	flvxPinParallel   = 2
 )
 
 // flvxRealityPin is a node's pin. Hash is the node JSON digest older Helpers
@@ -335,8 +336,9 @@ func (m *flvxManager) checkRealityDest(ctx context.Context, dest string, d flvxR
 	return d, err
 }
 
-// raceTCP connects to every ip:port in parallel (1 s timeout each) and
-// returns the connect times in ms, -1 for no answer.
+// raceTCP connects to every ip:port (1 s timeout each, within the Helper's
+// Reality socket cap) and returns the connect times in ms, -1 for no
+// answer. The timeout starts once a socket slot is free.
 func (m *flvxManager) raceTCP(ctx context.Context, ips []string, port string) map[string]float64 {
 	connect := m.connectTime
 	if connect == nil {
@@ -349,12 +351,15 @@ func (m *flvxManager) raceTCP(ctx context.Context, ips []string, port string) ma
 		wg.Add(1)
 		go func(ip string) {
 			defer wg.Done()
-			child, cancel := context.WithTimeout(ctx, flvxPinDial)
-			elapsed, err := connect(child, net.JoinHostPort(ip, port))
-			cancel()
 			ms := -1.0
-			if err == nil {
-				ms = math.Round(float64(elapsed)/float64(time.Millisecond)*10) / 10
+			if release, err := flvxRealitySlot(ctx); err == nil {
+				child, cancel := context.WithTimeout(ctx, flvxPinDial)
+				elapsed, err := connect(child, net.JoinHostPort(ip, port))
+				cancel()
+				release()
+				if err == nil {
+					ms = math.Round(float64(elapsed)/float64(time.Millisecond)*10) / 10
+				}
 			}
 			mu.Lock()
 			out[ip] = ms
@@ -373,8 +378,55 @@ func flvxConnectTime(ctx context.Context, address string) (time.Duration, error)
 		return 0, err
 	}
 	elapsed := time.Since(start)
-	conn.Close()
+	flvxCloseRST(conn)
 	return elapsed, nil
+}
+
+// Reality sockets to third-party sites (pin checks, liveness checks and the
+// 测速 probe) are quiet: at most flvxRealitySockets of them are open at once
+// across the Helper, and every connected one is closed with SO_LINGER 0, an
+// RST, so neither end keeps a TIME_WAIT entry (user 2026-11-06).
+const flvxRealitySockets = 2
+
+var flvxRealitySlots = make(chan struct{}, flvxRealitySockets)
+
+// flvxRealitySlot waits for a free Reality socket slot.
+func flvxRealitySlot(ctx context.Context) (func(), error) {
+	select {
+	case flvxRealitySlots <- struct{}{}:
+		var once sync.Once
+		return func() { once.Do(func() { <-flvxRealitySlots }) }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// flvxCloseRST closes a connection without a TIME_WAIT: a TCP socket gets
+// SO_LINGER 0 first, so the kernel drops it with an RST.
+func flvxCloseRST(conn net.Conn) {
+	if c, ok := conn.(*net.TCPConn); ok {
+		_ = c.SetLinger(0)
+	}
+	_ = conn.Close()
+}
+
+// flvxQuietDial connects within the Reality socket cap (timeout counted from
+// when a slot is free); closeConn RST-closes the socket and frees the slot.
+func flvxQuietDial(ctx context.Context, dial func(context.Context, string, string) (net.Conn, error), address string, timeout time.Duration) (conn net.Conn, elapsed time.Duration, closeConn func(), err error) {
+	release, err := flvxRealitySlot(ctx)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	child, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	start := time.Now()
+	conn, err = dial(child, "tcp", address)
+	elapsed = time.Since(start)
+	if err != nil {
+		release()
+		return nil, 0, nil, err
+	}
+	return conn, elapsed, func() { flvxCloseRST(conn); release() }, nil
 }
 
 // decidePin sets or keeps one node's pin from its dest's last check.

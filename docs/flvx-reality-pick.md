@@ -19,11 +19,15 @@ connection.
   public. 1.1.1.1 flips between edge sets within seconds on Hinet, so
   remembered IPs keep the near set in play. A DNS answer with any private
   address is ignored (DNS rebinding protection).
-- **Full check**: one DNS lookup and one parallel TCP connect per candidate
+- **Full check**: one DNS lookup and one TCP connect per candidate
   (1 s timeout) on Helper start, on an FLVX Core restart, every 6 h and after a
   failed liveness check. **Liveness**: one connect per pinned IP every 10 min.
   Cost per dest per 6 h: 1 lookup + ≤ 8 connects + 35 liveness connects.
   Nothing per connection.
+- **Quiet sockets** (Helper v0.7.23, user 2026-11-06): pin, liveness and probe
+  connects share one Helper-wide cap of **2 open sockets**, and every connected
+  socket is closed with `SO_LINGER 0` (an RST), so neither end keeps a
+  TIME_WAIT entry. The 1 s connect timeout starts once a slot is free.
 - **Hysteresis**: a node moves only if its IP failed or is ≥ 20 ms slower than
   the best.
 - **No dropped connections**: a guarded node (Reality 防盗 on) moves with its
@@ -63,17 +67,21 @@ Custom keeps the job in memory and hands it (HMAC-signed, domain
 Helper runs it in the background (the upload loop never waits) and its
 report rides on the next uploads. Per target, 3x-ui's REALITY scan criteria:
 resolve (any private address → not feasible, nothing dialled), TCP connect to
-each public IPv4 (≤ 8, 1 s), one TLS handshake with SNI = host to the fastest.
+each public IPv4 (≤ 8, 1 s, one at a time, each closed with an RST at once),
+one TLS handshake with SNI = host to the fastest — on the last IP's
+connection when that one is the fastest, otherwise on a new connection (so
+≤ 9 connects per target).
 `feasible` = TLS 1.3 + X25519 + h2 + certificate valid for the SNI (system
 roots). Result per target: `{target, feasible, reason, latency_ms (TCP connect +
 TLS handshake to best_ip), best_ip, ips: [{ip, tcp_ms}], tls13, tls_version,
 x25519, curve_id, h2, cert_valid, server_names (non-wildcard SANs),
-cert_chain_bytes}`. At most 4 targets at once, no retries. Only X25519 is
+cert_chain_bytes}`. At most 2 targets at once (4 up to Helper v0.7.22), no
+retries; a job stops after 150 s (Custom's run limit is 3 min). Only X25519 is
 offered (Go 1.24 does not expose the negotiated group), so `curve_id` is
 always `X25519` when the handshake succeeds.
 
 Capability in `GET /shares`: `"reality_probe": {"versions": [1],
-"max_targets": 64, "concurrency": 4}`.
+"max_targets": 64, "concurrency": 2}`.
 
 ## Pool (`GET /api/custom/flvx/v1/reality-pool`)
 
