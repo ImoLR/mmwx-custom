@@ -20,7 +20,8 @@ import (
 // reality-pick-v1 (FLVX plan 227) on the Custom side:
 //
 //   - reality_pin: GET /shares advertises it for Helpers that pin the
-//     fastest Reality dest IP; GET /shares/{id}/status carries reality_pins.
+//     fastest Reality dest IP (versions [1, 2] once it takes
+//     reality_pin_margin_ms); GET /shares/{id}/status carries reality_pins.
 //   - reality_probe: POST /shares/{id}/reality-probe queues a probe of FLVX's
 //     candidate targets on the share's server; GET
 //     /shares/{id}/reality-probe/{probe_id} polls it. Custom keeps the job in
@@ -44,6 +45,9 @@ const (
 func flvxRealityPinCapability(helper flvxHelper) map[string]any {
 	if !helper.Ready || !helper.RealityPin {
 		return nil
+	}
+	if helper.RealityPinMargin {
+		return map[string]any{"versions": []int{flvx.RealityPinVersion, flvx.RealityPinMarginVersion}}
 	}
 	return map[string]any{"versions": []int{flvx.RealityPinVersion}}
 }

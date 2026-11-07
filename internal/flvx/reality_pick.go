@@ -23,9 +23,21 @@ import (
 //     "host:443" targets from the server itself (3x-ui REALITY target scan
 //     criteria). Custom relays the request with the Helper's next upload
 //     answer and the result with the upload after it finished.
+//   - reality_pin v2 (FLVX plan 234): Desired.reality_pin_margin_ms sets how
+//     much faster (ms) the best IP must be before a pin moves (default
+//     DefaultRealityPinMarginMS), and the pins report move_reason.
 const (
 	RealityPinVersion    = 1
 	RealityPinCapability = "flvx.reality_pin.v1"
+
+	RealityPinMarginVersion    = 2
+	RealityPinMarginCapability = "flvx.reality_pin.v2"
+	DefaultRealityPinMarginMS  = 20
+	MaxRealityPinMarginMS      = 200
+
+	// RealityPinStatus.MoveReason.
+	RealityPinMoveFaster   = "faster"
+	RealityPinMoveFailover = "failover"
 
 	RealityProbeVersion    = 1
 	RealityProbeCapability = "flvx.reality_probe.v1"
@@ -56,6 +68,9 @@ type RealityPinStatus struct {
 	// Fallback: no candidate answered, the pin is the first DNS answer as
 	// before the contract.
 	Fallback bool `json:"fallback,omitempty"`
+	// MoveReason (v2): "faster" / "failover" when the last check moved a
+	// node of this entry to PinnedIP from another IP.
+	MoveReason string `json:"move_reason,omitempty"`
 }
 
 func validMS(v float64) bool { return v == -1 || v >= 0 && v <= 60000 && !math.IsNaN(v) }
@@ -86,6 +101,9 @@ func SanitizeRealityPins(in []RealityPinStatus) []RealityPinStatus {
 			}
 		}
 		p.Nodes = nodes
+		if p.MoveReason != RealityPinMoveFaster && p.MoveReason != RealityPinMoveFailover {
+			p.MoveReason = ""
+		}
 		out = append(out, p)
 	}
 	return out

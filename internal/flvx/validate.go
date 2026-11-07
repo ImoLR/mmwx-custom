@@ -68,6 +68,9 @@ func ValidateDesiredWith(d Desired, c Config, official []int, o DesiredOptions) 
 	if d.Nodes == nil || len(d.Nodes) > MaxNodes {
 		add("", "nodes", "nodes must be an array of at most 1000 nodes")
 	}
+	if m := d.RealityPinMarginMS; m != nil && (*m < 0 || *m > MaxRealityPinMarginMS) {
+		add("", "reality_pin_margin_ms", "reality_pin_margin_ms must be 0–200")
+	}
 	ids, ports, reserved := map[string]bool{}, map[int]bool{}, map[int]bool{}
 	for _, p := range official {
 		reserved[p] = true

@@ -1,6 +1,7 @@
 package flvx
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -80,5 +81,41 @@ func TestSanitizeRealityPinsAndProbeReport(t *testing.T) {
 		if SanitizeProbeReport(bad) != nil {
 			t.Errorf("kept %+v", bad)
 		}
+	}
+}
+
+// reality_pin v2 (FLVX plan 234): reality_pin_margin_ms is 0–200, absent
+// keeps the payload byte-identical, move_reason only "faster" / "failover".
+func TestRealityPinMarginDesired(t *testing.T) {
+	c := Config{PortMin: 30000, PortMax: 30999}
+	d := Desired{Revision: 1, Nodes: []Node{}}
+	if raw, _ := json.Marshal(d); string(raw) != `{"revision":1,"nodes":[]}` {
+		t.Fatalf("absent margin serialised: %s", raw)
+	}
+	for _, v := range []int{0, 20, 35, 200} {
+		v := v
+		d.RealityPinMarginMS = &v
+		if errs := ValidateDesiredWith(d, c, nil, DesiredOptions{}); len(errs) != 0 {
+			t.Errorf("margin %d rejected: %v", v, errs)
+		}
+	}
+	for _, v := range []int{-1, 201, 100000} {
+		v := v
+		d.RealityPinMarginMS = &v
+		if errs := ValidateDesiredWith(d, c, nil, DesiredOptions{}); len(errs) != 1 || errs[0].Field != "reality_pin_margin_ms" {
+			t.Errorf("margin %d: %v", v, errs)
+		}
+	}
+	var in Desired
+	if err := json.Unmarshal([]byte(`{"revision":1,"nodes":[],"reality_pin_margin_ms":0}`), &in); err != nil || in.RealityPinMarginMS == nil || *in.RealityPinMarginMS != 0 {
+		t.Fatalf("0 decoded as %v %v", in.RealityPinMarginMS, err)
+	}
+	pins := SanitizeRealityPins([]RealityPinStatus{
+		{Host: "a.example:443", PinnedIP: "203.0.113.1", PinnedMS: 1, BestMS: 1, MoveReason: RealityPinMoveFaster},
+		{Host: "b.example:443", PinnedIP: "203.0.113.2", PinnedMS: 1, BestMS: 1, MoveReason: RealityPinMoveFailover},
+		{Host: "c.example:443", PinnedIP: "203.0.113.3", PinnedMS: 1, BestMS: 1, MoveReason: "<script>"},
+	})
+	if len(pins) != 3 || pins[0].MoveReason != "faster" || pins[1].MoveReason != "failover" || pins[2].MoveReason != "" {
+		t.Fatalf("move reasons %+v", pins)
 	}
 }

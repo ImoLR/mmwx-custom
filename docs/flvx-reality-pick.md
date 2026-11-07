@@ -28,8 +28,15 @@ connection.
   connects share one Helper-wide cap of **2 open sockets**, and every connected
   socket is closed with `SO_LINGER 0` (an RST), so neither end keeps a
   TIME_WAIT entry. The 1 s connect timeout starts once a slot is free.
-- **Hysteresis**: a node moves only if its IP failed or is ≥ 20 ms slower than
-  the best.
+- **Margin** (`reality_pin` v2, FLVX plan 234, Helper v0.7.24): a node moves
+  only if its IP failed or the best IP is faster by at least the margin:
+  `Desired.reality_pin_margin_ms` (FLVX 「Reality 目标 IP：新 IP 快 ≥ X ms 才换」,
+  0–200; 0 = any gain, a tie keeps the pin), else 20 ms. A failed IP (or a
+  fallback pin) moves whatever the margin. The Helper decides on the last
+  full check's numbers every pass, so a new margin applies from the next pass
+  without any extra connect. Custom forwards the field only to Helpers with
+  `flvx.reality_pin.v2`; older Helpers get the same payload as before and
+  keep 20 ms.
 - **No dropped connections**: a guarded node (Reality 防盗 on) moves with its
   whole guard group — only the loopback guard inbound `flvxg-<port>` is
   re-added with the new target on the same port; the node inbound and its
@@ -43,11 +50,14 @@ connection.
   re-resolved. Pins keep the node digest current, so a downgraded Helper reuses
   them. Pins of deleted nodes and unused dests are dropped.
 - **Status**: `GET /api/custom/flvx/v1/shares/{id}/status` → `reality_pins`:
-  `[{host, pinned_ip, pinned_ms, best_ip, best_ms, checked_at, nodes, fallback?}]`
+  `[{host, pinned_ip, pinned_ms, best_ip, best_ms, checked_at, nodes, fallback?, move_reason?}]`
   per (dest, pinned IP) of the active nodes; ms are TCP connect times of the
-  last full check, −1 = no answer; `checked_at` unix ms.
+  last full check, −1 = no answer; `checked_at` unix ms. `move_reason`
+  (v2): `faster` / `failover` while the dest's last full check moved a node of
+  the entry here from another IP.
 - Capability in `GET /shares`: `"reality_pin": {"versions": [1]}` (Helper
-  capability `flvx.reality_pin.v1`).
+  capability `flvx.reality_pin.v1`), `{"versions": [1, 2]}` once the Helper
+  also has `flvx.reality_pin.v2`.
 
 ## Probe (`reality_probe`, Helper v0.7.22)
 

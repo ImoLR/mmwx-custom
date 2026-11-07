@@ -32,7 +32,10 @@ import (
 //     failed liveness check; a liveness check (one connect per pinned IP)
 //     every 10 min in between. The connects are quiet (flvxQuietDial): at
 //     most 2 open at once across the Helper, closed with an RST.
-//   - A node moves only if its IP failed or is >= 20 ms slower than the best.
+//   - A node moves only if its IP failed or is slower than the best by at
+//     least the margin: FLVX's Desired.reality_pin_margin_ms (0–200, 0 = any
+//     gain, a tie keeps the pin; reality_pin v2), else 20 ms. A failed IP
+//     moves whatever the margin. The moved pin reports move_reason.
 //     A guarded node moves with its whole guard group: only the loopback
 //     guard inbound is re-added with the new target, the node inbound and its
 //     live connections stay. An unguarded node moves while it has no
@@ -41,15 +44,14 @@ import (
 //   - No candidate answers: a new node gets the first sorted DNS answer as
 //     before; a pinned node keeps its pin.
 const (
-	flvxPinRecheck    = 6 * time.Hour
-	flvxPinLiveness   = 10 * time.Minute
-	flvxPinFresh      = 10 * time.Minute
-	flvxPinRetry      = time.Minute
-	flvxPinHysteresis = 20.0 // ms
-	flvxPinDial       = time.Second
-	flvxPinDNS        = 2 * time.Second
-	flvxPinRemember   = 7 * 24 * time.Hour
-	flvxPinParallel   = 2
+	flvxPinRecheck  = 6 * time.Hour
+	flvxPinLiveness = 10 * time.Minute
+	flvxPinFresh    = 10 * time.Minute
+	flvxPinRetry    = time.Minute
+	flvxPinDial     = time.Second
+	flvxPinDNS      = 2 * time.Second
+	flvxPinRemember = 7 * 24 * time.Hour
+	flvxPinParallel = 2
 )
 
 // flvxRealityPin is a node's pin. Hash is the node JSON digest older Helpers
@@ -59,6 +61,11 @@ type flvxRealityPin struct {
 	Dest     string `json:"dest"`
 	Host     string `json:"host,omitempty"`
 	Fallback bool   `json:"fallback,omitempty"`
+	// Why the pin last moved from another IP ("faster" / "failover") and
+	// the dest check it moved after (CheckedAt); reported while that check
+	// is the dest's last one.
+	MoveReason string `json:"move_reason,omitempty"`
+	MovedAt    int64  `json:"moved_at,omitempty"`
 }
 
 // flvxRealityDest is the check state of one dest ("host:port").
@@ -464,14 +471,30 @@ func (m *flvxManager) decidePin(n flvx.Node) {
 	current := flvxPinIP(pin)
 	if best != "" && best != current {
 		ms, measured := d.MS[current]
+		margin := m.pinMargin()
 		failed := measured && ms < 0
-		slower := measured && ms-bestMS >= flvxPinHysteresis
+		slower := measured && ms-bestMS > 0 && ms-bestMS >= margin
 		if failed || (slower || pin.Fallback) && m.pinMoveFree(n) {
-			m.logs.print("[mmwxc-helper] FLVX Reality dest %s: node %s %s (%s) -> %s (%.1f ms)", dest, n.ID, current, flvxPinMSText(ms, measured), best, bestMS)
+			// Leaving a fallback pin (no candidate answered before) is a
+			// recovery, not a margin decision.
+			reason := flvx.RealityPinMoveFailover
+			if !failed && slower {
+				reason = flvx.RealityPinMoveFaster
+			}
+			m.logs.print("[mmwxc-helper] FLVX Reality dest %s: node %s %s (%s) -> %s (%.1f ms, margin %.0f ms, %s)", dest, n.ID, current, flvxPinMSText(ms, measured), best, bestMS, margin, reason)
 			pin.Dest, pin.Fallback = net.JoinHostPort(best, port), false
+			pin.MoveReason, pin.MovedAt = reason, d.CheckedAt
 		}
 	}
 	m.state.RealityPins[tag] = pin
+}
+
+// pinMargin is how much faster (ms) the best IP must be before a pin moves.
+func (m *flvxManager) pinMargin() float64 {
+	if v := m.state.Payload.Desired.RealityPinMarginMS; v != nil && *v >= 0 && *v <= flvx.MaxRealityPinMarginMS {
+		return float64(*v)
+	}
+	return flvx.DefaultRealityPinMarginMS
 }
 
 func flvxPinMSText(ms float64, measured bool) string {
@@ -558,6 +581,9 @@ func (m *flvxManager) realityPinStatus() []flvx.RealityPinStatus {
 				s.BestIP, s.BestMS = best, ms
 			}
 			groups[k] = s
+		}
+		if pin.MoveReason != "" && pin.MovedAt == s.CheckedAt && s.MoveReason != flvx.RealityPinMoveFailover {
+			s.MoveReason = pin.MoveReason
 		}
 		s.Nodes = append(s.Nodes, n.ID)
 	}

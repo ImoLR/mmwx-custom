@@ -156,7 +156,7 @@ func TestFLVXRealityPickPostgres(t *testing.T) {
 		{Host: "www.lovelive-anime.jp:443", PinnedIP: "127.0.0.1", PinnedMS: 1, BestMS: 1, Nodes: []string{"x"}},
 		{Host: "bad host", PinnedIP: "203.0.113.1", Nodes: []string{"y"}},
 	}
-	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, true, true, r); err != nil {
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, true, true, false, r); err != nil {
 		t.Fatal(err)
 	}
 	_, status := call("GET", "/api/custom/flvx/v1/shares/7/status", nil)
@@ -236,5 +236,131 @@ func TestFLVXOfficialPoolParse(t *testing.T) {
 	got, _ := json.Marshal(list.pool("2"))
 	if string(got) != `[{"domain":"addons.mozilla.org","official_latency_ms":5,"official_ok":true,"official_probe_server_id":2,"official_reality_usable":true},{"domain":"www.apple.com","official_ok":false,"official_probe_server_id":2}]` {
 		t.Fatalf("pool %s", got)
+	}
+}
+
+// reality_pin v2 (FLVX plan 234) on Custom: versions [1, 2] only with a
+// Helper advertising flvx.reality_pin.v2; reality_pin_margin_ms validated
+// (0–200), stored and forwarded only to such a Helper, so an older Helper
+// verifies the same payload as before; move_reason relayed in the status.
+func TestFLVXRealityPinMarginPostgres(t *testing.T) {
+	a := flvxTestApp(t)
+	ctx := context.Background()
+	db := a.flvxDB()
+	auditDeleteExec(t, db, `UPDATE mmwxc_flvx_integration SET token_hash=$1`, flvxTokenHash("flvx_fixture"))
+	flvxTestRealityHelper(a, 7, true)
+	if err := a.saveFLVXShare(ctx, 7, flvx.Config{PortMin: 30000, PortMax: 30999, ResetDay: 1}, "active", nil); err != nil {
+		t.Fatal(err)
+	}
+	pinCapability := func() string {
+		t.Helper()
+		w := flvxTestRequest(a, "GET", "/api/custom/flvx/v1/shares", "flvx_fixture", nil)
+		var body struct {
+			Shares []map[string]any `json:"shares"`
+		}
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil || len(body.Shares) != 1 {
+			t.Fatalf("list: %d %s", w.Code, w.Body.String())
+		}
+		raw, _ := json.Marshal(body.Shares[0]["reality_pin"])
+		return string(raw)
+	}
+	put := func(body any) (int, string) {
+		w := flvxTestRequest(a, "PUT", "/api/custom/flvx/v1/shares/7/desired", "flvx_fixture", body)
+		return w.Code, w.Body.String()
+	}
+	helperPayload := func(v2 bool) ([]byte, *flvx.Envelope) {
+		t.Helper()
+		e, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, true, true, v2, nil)
+		if err != nil || e == nil || !e.Verify("helper", "7", time.Now()) {
+			t.Fatalf("payload: %v %+v", err, e)
+		}
+		raw, _ := json.Marshal(e.Payload.Desired)
+		return raw, e
+	}
+
+	// v0.7.23 (reality_pin v1 only): versions [1], the margin stripped.
+	if got := pinCapability(); got != `{"versions":[1]}` {
+		t.Fatalf("v1 capability %s", got)
+	}
+	node := flvxTestDesired().Nodes[0]
+	if code, body := put(flvx.Desired{Revision: 1, Nodes: []flvx.Node{node}}); code != 200 {
+		t.Fatalf("desired: %d %s", code, body)
+	}
+	before, _ := helperPayload(false)
+	if code, body := put(map[string]any{"revision": 2, "nodes": []flvx.Node{node}, "reality_pin_margin_ms": 35}); code != 200 {
+		t.Fatalf("desired with margin: %d %s", code, body)
+	}
+	old, _ := helperPayload(false)
+	if want := strings.Replace(string(before), `"revision":1`, `"revision":2`, 1); string(old) != want {
+		t.Fatalf("old Helper payload changed:\n%s\n%s", old, want)
+	}
+
+	// With flvx.reality_pin.v2: versions [1, 2] and the margin forwarded.
+	key := flvxID(7)
+	a.helperState.mu.Lock()
+	status := a.helperState.data.AgentStatuses[key]
+	status.Helper.Version = "v0.7.24"
+	status.Capabilities = append(status.Capabilities, flvx.RealityPinMarginCapability)
+	a.helperState.data.AgentStatuses[key] = status
+	a.helperState.mu.Unlock()
+	if got := pinCapability(); got != `{"versions":[1,2]}` {
+		t.Fatalf("v2 capability %s", got)
+	}
+	if raw, e := helperPayload(true); e.Payload.Desired.RealityPinMarginMS == nil || *e.Payload.Desired.RealityPinMarginMS != 35 || !strings.Contains(string(raw), `"reality_pin_margin_ms":35`) {
+		t.Fatalf("v2 payload %s", raw)
+	}
+
+	// 0 and 200 accepted, outside 0–200 rejected (422 naming the field).
+	for i, v := range []int{0, 200} {
+		if code, body := put(map[string]any{"revision": 3 + i, "nodes": []flvx.Node{node}, "reality_pin_margin_ms": v}); code != 200 {
+			t.Fatalf("margin %d: %d %s", v, code, body)
+		}
+	}
+	for _, v := range []any{-1, 201, 1.5, "20"} {
+		if code, body := put(map[string]any{"revision": 9, "nodes": []flvx.Node{node}, "reality_pin_margin_ms": v}); code != 422 && code != 400 {
+			t.Fatalf("margin %v accepted: %d %s", v, code, body)
+		} else if !strings.Contains(body, "reality_pin_margin_ms") && !strings.Contains(body, `"field":"desired"`) {
+			t.Fatalf("margin %v: %s", v, body)
+		}
+	}
+
+	// move_reason relayed; anything else dropped.
+	r := flvxProtocolsReport(1, nil, nil, 0)
+	r.RealityPins = []flvx.RealityPinStatus{
+		{Host: "a.example:443", PinnedIP: "203.0.113.1", PinnedMS: 4, BestIP: "203.0.113.1", BestMS: 4, CheckedAt: 1, Nodes: []string{"11"}, MoveReason: flvx.RealityPinMoveFaster},
+		{Host: "b.example:443", PinnedIP: "203.0.113.2", PinnedMS: 5, BestIP: "203.0.113.2", BestMS: 5, CheckedAt: 1, Nodes: []string{"12"}, MoveReason: "sideways"},
+	}
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, true, true, true, r); err != nil {
+		t.Fatal(err)
+	}
+	w := flvxTestRequest(a, "GET", "/api/custom/flvx/v1/shares/7/status", "flvx_fixture", nil)
+	var st map[string]any
+	json.Unmarshal(w.Body.Bytes(), &st)
+	pins, _ := json.Marshal(st["reality_pins"])
+	if !strings.Contains(string(pins), `"move_reason":"faster"`) || strings.Contains(string(pins), "sideways") || strings.Count(string(pins), "move_reason") != 1 {
+		t.Fatalf("status reality_pins %s", pins)
+	}
+}
+
+// An older Helper's desired is byte-identical with the margin stripped.
+func TestFLVXHelperPinMarginStrip(t *testing.T) {
+	d := flvxTestDesired()
+	want, _ := json.Marshal(d)
+	v := 0
+	d.RealityPinMarginMS = &v
+	if got, _ := json.Marshal(flvxHelperPinMargin(d, false)); string(got) != string(want) {
+		t.Fatalf("stripped %s, want %s", got, want)
+	}
+	if got := flvxHelperPinMargin(d, true); got.RealityPinMarginMS == nil || *got.RealityPinMarginMS != 0 {
+		t.Fatal("v2 Helper lost margin 0")
+	}
+	for helper, want := range map[flvxHelper]string{
+		{Ready: true, RealityPin: true}:                         `{"versions":[1]}`,
+		{Ready: true, RealityPin: true, RealityPinMargin: true}: `{"versions":[1,2]}`,
+		{Ready: true, RealityPinMargin: true}:                   `null`,
+	} {
+		if got, _ := json.Marshal(flvxRealityPinCapability(helper)); string(got) != want {
+			t.Errorf("%+v: %s, want %s", helper, got, want)
+		}
 	}
 }

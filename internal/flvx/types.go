@@ -157,6 +157,10 @@ type Desired struct {
 	// landing-scan-guard-v1 §9, likewise omitted when absent and stripped by
 	// Custom for Helpers without flvx.scan_guard.v1.
 	ScanGuard *ScanGuard `json:"scan_guard,omitempty"`
+	// reality-pick-v1 §3 v2 (FLVX plan 234): the 「Reality 目标 IP」 switch
+	// margin, 0–200 ms; absent = the Helper's default 20. Custom strips it
+	// for Helpers without flvx.reality_pin.v2.
+	RealityPinMarginMS *int `json:"reality_pin_margin_ms,omitempty"`
 }
 
 type Config struct {
