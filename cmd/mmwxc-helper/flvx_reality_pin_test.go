@@ -213,13 +213,14 @@ func TestFLVXRealityPinPublicOnly(t *testing.T) {
 }
 
 // DNS from 1.1.1.1 flips between near and far edge sets within seconds on
-// Boil Hinet 158. Since v0.7.24 the pin follows the DNS answer as FLVX's
-// agent does: a pin that left the answer moves to the answer's fastest IP
-// (failover), even a far one. Remembered and pinned IPs stay candidates for
-// when the lookup fails.
+// Boil Hinet 158. Since v0.7.24 best is the answer's fastest IP as FLVX's
+// agent picks, but a pin only left the answer once no full check's answer had
+// it for 12 h (option b, user 2026-11-07): the near pin stays through far-only
+// answers and failed lookups, and moves once the near set is gone for 12 h.
 func TestFLVXRealityPinRemembersAnswers(t *testing.T) {
 	m, _, p := pinFixture(t, helperRealityNode("r", 30010, "www.lovelive-anime.jp:443", "www.lovelive-anime.jp"))
-	p.answer = []string{"65.9.180.116", "65.9.180.32"}
+	near, far := []string{"65.9.180.116", "65.9.180.32"}, []string{"54.230.70.30", "54.230.70.97"}
+	p.answer = near
 	p.ms = map[string]float64{"65.9.180.116": 3.8, "65.9.180.32": 5.1, "54.230.70.30": 54.6, "54.230.70.97": 52.8}
 	reconcileOK(t, m)
 	// The lookup fails: the near pin stays, remembered IPs are still measured.
@@ -230,19 +231,33 @@ func TestFLVXRealityPinRemembersAnswers(t *testing.T) {
 	if appliedDest(t, m, "flvxl-r") != "65.9.180.116:443" || len(d.MS) != 2 {
 		t.Fatalf("lookup failure moved the pin: %s %v", appliedDest(t, m, "flvxl-r"), d.MS)
 	}
-	// Only the far set answers: the pin follows it.
-	p.answer, p.dnsErr = []string{"54.230.70.30", "54.230.70.97"}, nil
-	p.advance(flvxPinRecheck)
-	reconcileOK(t, m)
-	d = m.state.RealityDests["www.lovelive-anime.jp:443"]
-	if appliedDest(t, m, "flvxl-r") != "54.230.70.97:443" || len(d.MS) != 4 || m.state.Report.RealityPins[0].MoveReason != flvx.RealityPinMoveFailover {
-		t.Fatalf("pin did not follow the answer: %s %v %+v", appliedDest(t, m, "flvxl-r"), d.MS, m.state.Report.RealityPins)
+	// Near, far, near, far, ... one per 6 h check: the near pin stays (the
+	// far best is slower), with no move reason.
+	p.dnsErr = nil
+	for i, answer := range [][]string{near, far, near, far} {
+		p.answer = answer
+		p.advance(flvxPinRecheck)
+		reconcileOK(t, m)
+		pins := m.state.Report.RealityPins
+		if appliedDest(t, m, "flvxl-r") != "65.9.180.116:443" || pins[0].MoveReason != "" {
+			t.Fatalf("check %d (%v) moved the near pin: %s %+v", i, answer, appliedDest(t, m, "flvxl-r"), pins)
+		}
 	}
-	// A new node on the same dest gets the answer's best IP too.
+	if d = m.state.RealityDests["www.lovelive-anime.jp:443"]; len(d.MS) != 4 || m.state.Report.RealityPins[0].BestIP != "54.230.70.97" {
+		t.Fatalf("far answer not measured: %v %+v", d.MS, m.state.Report.RealityPins)
+	}
+	// A new node on the same dest gets the answer's best IP.
 	m.state.Payload.Desired.Nodes = append(m.state.Payload.Desired.Nodes, helperRealityNode("s", 30011, "www.lovelive-anime.jp:443", "www.lovelive-anime.jp"))
 	reconcileOK(t, m)
 	if appliedDest(t, m, "flvxl-s") != "54.230.70.97:443" {
 		t.Fatalf("new node pinned %s", appliedDest(t, m, "flvxl-s"))
+	}
+	// A second far-only check: no answer had the near set for 12 h, the pin
+	// follows the answer (failover).
+	p.advance(flvxPinRecheck)
+	reconcileOK(t, m)
+	if appliedDest(t, m, "flvxl-r") != "54.230.70.97:443" || m.state.Report.RealityPins[0].MoveReason != flvx.RealityPinMoveFailover {
+		t.Fatalf("pin did not follow the answer after 12 h: %s %+v", appliedDest(t, m, "flvxl-r"), m.state.Report.RealityPins)
 	}
 	// Remembered IPs age out after a week.
 	for i := 0; i < 30; i++ {

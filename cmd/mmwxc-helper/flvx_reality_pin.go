@@ -34,8 +34,9 @@ import (
 //     most 2 open at once across the Helper, closed with an RST.
 //   - Best = the fastest reachable IP of the check's DNS answer (as FLVX's
 //     agent; any candidate when the lookup failed or none of it answers). A
-//     node moves only if its IP failed, left the DNS answer or is slower than
-//     the best by at least the margin: FLVX's
+//     node moves only if its IP failed, left the DNS answer (in no full
+//     check's answer for >= 12 h) or is slower than the best by at least the
+//     margin: FLVX's
 //     Desired.reality_pin_margin_ms (0–200, 0 = any gain, a tie keeps the
 //     pin; reality_pin v2), else 20 ms. A failed IP or one that left the
 //     answer moves whatever the margin ("failover"). The moved pin reports
@@ -55,6 +56,11 @@ const (
 	flvxPinDial     = time.Second
 	flvxPinDNS      = 2 * time.Second
 	flvxPinRemember = 7 * 24 * time.Hour
+	// A pin "left the DNS answer" only once no full check's answer had it for
+	// this long (two 6 h checks; user 2026-11-07, option b): 1.1.1.1 flips
+	// between near and far edge sets within seconds on Boil Hinet 158, so one
+	// far-only answer must not move a near pin. FLVX's agent moves at once.
+	flvxPinGone     = 2 * flvxPinRecheck
 	flvxPinParallel = 2
 )
 
@@ -506,10 +512,12 @@ func (m *flvxManager) decidePin(n flvx.Node) {
 		margin := m.pinMargin()
 		failed := measured && ms < 0
 		// FLVX's agent: a pin that left the DNS answer moves to the answer's
-		// best whatever the margin. Unknown answer (the last lookup failed)
-		// or none of it answers: the margin rule over all candidates.
+		// best whatever the margin; here only once no answer had it for
+		// flvxPinGone (Seen = its last answer). Unknown answer (the last
+		// lookup failed) or none of it answers: the margin rule over all
+		// candidates.
 		in := d.answer()
-		gone := in[best] && !in[current]
+		gone := in[best] && !in[current] && d.CheckedAt-d.Seen[current] >= flvxPinGone.Milliseconds()
 		slower := measured && ms-bestMS > 0 && ms-bestMS >= margin
 		if failed || (slower || gone || pin.Fallback) && m.pinMoveFree(n) {
 			// Leaving a fallback pin (no candidate answered before) or an IP

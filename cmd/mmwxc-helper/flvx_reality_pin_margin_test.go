@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/ImoLR/mmwx-custom/internal/flvx"
 )
@@ -85,8 +86,9 @@ func TestFLVXRealityPinMarginFallbackAndCapability(t *testing.T) {
 
 // A pin that left the DNS answer but still answers moves to the answer's
 // fastest IP whatever the margin, as FLVX's agent does (choosePin keeps a pin
-// only while it is in the answer); move_reason is "failover". A pin still in
-// the answer within the margin stays.
+// only while it is in the answer); move_reason is "failover". The Helper
+// waits until no full check's answer had it for 12 h (the first check 6 h
+// later keeps it). A pin still in the answer within the margin stays.
 func TestFLVXRealityPinLeftDNSAnswer(t *testing.T) {
 	margin := func(v int) *int { return &v }
 	for _, c := range []struct {
@@ -111,6 +113,11 @@ func TestFLVXRealityPinLeftDNSAnswer(t *testing.T) {
 			// .3 is the slowest.
 			p.answer = c.answer
 			p.ms = map[string]float64{"203.0.113.1": 10, "203.0.113.2": 15, "203.0.113.3": 40}
+			p.advance(flvxPinRecheck)
+			reconcileOK(t, m)
+			if got := appliedDest(t, m, "flvxl-r"); got != "203.0.113.2:443" {
+				t.Fatalf("moved 6 h after the last answer: %s", got)
+			}
 			p.advance(flvxPinRecheck)
 			reconcileOK(t, m)
 			want := "203.0.113.2:443"
@@ -179,5 +186,52 @@ func TestFLVXRealityPinAnswerAllDown(t *testing.T) {
 	reconcileOK(t, m)
 	if pins := m.state.Report.RealityPins; appliedDest(t, m, "flvxl-r") != "203.0.113.2:443" || pins[0].MoveReason != flvx.RealityPinMoveFailover {
 		t.Fatalf("failed pin kept: %s %+v", appliedDest(t, m, "flvxl-r"), pins)
+	}
+}
+
+// The 12 h counts from the pin's last answer, not in checks: extra full checks
+// (here forced as after a failed liveness check) up to 11 h 59 min keep it,
+// the one at 12 h moves it. An unreachable pin moves at once.
+func TestFLVXRealityPinLeftDNSAnswerAfter12h(t *testing.T) {
+	const dest = "d.example:443"
+	m, _, p := pinFixture(t, helperRealityNode("r", 30010, dest, "d.example"))
+	p.answer = []string{"203.0.113.1", "203.0.113.2"}
+	p.ms = map[string]float64{"203.0.113.1": 500, "203.0.113.2": 10}
+	reconcileOK(t, m)
+	seen := p.now
+	p.answer = []string{"203.0.113.1", "203.0.113.3"}
+	p.ms = map[string]float64{"203.0.113.1": 10, "203.0.113.2": 15, "203.0.113.3": 40}
+	check := func(at time.Duration) []flvx.RealityPinStatus {
+		t.Helper()
+		p.advance(seen.Add(at).Sub(p.now))
+		d := m.state.RealityDests[dest]
+		d.Due = true
+		m.state.RealityDests[dest] = d
+		reconcileOK(t, m)
+		if got := m.state.RealityDests[dest].CheckedAt; got != p.now.UnixMilli() {
+			t.Fatalf("no full check at %s", at)
+		}
+		return m.state.Report.RealityPins
+	}
+	for _, at := range []time.Duration{flvxPinRecheck, 9 * time.Hour, flvxPinGone - time.Minute} {
+		if pins := check(at); appliedDest(t, m, "flvxl-r") != "203.0.113.2:443" || pins[0].MoveReason != "" {
+			t.Fatalf("moved %s after the last answer: %s %+v", at, appliedDest(t, m, "flvxl-r"), pins)
+		}
+	}
+	if pins := check(flvxPinGone); appliedDest(t, m, "flvxl-r") != "203.0.113.1:443" || pins[0].MoveReason != flvx.RealityPinMoveFailover {
+		t.Fatalf("kept 12 h after the last answer: %s %+v", appliedDest(t, m, "flvxl-r"), pins)
+	}
+
+	// Under 12 h but unreachable: liveness fails, the full check moves it.
+	m, _, p = pinFixture(t, helperRealityNode("r", 30010, dest, "d.example"))
+	p.answer = []string{"203.0.113.1", "203.0.113.2"}
+	p.ms = map[string]float64{"203.0.113.1": 500, "203.0.113.2": 10}
+	reconcileOK(t, m)
+	p.answer = []string{"203.0.113.1", "203.0.113.3"}
+	p.ms = map[string]float64{"203.0.113.1": 10, "203.0.113.2": -1, "203.0.113.3": 40}
+	p.advance(flvxPinLiveness)
+	reconcileOK(t, m)
+	if pins := m.state.Report.RealityPins; appliedDest(t, m, "flvxl-r") != "203.0.113.1:443" || pins[0].MoveReason != flvx.RealityPinMoveFailover {
+		t.Fatalf("unreachable pin kept: %s %+v", appliedDest(t, m, "flvxl-r"), pins)
 	}
 }

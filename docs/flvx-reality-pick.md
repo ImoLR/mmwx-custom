@@ -22,8 +22,8 @@ connection.
   fastest reachable IP of the full check's own DNS answer; remembered and
   pinned IPs outside it are measured but only picked when that lookup failed
   or none of the answer answers. 1.1.1.1 flips between near and far edge sets
-  within seconds on Hinet, so a check that gets only the far set moves the pin
-  there (up to v0.7.23 the remembered near set kept it).
+  within seconds on Hinet; a check that gets only the far set does not move a
+  near pin (see "left the DNS answer" below), but a new node gets the far best.
 - **Full check**: one DNS lookup and one TCP connect per candidate
   (1 s timeout) on Helper start, on an FLVX Core restart, every 6 h and after a
   failed liveness check. **Liveness**: one connect per pinned IP every 10 min.
@@ -42,7 +42,13 @@ connection.
   the same) or a fallback pin moves whatever the margin, `move_reason`
   `failover`. "Left the answer" needs the last full check's own answer
   (`dns_at` = `checked_at`): not after a failed lookup or on state from
-  v0.7.23. The Helper decides on the last
+  v0.7.23. **12 h wait** (option b, user 2026-11-07): a pinned IP counts as
+  having left the DNS answer only once it has been in no full check's answer
+  for ≥ 12 h (its stored last-seen time, measured at the last full check; two
+  6 h checks). Under 12 h the margin rule applies, so Hinet's one-off far-only
+  answers keep the near pin; an unreachable pin still moves at once. FLVX's own
+  agent moves as soon as the pin misses one answer — a known, user-approved
+  difference. The Helper decides on the last
   full check's numbers every pass, so a new margin applies from the next pass
   without any extra connect. Custom forwards the field only to Helpers with
   `flvx.reality_pin.v2`; older Helpers get the same payload as before and
