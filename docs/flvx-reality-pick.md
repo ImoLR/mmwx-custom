@@ -16,9 +16,14 @@ connection.
 
 - **Candidates** per dest (`host:port`): the IPs nodes are pinned to, the
   current DNS answer and IPs DNS returned in the last 7 days, at most 8, all
-  public. 1.1.1.1 flips between edge sets within seconds on Hinet, so
-  remembered IPs keep the near set in play. A DNS answer with any private
-  address is ignored (DNS rebinding protection).
+  public. A DNS answer with any private address is ignored (DNS rebinding
+  protection).
+- **Best** (Helper v0.7.24, user 2026-11-07, as FLVX's agent `choosePin`): the
+  fastest reachable IP of the full check's own DNS answer; remembered and
+  pinned IPs outside it are measured but only picked when that lookup failed
+  or none of the answer answers. 1.1.1.1 flips between near and far edge sets
+  within seconds on Hinet, so a check that gets only the far set moves the pin
+  there (up to v0.7.23 the remembered near set kept it).
 - **Full check**: one DNS lookup and one TCP connect per candidate
   (1 s timeout) on Helper start, on an FLVX Core restart, every 6 h and after a
   failed liveness check. **Liveness**: one connect per pinned IP every 10 min.
@@ -29,10 +34,15 @@ connection.
   socket is closed with `SO_LINGER 0` (an RST), so neither end keeps a
   TIME_WAIT entry. The 1 s connect timeout starts once a slot is free.
 - **Margin** (`reality_pin` v2, FLVX plan 234, Helper v0.7.24): a node moves
-  only if its IP failed or the best IP is faster by at least the margin:
+  only if its IP failed, left the DNS answer or the best IP is faster by at
+  least the margin:
   `Desired.reality_pin_margin_ms` (FLVX 「Reality 目标 IP：新 IP 快 ≥ X ms 才换」,
-  0–200; 0 = any gain, a tie keeps the pin), else 20 ms. A failed IP (or a
-  fallback pin) moves whatever the margin. The Helper decides on the last
+  0–200; 0 = any gain, a tie keeps the pin), else 20 ms. A failed IP, an IP
+  that left the DNS answer (still reachable or not; v0.7.24, FLVX's agent does
+  the same) or a fallback pin moves whatever the margin, `move_reason`
+  `failover`. "Left the answer" needs the last full check's own answer
+  (`dns_at` = `checked_at`): not after a failed lookup or on state from
+  v0.7.23. The Helper decides on the last
   full check's numbers every pass, so a new margin applies from the next pass
   without any extra connect. Custom forwards the field only to Helpers with
   `flvx.reality_pin.v2`; older Helpers get the same payload as before and
@@ -43,7 +53,7 @@ connection.
   connections stay (measured on the real Core: one pass, `rmi`/`adi` of the
   guard only, 75 ms). An unguarded node moves while it has no connections or
   when its inbound is re-added anyway (Core restart, node change), unless its
-  IP failed.
+  IP failed (an IP that only left the DNS answer waits for idle too).
 - **Fallback**: no candidate answers → a new node gets the first sorted DNS
   answer (as before); a pinned node keeps its pin.
 - **Upgrade / downgrade**: a v0.7.21 pin (node digest, no host) is adopted, not

@@ -213,24 +213,35 @@ func TestFLVXRealityPinPublicOnly(t *testing.T) {
 }
 
 // DNS from 1.1.1.1 flips between near and far edge sets within seconds on
-// Boil Hinet 158; remembered and pinned IPs stay candidates, so the pin does
-// not follow a far answer.
+// Boil Hinet 158. Since v0.7.24 the pin follows the DNS answer as FLVX's
+// agent does: a pin that left the answer moves to the answer's fastest IP
+// (failover), even a far one. Remembered and pinned IPs stay candidates for
+// when the lookup fails.
 func TestFLVXRealityPinRemembersAnswers(t *testing.T) {
 	m, _, p := pinFixture(t, helperRealityNode("r", 30010, "www.lovelive-anime.jp:443", "www.lovelive-anime.jp"))
 	p.answer = []string{"65.9.180.116", "65.9.180.32"}
 	p.ms = map[string]float64{"65.9.180.116": 3.8, "65.9.180.32": 5.1, "54.230.70.30": 54.6, "54.230.70.97": 52.8}
 	reconcileOK(t, m)
-	p.answer = []string{"54.230.70.30", "54.230.70.97"}
+	// The lookup fails: the near pin stays, remembered IPs are still measured.
+	p.answer, p.dnsErr = nil, errors.New("timeout")
 	p.advance(flvxPinRecheck)
 	reconcileOK(t, m)
 	d := m.state.RealityDests["www.lovelive-anime.jp:443"]
-	if appliedDest(t, m, "flvxl-r") != "65.9.180.116:443" || len(d.MS) != 4 {
-		t.Fatalf("followed the far answer: %s %v", appliedDest(t, m, "flvxl-r"), d.MS)
+	if appliedDest(t, m, "flvxl-r") != "65.9.180.116:443" || len(d.MS) != 2 {
+		t.Fatalf("lookup failure moved the pin: %s %v", appliedDest(t, m, "flvxl-r"), d.MS)
 	}
-	// A new node on the same dest gets the best known IP too.
+	// Only the far set answers: the pin follows it.
+	p.answer, p.dnsErr = []string{"54.230.70.30", "54.230.70.97"}, nil
+	p.advance(flvxPinRecheck)
+	reconcileOK(t, m)
+	d = m.state.RealityDests["www.lovelive-anime.jp:443"]
+	if appliedDest(t, m, "flvxl-r") != "54.230.70.97:443" || len(d.MS) != 4 || m.state.Report.RealityPins[0].MoveReason != flvx.RealityPinMoveFailover {
+		t.Fatalf("pin did not follow the answer: %s %v %+v", appliedDest(t, m, "flvxl-r"), d.MS, m.state.Report.RealityPins)
+	}
+	// A new node on the same dest gets the answer's best IP too.
 	m.state.Payload.Desired.Nodes = append(m.state.Payload.Desired.Nodes, helperRealityNode("s", 30011, "www.lovelive-anime.jp:443", "www.lovelive-anime.jp"))
 	reconcileOK(t, m)
-	if appliedDest(t, m, "flvxl-s") != "65.9.180.116:443" {
+	if appliedDest(t, m, "flvxl-s") != "54.230.70.97:443" {
 		t.Fatalf("new node pinned %s", appliedDest(t, m, "flvxl-s"))
 	}
 	// Remembered IPs age out after a week.
@@ -279,7 +290,8 @@ func TestFLVXRealityPinCleansDeletedNodes(t *testing.T) {
 }
 
 // A pin from v0.7.21 and older (node digest, no host) is adopted, not
-// re-resolved, and a near one stays (usb2's node on Boil Hinet 158).
+// re-resolved, and a near one in the answer stays (usb2's node on Boil Hinet
+// 158).
 func TestFLVXRealityPinAdoptsLegacyPin(t *testing.T) {
 	n := helperRealityNode("132", 30000, "www.lovelive-anime.jp:443", "www.lovelive-anime.jp")
 	m, f, p := pinFixture(t, n)
@@ -292,7 +304,7 @@ func TestFLVXRealityPinAdoptsLegacyPin(t *testing.T) {
 	m.state.Applied[n.Tag()], f.present[n.Tag()] = string(raw), true
 	m.state.AppliedEpoch = flvxEpoch(coreSnapshotResponse{StartedAt: f.epoch})
 	f.snap.Users = []coreUserSnapshot{{Identity: coreIdentity{InboundTag: n.Tag(), User: n.Tag()}, CurrentTotal: 77}}
-	p.answer = []string{"54.230.70.30", "54.230.70.84", "54.230.70.9", "54.230.70.97"}
+	p.answer = []string{"54.230.70.30", "54.230.70.84", "54.230.70.9", "54.230.70.97", "65.9.180.116"}
 	p.ms = map[string]float64{"65.9.180.116": 3.3, "54.230.70.30": 54.6, "54.230.70.84": 82.4, "54.230.70.9": 78.6, "54.230.70.97": 52.8}
 	reconcileOK(t, m)
 	pin := m.state.RealityPins[n.Tag()]

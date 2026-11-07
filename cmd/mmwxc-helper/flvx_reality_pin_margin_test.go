@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"slices"
 	"testing"
 
@@ -79,5 +80,104 @@ func TestFLVXRealityPinMarginFallbackAndCapability(t *testing.T) {
 	}
 	if !slices.Contains(helperCapabilities, flvx.RealityPinMarginCapability) || !slices.Contains(helperCapabilities, flvx.RealityPinCapability) {
 		t.Fatal("reality_pin v1 + v2 not advertised")
+	}
+}
+
+// A pin that left the DNS answer but still answers moves to the answer's
+// fastest IP whatever the margin, as FLVX's agent does (choosePin keeps a pin
+// only while it is in the answer); move_reason is "failover". A pin still in
+// the answer within the margin stays.
+func TestFLVXRealityPinLeftDNSAnswer(t *testing.T) {
+	margin := func(v int) *int { return &v }
+	for _, c := range []struct {
+		name   string
+		margin *int
+		answer []string
+		moves  bool
+		reason string
+	}{
+		{"20 leaves the answer", margin(20), []string{"203.0.113.1", "203.0.113.3"}, true, flvx.RealityPinMoveFailover},
+		{"200 leaves the answer", margin(200), []string{"203.0.113.1", "203.0.113.3"}, true, flvx.RealityPinMoveFailover},
+		{"20 still in the answer", margin(20), []string{"203.0.113.1", "203.0.113.2"}, false, ""},
+		{"200 still in the answer", margin(200), []string{"203.0.113.1", "203.0.113.2"}, false, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, _, p := pinFixture(t, helperRealityNode("r", 30010, "d.example:443", "d.example"))
+			m.state.Payload.Desired.RealityPinMarginMS = c.margin
+			p.answer = []string{"203.0.113.1", "203.0.113.2"}
+			p.ms = map[string]float64{"203.0.113.1": 500, "203.0.113.2": 10}
+			reconcileOK(t, m)
+			// The pinned .2 is now 5 ms slower than .1 (under either margin);
+			// .3 is the slowest.
+			p.answer = c.answer
+			p.ms = map[string]float64{"203.0.113.1": 10, "203.0.113.2": 15, "203.0.113.3": 40}
+			p.advance(flvxPinRecheck)
+			reconcileOK(t, m)
+			want := "203.0.113.2:443"
+			if c.moves {
+				want = "203.0.113.1:443"
+			}
+			pins := m.state.Report.RealityPins
+			if got := appliedDest(t, m, "flvxl-r"); got != want || len(pins) != 1 || pins[0].MoveReason != c.reason || pins[0].BestIP != "203.0.113.1" {
+				t.Fatalf("pinned %s, status %+v", got, pins)
+			}
+		})
+	}
+}
+
+// "Left the answer" needs the last full check's own answer: not after a failed
+// lookup, not from a pre-v0.7.24 state (no dns_at), and an unguarded busy
+// node waits for idle as for a faster IP.
+func TestFLVXRealityPinLeftDNSAnswerNeedsAnswer(t *testing.T) {
+	m, f, p := pinFixture(t, helperRealityNode("r", 30010, "d.example:443", "d.example"))
+	p.answer = []string{"203.0.113.1", "203.0.113.2"}
+	p.ms = map[string]float64{"203.0.113.1": 20, "203.0.113.2": 10}
+	reconcileOK(t, m)
+	// State written by v0.7.23: no dns_at, a DNS list without the pin.
+	d := m.state.RealityDests["d.example:443"]
+	d.DNSAt, d.DNS = 0, []string{"203.0.113.1"}
+	m.state.RealityDests["d.example:443"] = d
+	reconcileOK(t, m)
+	if appliedDest(t, m, "flvxl-r") != "203.0.113.2:443" {
+		t.Fatal("moved on a pre-v0.7.24 state")
+	}
+	// The lookup fails: the old answer is not this check's, the pin stays.
+	p.answer, p.dnsErr = nil, errors.New("timeout")
+	p.advance(flvxPinRecheck)
+	reconcileOK(t, m)
+	if appliedDest(t, m, "flvxl-r") != "203.0.113.2:443" || m.state.RealityDests["d.example:443"].answer() != nil {
+		t.Fatal("moved after a failed lookup")
+	}
+	// Busy and unguarded: waits until idle, then moves (failover).
+	f.snap.Users = []coreUserSnapshot{{Identity: coreIdentity{InboundTag: "flvxl-r", User: "flvxl-r"}, CurrentTotal: 4}}
+	reconcileOK(t, m)
+	p.answer, p.dnsErr = []string{"203.0.113.1"}, nil
+	f.adds, f.removes, f.blocks = 0, 0, 0
+	p.advance(flvxPinRecheck)
+	reconcileOK(t, m)
+	if appliedDest(t, m, "flvxl-r") != "203.0.113.2:443" || f.adds+f.removes+f.blocks != 0 {
+		t.Fatalf("busy node re-added: adds=%d removes=%d blocks=%d", f.adds, f.removes, f.blocks)
+	}
+	f.snap.Users = nil
+	reconcileOK(t, m)
+	reconcileOK(t, m)
+	if pins := m.state.Report.RealityPins; appliedDest(t, m, "flvxl-r") != "203.0.113.1:443" || pins[0].MoveReason != flvx.RealityPinMoveFailover {
+		t.Fatalf("idle node did not move: %+v", pins)
+	}
+}
+
+// No IP of the answer answers: best falls back to any reachable candidate,
+// so a failed pin still moves to a remembered IP that answers.
+func TestFLVXRealityPinAnswerAllDown(t *testing.T) {
+	m, _, p := pinFixture(t, helperRealityNode("r", 30010, "d.example:443", "d.example"))
+	p.answer = []string{"203.0.113.1", "203.0.113.2"}
+	p.ms = map[string]float64{"203.0.113.1": 10, "203.0.113.2": 20}
+	reconcileOK(t, m)
+	p.answer = []string{"203.0.113.3"}
+	p.ms = map[string]float64{"203.0.113.1": -1, "203.0.113.2": 20, "203.0.113.3": -1}
+	p.advance(flvxPinRecheck)
+	reconcileOK(t, m)
+	if pins := m.state.Report.RealityPins; appliedDest(t, m, "flvxl-r") != "203.0.113.2:443" || pins[0].MoveReason != flvx.RealityPinMoveFailover {
+		t.Fatalf("failed pin kept: %s %+v", appliedDest(t, m, "flvxl-r"), pins)
 	}
 }

@@ -32,10 +32,14 @@ import (
 //     failed liveness check; a liveness check (one connect per pinned IP)
 //     every 10 min in between. The connects are quiet (flvxQuietDial): at
 //     most 2 open at once across the Helper, closed with an RST.
-//   - A node moves only if its IP failed or is slower than the best by at
-//     least the margin: FLVX's Desired.reality_pin_margin_ms (0–200, 0 = any
-//     gain, a tie keeps the pin; reality_pin v2), else 20 ms. A failed IP
-//     moves whatever the margin. The moved pin reports move_reason.
+//   - Best = the fastest reachable IP of the check's DNS answer (as FLVX's
+//     agent; any candidate when the lookup failed or none of it answers). A
+//     node moves only if its IP failed, left the DNS answer or is slower than
+//     the best by at least the margin: FLVX's
+//     Desired.reality_pin_margin_ms (0–200, 0 = any gain, a tie keeps the
+//     pin; reality_pin v2), else 20 ms. A failed IP or one that left the
+//     answer moves whatever the margin ("failover"). The moved pin reports
+//     move_reason.
 //     A guarded node moves with its whole guard group: only the loopback
 //     guard inbound is re-added with the new target, the node inbound and its
 //     live connections stay. An unguarded node moves while it has no
@@ -72,15 +76,43 @@ type flvxRealityPin struct {
 type flvxRealityDest struct {
 	CheckedAt int64              `json:"checked_at"`
 	LiveAt    int64              `json:"live_at,omitempty"`
-	MS        map[string]float64 `json:"ms,omitempty"`   // TCP connect ms at the last full check, -1 = no answer
-	DNS       []string           `json:"dns,omitempty"`  // last all-public answer, sorted
-	Seen      map[string]int64   `json:"seen,omitempty"` // public IPs DNS returned -> last seen (unix ms)
-	Due       bool               `json:"due,omitempty"`  // a pinned IP failed its liveness check
+	MS        map[string]float64 `json:"ms,omitempty"`     // TCP connect ms at the last full check, -1 = no answer
+	DNS       []string           `json:"dns,omitempty"`    // last all-public answer, sorted
+	DNSAt     int64              `json:"dns_at,omitempty"` // full check that got DNS (== CheckedAt: DNS is this check's answer)
+	Seen      map[string]int64   `json:"seen,omitempty"`   // public IPs DNS returned -> last seen (unix ms)
+	Due       bool               `json:"due,omitempty"`    // a pinned IP failed its liveness check
 }
 
+// answer is the last full check's DNS answer, nil when that check got none
+// (lookup failed or private) or ran before Helper v0.7.24.
+func (d flvxRealityDest) answer() map[string]bool {
+	if d.CheckedAt == 0 || d.DNSAt != d.CheckedAt {
+		return nil
+	}
+	in := map[string]bool{}
+	for _, ip := range d.DNS {
+		in[ip] = true
+	}
+	return in
+}
+
+// best is the fastest reachable IP of the last check's DNS answer, as FLVX's
+// agent picks; any reachable candidate when that check got no answer or none
+// of it answered.
 func (d flvxRealityDest) best() (string, float64) {
+	if ip, ms := d.fastest(d.answer()); ip != "" {
+		return ip, ms
+	}
+	return d.fastest(nil)
+}
+
+// fastest is the fastest reachable measured IP, only those in "in" unless nil.
+func (d flvxRealityDest) fastest(in map[string]bool) (string, float64) {
 	ip, ms := "", -1.0
 	for candidate, v := range d.MS {
+		if in != nil && !in[candidate] {
+			continue
+		}
 		if v >= 0 && (ip == "" || v < ms || v == ms && candidate < ip) {
 			ip, ms = candidate, v
 		}
@@ -297,7 +329,7 @@ func (m *flvxManager) checkRealityDest(ctx context.Context, dest string, d flvxR
 	}
 	if err == nil {
 		sort.Strings(answer)
-		d.DNS = answer
+		d.DNS, d.DNSAt = answer, now.UnixMilli()
 		for _, ip := range answer {
 			seen[ip] = now.UnixMilli()
 		}
@@ -473,12 +505,17 @@ func (m *flvxManager) decidePin(n flvx.Node) {
 		ms, measured := d.MS[current]
 		margin := m.pinMargin()
 		failed := measured && ms < 0
+		// FLVX's agent: a pin that left the DNS answer moves to the answer's
+		// best whatever the margin. Unknown answer (the last lookup failed)
+		// or none of it answers: the margin rule over all candidates.
+		in := d.answer()
+		gone := in[best] && !in[current]
 		slower := measured && ms-bestMS > 0 && ms-bestMS >= margin
-		if failed || (slower || pin.Fallback) && m.pinMoveFree(n) {
-			// Leaving a fallback pin (no candidate answered before) is a
-			// recovery, not a margin decision.
+		if failed || (slower || gone || pin.Fallback) && m.pinMoveFree(n) {
+			// Leaving a fallback pin (no candidate answered before) or an IP
+			// that left the DNS answer is a failover, not a margin decision.
 			reason := flvx.RealityPinMoveFailover
-			if !failed && slower {
+			if !failed && !gone && slower {
 				reason = flvx.RealityPinMoveFaster
 			}
 			m.logs.print("[mmwxc-helper] FLVX Reality dest %s: node %s %s (%s) -> %s (%.1f ms, margin %.0f ms, %s)", dest, n.ID, current, flvxPinMSText(ms, measured), best, bestMS, margin, reason)
