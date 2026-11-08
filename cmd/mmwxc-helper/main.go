@@ -38,6 +38,8 @@ type config struct {
 	StatePath     string
 	MachineIDPath string
 	EnableNft     bool
+	// DNSCacheEnsure: run flvx-dns-cache ensure once per Helper version (MMWXC_HELPER_DNS_CACHE=0 skips).
+	DNSCacheEnsure bool
 }
 
 type connectionSnapshot struct {
@@ -57,6 +59,9 @@ type metricsPayload struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "dns-cache" {
+		os.Exit(dnsCacheCLI(os.Args[2:], defaultConfigPath))
+	}
 	configPath := flag.String("config", defaultConfigPath, "path to env config file")
 	once := flag.Bool("once", false, "collect once, upload once, then exit")
 	printOnly := flag.Bool("print", false, "collect once and print JSON without uploading")
@@ -112,7 +117,7 @@ func main() {
 	nftables := newNftablesManager(cfg.EnableNft)
 	machineProtection := newMachineProtectionManager()
 	lifecycle := newLifecycleManager(core)
-	executor := &commandExecutor{lifecycle: lifecycle, core: core, state: &state, client: client, config: cfg, machine: machineProtection}
+	executor := &commandExecutor{lifecycle: lifecycle, core: core, state: &state, client: client, config: cfg, machine: machineProtection, dnsCache: newDNSCacheMonitor(cfg)}
 	machineProtection.tw = state.MachineTW
 	machineProtection.saveTW = func(saved *machineTWSaved) error {
 		// Persist the original before the kernel value is ever changed.
@@ -281,6 +286,7 @@ func (executor *commandExecutor) runOnce(onlineTracker *onlineIPTracker, nftable
 		state.PendingResult = nil
 	}
 	state.ControllerConnectedAt = time.Now().UTC()
+	executor.dnsCache.scheduleEnsure()
 	if executor.startupUpdate {
 		executor.startupUpdate = false
 		executor.reportUpdateProgress("helper", "success", helperVersion, "", updateProgressDetails{LogLine: "新 Helper 进程已启动，首次上报成功"})
@@ -389,13 +395,14 @@ func loadConfig(path string) (config, error) {
 	}
 
 	cfg := config{
-		CustomAPIURL:  strings.TrimRight(getLegacy("MMWXC_HELPER_API_URL", "CUSTOM_API_URL"), "/"),
-		ServerID:      getLegacy("MMWXC_HELPER_SERVER_ID", "SERVER_ID"),
-		Token:         getLegacy("MMWXC_HELPER_TOKEN", "TOKEN"),
-		Interval:      interval,
-		CoreSocket:    get("MMWXC_HELPER_CORE_SOCKET"),
-		StatePath:     get("MMWXC_HELPER_STATE_FILE"),
-		MachineIDPath: get("MMWXC_HELPER_MACHINE_ID_FILE"),
+		CustomAPIURL:   strings.TrimRight(getLegacy("MMWXC_HELPER_API_URL", "CUSTOM_API_URL"), "/"),
+		ServerID:       getLegacy("MMWXC_HELPER_SERVER_ID", "SERVER_ID"),
+		Token:          getLegacy("MMWXC_HELPER_TOKEN", "TOKEN"),
+		Interval:       interval,
+		CoreSocket:     get("MMWXC_HELPER_CORE_SOCKET"),
+		StatePath:      get("MMWXC_HELPER_STATE_FILE"),
+		MachineIDPath:  get("MMWXC_HELPER_MACHINE_ID_FILE"),
+		DNSCacheEnsure: true,
 	}
 	if cfg.CoreSocket == "" {
 		cfg.CoreSocket = defaultCoreSocket
@@ -412,6 +419,11 @@ func loadConfig(path string) (config, error) {
 			return config{}, fmt.Errorf("invalid MMWXC_HELPER_ENABLE_NFTABLES %q", raw)
 		}
 		cfg.EnableNft = enabled
+	}
+	switch strings.ToLower(get("MMWXC_HELPER_DNS_CACHE")) {
+	case "0", "false", "no", "off":
+		// A typo must never stop the Helper: only these values switch the DNS cache step off.
+		cfg.DNSCacheEnsure = false
 	}
 	if cfg.CustomAPIURL == "" {
 		return config{}, errors.New("CUSTOM_API_URL is required")

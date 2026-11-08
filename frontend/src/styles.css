@@ -1589,6 +1589,11 @@ button {
   color: var(--danger);
 }
 
+/* 本机 DNS 缓存 ⚠ (shown only when broken); new text keeps the 13px floor. */
+.service-badge.dns-cache-alert {
+  font-size: 13px;
+}
+
 .core-mode-badge {
   border: 0;
   cursor: pointer;
@@ -6112,6 +6117,44 @@ button {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.dns-cache-row {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--fill-strong);
+}
+
+.dns-cache-row > div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.dns-cache-row span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.dns-cache-row strong {
+  font-size: 15px;
+}
+
+.dns-cache-row.ok strong {
+  color: #389e0d;
+}
+
+.dns-cache-row.warning strong {
+  color: #d48806;
+}
+
+.dns-cache-row p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .helper-generate-button,

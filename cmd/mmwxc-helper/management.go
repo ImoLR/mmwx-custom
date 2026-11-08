@@ -80,6 +80,7 @@ type agentStatus struct {
 	MachineID     string                   `json:"machine_id,omitempty"`
 	Update        *componentUpdateProgress `json:"update,omitempty"`
 	Logs          *logHousekeepingStatus   `json:"logs,omitempty"`
+	DNSCache      *dnsCacheStatus          `json:"dns_cache,omitempty"`
 }
 
 type managementReport struct {
@@ -163,6 +164,7 @@ type commandExecutor struct {
 	progressReporter *updateProgressReporter
 	startupUpdate    bool
 	listening        listeningPortsScanner
+	dnsCache         *dnsCacheMonitor
 }
 
 func (executor *commandExecutor) reportUpdateProgress(component, phase, version, message string, details ...updateProgressDetails) {
@@ -188,7 +190,7 @@ func (executor *commandExecutor) status(ctx context.Context) agentStatus {
 		Capabilities: append([]string(nil), helperCapabilities...), LastOperation: executor.state.LastOperation, ReportedAt: time.Now().UTC(),
 		Ownership: executor.lifecycle.externalOwnershipStatus(ctx, &executor.state.ExternalOwnership),
 		Takeover:  executor.state.Takeover, MachineID: executor.state.MachineID,
-		Logs: executor.logHousekeeping.snapshot(ctx),
+		Logs: executor.logHousekeeping.snapshot(ctx), DNSCache: executor.dnsCache.snapshot(),
 	}
 	// landing-user-limits-v1 §7: only while ip / tc and the kernel take the
 	// FLVX rate shaper (probed once, cached).

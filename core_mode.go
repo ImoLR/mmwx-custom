@@ -301,6 +301,8 @@ type coreModeSummary struct {
 	FormalChangeUnconfirmed bool      `json:"formal_change_unconfirmed,omitempty"`
 	Fresh                   bool      `json:"fresh"`
 	CanSwitch               bool      `json:"can_switch"`
+	// DNSCache: the Helper's local DNS cache check, for the card's ⚠ (Helper v0.7.25+).
+	DNSCache *dnsCacheStatus `json:"dns_cache,omitempty"`
 }
 
 func (s *helperState) coreModeSummaries() map[string]coreModeSummary {
@@ -316,9 +318,22 @@ func (s *helperState) coreModeSummaries() map[string]coreModeSummary {
 			FormalChangedFrom: intent.FormalChangedFrom, FormalChangedAt: intent.FormalChangedAt, FormalChangeUnconfirmed: intent.FormalChangeUnconfirmed,
 			Fresh:     !status.ReportedAt.IsZero() && time.Since(status.ReportedAt) <= helperStaleTimeout,
 			CanSwitch: hasCapability(status, "core.mode.apply"),
+			DNSCache:  copyDNSCacheStatus(status.DNSCache),
 		}
 	}
 	return out
+}
+
+func copyDNSCacheStatus(status *dnsCacheStatus) *dnsCacheStatus {
+	if status == nil {
+		return nil
+	}
+	copied := *status
+	if status.Ensure != nil {
+		ensure := *status.Ensure
+		copied.Ensure = &ensure
+	}
+	return &copied
 }
 
 func sanitizeCoreModeMessage(value string) string {

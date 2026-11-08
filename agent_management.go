@@ -93,6 +93,28 @@ type agentStatus struct {
 	MachineID     string                   `json:"machine_id,omitempty"`
 	Update        *componentUpdateProgress `json:"update,omitempty"`
 	Logs          *logHousekeepingStatus   `json:"logs,omitempty"`
+	DNSCache      *dnsCacheStatus          `json:"dns_cache,omitempty"`
+}
+
+// dnsCacheStatus is the Helper's local DNS cache check (flvx-dns-cache, Helper v0.7.25+): resolv.conf,
+// the script's state file and /proc, at most every 10 minutes. Ensure is the once-per-Helper-version run.
+type dnsCacheStatus struct {
+	Mode      string          `json:"mode"`
+	OK        bool            `json:"ok"`
+	Reason    string          `json:"reason,omitempty"`
+	CheckedAt time.Time       `json:"checked_at"`
+	Ensure    *dnsCacheEnsure `json:"ensure,omitempty"`
+}
+
+type dnsCacheEnsure struct {
+	HelperVersion string    `json:"helper_version"`
+	ScriptSHA256  string    `json:"script_sha256,omitempty"`
+	Attempts      int       `json:"attempts,omitempty"`
+	StartedAt     time.Time `json:"started_at"`
+	FinishedAt    time.Time `json:"finished_at,omitempty"`
+	ExitCode      int       `json:"exit_code"`
+	Changed       bool      `json:"changed"`
+	Summary       string    `json:"summary,omitempty"`
 }
 
 type logHousekeepingStatus struct {
@@ -431,7 +453,8 @@ func (s *helperState) acceptManagementReport(serverID, token string, report *man
 }
 
 // heartbeatOnlyStatusChange reports whether two snapshots differ only in what
-// every report refreshes: the report time and the log-housekeeping samples.
+// every report refreshes: the report time, the log-housekeeping samples and the
+// DNS cache check time.
 // It compares the persisted JSON, so equal output means an identical file.
 func heartbeatOnlyStatusChange(previous, next agentStatus) bool {
 	stable := func(status agentStatus) []byte {
@@ -440,6 +463,12 @@ func heartbeatOnlyStatusChange(previous, next agentStatus) bool {
 			logs := *status.Logs
 			logs.CheckedAt, logs.AgentLogBytes, logs.JournaldDiskUsage, logs.UnitLines, logs.SampleComplete = time.Time{}, 0, "", nil, false
 			status.Logs = &logs
+		}
+		if status.DNSCache != nil {
+			// A re-check every 10 minutes is a heartbeat; a new mode, ok, reason or ensure result is not.
+			dnsCache := *status.DNSCache
+			dnsCache.CheckedAt = time.Time{}
+			status.DNSCache = &dnsCache
 		}
 		encoded, _ := json.Marshal(status)
 		return encoded

@@ -148,6 +148,7 @@ import { UserManagementPage } from "./user-manager";
 import { ForwardManagementPage } from "./forward-manager";
 import { useCoreModes, XrayManager } from "./xray-manager";
 import { serverCoreVersion } from "./xray-capabilities";
+import { dnsCacheEnsureText, dnsCacheView } from "./dns-cache-logic";
 import "./styles.css";
 
 type DashboardState = {
@@ -1824,6 +1825,7 @@ function ServiceServerCard({
   onOpenDialog: (kind: "edit" | "xray" | "agent" | "helper" | "connections") => void;
 }) {
   const region = useServerRegion(server);
+  const dnsCache = dnsCacheView(coreMode?.dns_cache, Boolean(coreMode?.fresh));
 
   return (
     <article className={`service-server-card ${viewMode}`}>
@@ -1847,6 +1849,7 @@ function ServiceServerCard({
           <span className="service-badge success">Agent {agentVersion(server)}</span>
           <MachineConnectionTag metric={connectionMetric} onOpen={() => onOpenDialog("connections")} />
           {server.ddns_pending && <span className="service-badge warning">DDNS 待同步</span>}
+          {dnsCache.attention && <span className="service-badge warning dns-cache-alert" title={dnsCache.detail}>⚠ DNS 缓存{dnsCache.label}</span>}
           {flvxShared && <button className="service-badge flvx-shared-badge" type="button" onClick={onOpenFLVX}>已共享给 FLVX</button>}
         </div>
 
@@ -2106,6 +2109,7 @@ function HelperInstallDialog({ server, sessionToken, connectionMetric }: { serve
 		<InfoBlock label="官方 Agent" value={agentStatus?.official_agent || "--"} />
 		<InfoBlock label="Takeover" value={agentStatus?.takeover?.status || "--"} />
       </div>
+      {agentStatus && <DNSCacheRow status={agentStatus} />}
       {coreVersion.officialVersion && <p className="xray-version-source">官方 Agent 读数（参考）：{coreVersion.officialVersion}</p>}
       <CoreControlPanel server={server} sessionToken={sessionToken} />
       <div className="service-dialog-section">
@@ -2123,6 +2127,19 @@ function HelperInstallDialog({ server, sessionToken, connectionMetric }: { serve
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function DNSCacheRow({ status }: { status: NonNullable<CustomAgentStatusResponse["status"]> }) {
+  const fresh = Boolean(status.reported_at && Date.now() - new Date(status.reported_at).getTime() <= 60_000);
+  const view = dnsCacheView(status.dns_cache, fresh);
+  const ensure = dnsCacheEnsureText(status.dns_cache, formatDateTime);
+  return (
+    <div className={`dns-cache-row ${view.tone}`}>
+      <div><span>DNS 缓存</span><strong>{view.attention ? `⚠ ${view.label}` : view.label}</strong></div>
+      <p>{view.detail}{status.dns_cache?.checked_at ? ` 最近检查 ${formatRelativeTime(status.dns_cache.checked_at)}。` : ""}</p>
+      {ensure && <p>{ensure}</p>}
     </div>
   );
 }

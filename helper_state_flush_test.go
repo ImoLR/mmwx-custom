@@ -145,6 +145,11 @@ func durableView(data helperStateData) []byte {
 			logs.CheckedAt, logs.AgentLogBytes, logs.JournaldDiskUsage, logs.UnitLines, logs.SampleComplete = time.Time{}, 0, "", nil, false
 			status.Logs = &logs
 		}
+		if status.DNSCache != nil {
+			dnsCache := *status.DNSCache
+			dnsCache.CheckedAt = time.Time{}
+			status.DNSCache = &dnsCache
+		}
 		statuses[id] = status
 	}
 	intents := make(map[string]coreModeIntent, len(data.CoreModeIntents))

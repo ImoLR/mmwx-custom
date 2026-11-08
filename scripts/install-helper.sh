@@ -450,6 +450,28 @@ if [[ -z "$ROOT_PREFIX" ]]; then
 	fi
 fi
 
+# Local DNS cache (FLVX flvx-dns-cache, shipped inside the Helper): once per Helper version, a no-op where
+# it is already set up. A failure only prints a warning. Skip: MMWXC_HELPER_DNS_CACHE=0.
+setup_dns_cache() {
+  local out="" rc=0 line="" version=""
+  case "${MMWXC_HELPER_DNS_CACHE:-1}" in
+    0|false|no|off) log_step "Local DNS cache: skipped (MMWXC_HELPER_DNS_CACHE=0)"; return 0 ;;
+  esac
+  version="$("$HELPER_BINARY" dns-cache version 2>/dev/null || true)"
+  [[ "$version" == flvx-dns-cache* ]] || return 0
+  log_step "Local DNS cache: flvx-dns-cache ensure"
+  out="$(timeout 300 "$HELPER_BINARY" dns-cache ensure-once 2>&1)" || rc=$?
+  line="$(printf '%s\n' "$out" | grep '^DNS 缓存：' | tail -1 || true)"
+  if [[ $rc -eq 0 && -n "$line" ]]; then
+    log_step "$line"
+  else
+    [[ -n "$line" ]] || line="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1 || true)"
+    log_step "Local DNS cache not completed (the Helper works without it): ${line:-unknown}; details /var/lib/mmwxc/dns-cache-ensure.log"
+  fi
+  return 0
+}
+if [[ -z "$ROOT_PREFIX" ]]; then setup_dns_cache; fi
+
 log_step "MMWXC Custom Agent installation complete"
 log_step "Helper service: mmwxc-helper.service"
 log_step "Custom Core prepared at /opt/mmwxc/core/xray"

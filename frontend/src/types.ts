@@ -269,6 +269,14 @@ export type MachineSummary = {
   last_error?: string;
 };
 
+export type DNSCacheStatus = {
+  mode: "dnsmasq" | "resolved" | "minimal" | "none" | string;
+  ok: boolean;
+  reason?: string;
+  checked_at?: string;
+  ensure?: { helper_version: string; started_at?: string; finished_at?: string; exit_code: number; changed?: boolean; summary?: string };
+};
+
 export type CoreModeSummary = {
   configured: boolean;
   desired_mode?: string;
@@ -282,6 +290,7 @@ export type CoreModeSummary = {
   formal_change_unconfirmed?: boolean;
   fresh: boolean;
   can_switch: boolean;
+  dns_cache?: DNSCacheStatus;
 };
 
 export type ConnectionMetricsResponse = {
@@ -624,6 +633,7 @@ export type CustomAgentStatusResponse = {
     machine_id?: string;
     architecture?: string;
     reported_at?: string;
+    dns_cache?: DNSCacheStatus;
     update?: { component: "helper" | "core"; phase: "dispatching" | "downloading" | "verifying" | "installing" | "restarting" | "reconnecting" | "success" | "failed" | "rolled_back"; target_version?: string; message?: string; updated_at: string; started_at?: string; percent?: number; bytes_done?: number; bytes_total?: number; log?: Array<{ at: string; phase: string; text: string }> };
   };
   pending?: Array<{ id: string; action: string; created_at: string }>;
