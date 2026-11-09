@@ -634,6 +634,8 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 		return nil, err
 	}
 	shares := []any{}
+	now := time.Now()
+	var seen, expired []int64
 	for rows.Next() {
 		var id int64
 		var raw []byte
@@ -646,8 +648,28 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 			rows.Close()
 			return nil, err
 		}
-		flvxReset(&s, time.Now())
-		server, _ := flvxServerByID(servers, id)
+		flvxReset(&s, now)
+		server, missing := flvxServerByID(servers, id)
+		if missing != nil {
+			// The server was deleted: list its share as revoked from what
+			// 「删除服务器」 recorded, never as an item without name or hosts.
+			if s.Deleted != nil && flvxRetiredShareExpired(s.Deleted, now) {
+				expired = append(expired, id)
+				continue
+			}
+			if s.Deleted == nil || s.Deleted.Name == "" || flvxHostsEmpty(s.Deleted.Hosts) {
+				logFLVXShareSkip(id, "server no longer exists")
+				continue
+			}
+			s.State = "revoked"
+			server = flvxServer{ID: id, Name: s.Deleted.Name, Hosts: s.Deleted.Hosts}
+		} else if !admin && flvxHostsEmpty(server.Hosts) {
+			logFLVXShareSkip(id, "server has no address")
+			continue
+		}
+		if !admin && s.Deleted != nil && s.Deleted.SeenAt == 0 && s.State == "revoked" {
+			seen = append(seen, id)
+		}
 		connections := int64(0)
 		for _, n := range s.Status.Nodes {
 			connections += n.Connections
@@ -719,6 +741,7 @@ func (a *app) flvxList(ctx context.Context, admin bool) (map[string]any, error) 
 	if err != nil {
 		return nil, err
 	}
+	retireFLVXShares(ctx, db, seen, expired, now)
 	result := map[string]any{"shares": shares}
 	if admin {
 		var configured bool

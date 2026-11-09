@@ -173,13 +173,17 @@ func (s *postgresAdminSessionStore) serverDeletionInventory(ctx context.Context)
 		return nil, err
 	}
 	result := serverDeletionInventory{}
-	for _, table := range []string{"remote_servers", "nodes", "packages", "users", "user_package_assignments", "forward_groups", "forward_group_members", "forward_chains", "forward_chain_hops", "forward_chain_branches", "forward_chain_nodes", "user_outbounds", "mmwxc_package_traffic_groups", "mmwxc_connection_assignments", "user_inbound_configs", "package_assignment_inbound_configs", "user_subaccounts", "package_assignment_subaccounts", "subscribe_files", "server_xray_config_snapshots", "certificates"} {
+	for _, table := range []string{"remote_servers", "nodes", "packages", "users", "user_package_assignments", "forward_groups", "forward_group_members", "forward_chains", "forward_chain_hops", "forward_chain_branches", "forward_chain_nodes", "user_outbounds", "mmwxc_package_traffic_groups", "mmwxc_connection_assignments", "user_inbound_configs", "package_assignment_inbound_configs", "user_subaccounts", "package_assignment_subaccounts", "subscribe_files", "server_xray_config_snapshots", "certificates", "mmwxc_flvx_shares"} {
 		if columns[table] == nil {
 			continue
 		}
 		query := `SELECT to_jsonb(t) FROM ` + table + ` t ORDER BY to_jsonb(t)::text`
 		if table == "server_xray_config_snapshots" {
 			query = `SELECT to_jsonb(t) FROM (SELECT DISTINCT ON(server_id) * FROM server_xray_config_snapshots ORDER BY server_id,id DESC)t`
+		}
+		if table == "mmwxc_flvx_shares" {
+			// Which servers are shared; the share itself is read when revoked.
+			query = `SELECT jsonb_build_object('server_id',server_id) FROM mmwxc_flvx_shares ORDER BY server_id`
 		}
 		rows, err := s.db.QueryContext(ctx, query)
 		if err != nil {
@@ -562,6 +566,13 @@ func planServerDeletion(data serverDeletionInventory, serverID int64) (serverDel
 		packageSteps = append(packageSteps, serverDeletionStep{Kind: "package", ID: pkg.ID, Name: pkg.Name, Item: item})
 	}
 	p.Steps = append(packageSteps, p.Steps...)
+	// Revoke an FLVX share first, so FLVX stops using the server while it
+	// still exists; see flvx_retired.go for what the share list does after.
+	for _, share := range data["mmwxc_flvx_shares"] {
+		if deletionID(share["server_id"]) == serverID {
+			p.Steps = append([]serverDeletionStep{{Kind: "flvx-share", ID: serverID, Name: "撤销 FLVX 共享"}}, p.Steps...)
+		}
+	}
 	// Dependants first. The official server operation is always called with delete_nodes=true.
 	for _, directOnly := range []bool{false, true} {
 		for _, n := range p.Nodes {

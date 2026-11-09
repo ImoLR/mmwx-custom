@@ -48,6 +48,8 @@ type flvxShare struct {
 	EgressDenied bool `json:"egress_denied,omitempty"`
 	// The FLVX Core build this share's Helper installs; see flvxPinnedCore.
 	Core *flvxPinnedCore `json:"core_artifact,omitempty"`
+	// Set when 「删除服务器」 revoked the share; see flvx_retired.go.
+	Deleted *flvxDeletedServer `json:"deleted_server,omitempty"`
 }
 
 // flvxPinnedCore is pinned at the share's first Helper payload and moves to a

@@ -310,6 +310,8 @@ func (a *app) performServerDeletionStep(ctx context.Context, token string, p *se
 		}
 		return nil
 
+	case "flvx-share":
+		return a.revokeFLVXShareForDeletion(ctx, p.ServerID)
 	case "helper":
 		return a.uninstallDeletedServerHelper(ctx, p)
 	case "server":
