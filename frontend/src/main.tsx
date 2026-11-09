@@ -148,7 +148,7 @@ import { UserManagementPage } from "./user-manager";
 import { ForwardManagementPage } from "./forward-manager";
 import { useCoreModes, XrayManager } from "./xray-manager";
 import { serverCoreVersion } from "./xray-capabilities";
-import { dnsCacheEnsureText, dnsCacheView } from "./dns-cache-logic";
+import { DNS_CACHE_REPAIR_ACTION, DNS_CACHE_REPAIR_WAIT_MS, dnsCacheEnsureText, dnsCacheRepairButton, dnsCacheRepairOutcome, dnsCacheRepairProgress, dnsCacheView, type DNSCacheRepairOutcome } from "./dns-cache-logic";
 import "./styles.css";
 
 type DashboardState = {
@@ -1000,6 +1000,7 @@ function Dashboard({
           servers={state.servers}
           connectionMetric={serviceDialog.server ? state.connectionMetrics[String(serviceDialog.server.id)] : undefined}
           onChanged={loadDashboard}
+          isAdmin={session.isAdmin}
         />
       )}
     </main>
@@ -1849,7 +1850,7 @@ function ServiceServerCard({
           <span className="service-badge success">Agent {agentVersion(server)}</span>
           <MachineConnectionTag metric={connectionMetric} onOpen={() => onOpenDialog("connections")} />
           {server.ddns_pending && <span className="service-badge warning">DDNS 待同步</span>}
-          {dnsCache.attention && <span className="service-badge warning dns-cache-alert" title={dnsCache.detail}>⚠ DNS 缓存{dnsCache.label}</span>}
+          {dnsCache.attention && <button className="service-badge warning dns-cache-alert" type="button" title={`${dnsCache.detail}点开可修复。`} onClick={() => onOpenDialog("helper")}>⚠ DNS 缓存{dnsCache.label}</button>}
           {flvxShared && <button className="service-badge flvx-shared-badge" type="button" onClick={onOpenFLVX}>已共享给 FLVX</button>}
         </div>
 
@@ -2067,7 +2068,7 @@ function componentUpgradeState(progress: NonNullable<CustomAgentStatusResponse["
 }
 
 
-function HelperInstallDialog({ server, sessionToken, connectionMetric }: { server: RemoteServer; sessionToken: string; connectionMetric?: ConnectionMetric }) {
+function HelperInstallDialog({ server, sessionToken, connectionMetric, canRepairDNSCache = false }: { server: RemoteServer; sessionToken: string; connectionMetric?: ConnectionMetric; canRepairDNSCache?: boolean }) {
   const [install, setInstall] = useState<HelperInstallTokenResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -2109,7 +2110,7 @@ function HelperInstallDialog({ server, sessionToken, connectionMetric }: { serve
 		<InfoBlock label="官方 Agent" value={agentStatus?.official_agent || "--"} />
 		<InfoBlock label="Takeover" value={agentStatus?.takeover?.status || "--"} />
       </div>
-      {agentStatus && <DNSCacheRow status={agentStatus} />}
+      {agentStatus && <DNSCacheRow status={agentStatus} repair={canRepairDNSCache ? { server, sessionToken, onAgent: (response) => setAgentStatus(response.status) } : undefined} />}
       {coreVersion.officialVersion && <p className="xray-version-source">官方 Agent 读数（参考）：{coreVersion.officialVersion}</p>}
       <CoreControlPanel server={server} sessionToken={sessionToken} />
       <div className="service-dialog-section">
@@ -2131,7 +2132,9 @@ function HelperInstallDialog({ server, sessionToken, connectionMetric }: { serve
   );
 }
 
-function DNSCacheRow({ status }: { status: NonNullable<CustomAgentStatusResponse["status"]> }) {
+type DNSCacheRepairProps = { server: RemoteServer; sessionToken: string; onAgent: (response: CustomAgentStatusResponse) => void };
+
+function DNSCacheRow({ status, repair }: { status: NonNullable<CustomAgentStatusResponse["status"]>; repair?: DNSCacheRepairProps }) {
   const fresh = Boolean(status.reported_at && Date.now() - new Date(status.reported_at).getTime() <= 60_000);
   const view = dnsCacheView(status.dns_cache, fresh);
   const ensure = dnsCacheEnsureText(status.dns_cache, formatDateTime);
@@ -2140,7 +2143,80 @@ function DNSCacheRow({ status }: { status: NonNullable<CustomAgentStatusResponse
       <div><span>DNS 缓存</span><strong>{view.attention ? `⚠ ${view.label}` : view.label}</strong></div>
       <p>{view.detail}{status.dns_cache?.checked_at ? ` 最近检查 ${formatRelativeTime(status.dns_cache.checked_at)}。` : ""}</p>
       {ensure && <p>{ensure}</p>}
+      {repair && <DNSCacheRepairControl {...repair} status={status} fresh={fresh} />}
     </div>
+  );
+}
+
+// 「修复 DNS 缓存」 (admin only): confirm → dns.cache.ensure → wait for the Helper's record of this command.
+function DNSCacheRepairControl({ server, sessionToken, onAgent, status, fresh }: DNSCacheRepairProps & { status: NonNullable<CustomAgentStatusResponse["status"]>; fresh: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<DNSCacheRepairOutcome | null>(null);
+  const [lastClickAt, setLastClickAt] = useState<number>();
+  const [now, setNow] = useState(() => Date.now());
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+  const button = dnsCacheRepairButton({ fresh, capabilities: status.capabilities, status: status.dns_cache, busy, lastClickAt, now });
+  const ticking = button.running || /秒后可再试/.test(button.hint);
+  useEffect(() => {
+    if (!ticking) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [ticking]);
+  const last = dnsCacheRepairOutcome(status.dns_cache?.repair, formatDateTime);
+  const shown = notice || last;
+
+  async function repair() {
+    if (!button.enabled) return;
+    if (!window.confirm(`${server.name}\n修复本机 DNS 缓存？\n会在这台服务器上执行一次 flvx-dns-cache ensure：已经正常就什么都不改；缺了会装好本机缓存。一般几秒，最长约 3 分钟。`)) return;
+    setBusy(true);
+    setNotice(null);
+    setLastClickAt(Date.now());
+    try {
+      const response = await dispatchCustomAgentAction(sessionToken, server.id, DNS_CACHE_REPAIR_ACTION);
+      const commandID = response.command?.id;
+      if (!commandID) throw new Error("修复任务下发失败");
+      const deadline = Date.now() + DNS_CACHE_REPAIR_WAIT_MS;
+      while (alive.current && Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        if (!alive.current) return;
+        let agent: CustomAgentStatusResponse;
+        try {
+          agent = await fetchCustomAgentStatus(sessionToken, server.id);
+        } catch {
+          continue;
+        }
+        if (!alive.current) return;
+        onAgent(agent);
+        const progress = dnsCacheRepairProgress(agent, commandID);
+        if (progress.error) {
+          setNotice({ tone: "warning", text: `修复失败：${progress.error}` });
+          return;
+        }
+        if (progress.repair) {
+          setNotice(dnsCacheRepairOutcome(progress.repair, formatDateTime));
+          return;
+        }
+      }
+      if (alive.current) setNotice({ tone: "warning", text: "5 分钟内没有收到结果。Helper 不会自动重试，稍后重新打开这里查看「上次修复」。" });
+    } catch (reason) {
+      if (alive.current) setNotice({ tone: "warning", text: reason instanceof Error ? reason.message : "修复任务下发失败" });
+    } finally {
+      if (alive.current) {
+        setBusy(false);
+        setNow(Date.now());
+      }
+    }
+  }
+
+  return (
+    <>
+      <div className="dns-cache-repair">
+        <button className="dns-cache-repair-button" type="button" disabled={!button.enabled} onClick={() => void repair()}>{button.running ? "正在修复…" : "修复 DNS 缓存"}</button>
+        {button.hint && <small>{button.hint}</small>}
+      </div>
+      {shown && <p className={`dns-cache-repair-result ${shown.tone}`}>{shown.text}</p>}
+    </>
   );
 }
 
@@ -2708,6 +2784,7 @@ function ServiceDialog({
   servers,
   connectionMetric,
   onChanged,
+  isAdmin = false,
 }: {
   dialog: { kind: "add" | "access" | "edit" | "xray" | "agent" | "helper" | "connections" | "batch-agent"; server?: RemoteServer };
   onClose: () => void;
@@ -2718,6 +2795,7 @@ function ServiceDialog({
   servers: RemoteServer[];
   connectionMetric?: ConnectionMetric;
   onChanged: () => Promise<void>;
+  isAdmin?: boolean;
 }) {
   const server = dialog.server;
   const title = {
@@ -2758,7 +2836,7 @@ function ServiceDialog({
             <BatchAgentUpgradeDialog servers={servers} sessionToken={sessionToken} />
           </div>
         ) : dialog.kind === "helper" && server ? (
-          <HelperInstallDialog server={server} sessionToken={sessionToken} connectionMetric={connectionMetric} />
+          <HelperInstallDialog server={server} sessionToken={sessionToken} connectionMetric={connectionMetric} canRepairDNSCache={isAdmin} />
         ) : dialog.kind === "connections" && server ? (
           <ConnectionsManager server={server} token={sessionToken} />
         ) : (

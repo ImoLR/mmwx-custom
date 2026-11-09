@@ -13,6 +13,10 @@ package main
 //     are never touched by the script.
 //   - The status Custom shows is a local check (resolv.conf, the script's state file, /proc) at most every
 //     10 minutes: no exec, no network. Same rules as do_check in the script and FLVX's dnscache/check.go.
+//   - 「修复 DNS 缓存」 (task custom-dns-cache-repair, 2026-11-09; FLVX's button of the same name): the
+//     admin's click becomes the dns.cache.ensure command. It runs `ensure` once in the same transient unit,
+//     in the background (a run may take minutes; the report loop never waits for it), and is never retried.
+//     The record (dns_cache.repair) and a fresh local check go out with the next report.
 
 import (
 	"bufio"
@@ -53,6 +57,11 @@ const (
 	dnsCacheEnsureTimeout = 200 * time.Second
 	// dnsCacheMaxAttempts: a run cut off by a Helper restart is resumed or retried once, never looped.
 	dnsCacheMaxAttempts = 2
+	// dnsCacheRepairCapability is the 「修复 DNS 缓存」 command (and capability) Custom sends.
+	dnsCacheRepairCapability = "dns.cache.ensure"
+	dnsCacheRepairPath       = "/var/lib/mmwxc-helper/dns-cache-repair.json"
+	// dnsCacheRepairCooldown: at most one repair a minute per server (Custom checks it too).
+	dnsCacheRepairCooldown = time.Minute
 )
 
 // dnsCacheStatus is reported as dns_cache in the Helper status.
@@ -62,10 +71,14 @@ type dnsCacheStatus struct {
 	Reason    string          `json:"reason,omitempty"`
 	CheckedAt time.Time       `json:"checked_at"`
 	Ensure    *dnsCacheEnsure `json:"ensure,omitempty"`
+	// Repair is the last 「修复 DNS 缓存」 run; it is still running while finished_at is empty.
+	Repair *dnsCacheEnsure `json:"repair,omitempty"`
 }
 
-// dnsCacheEnsure is the once-per-Helper-version record (the marker file and the last run in the status).
+// dnsCacheEnsure is the once-per-Helper-version record (the marker file and the last run in the status),
+// and the same record for a repair run (CommandID set).
 type dnsCacheEnsure struct {
+	CommandID     string    `json:"command_id,omitempty"`
 	HelperVersion string    `json:"helper_version"`
 	ScriptSHA256  string    `json:"script_sha256"`
 	Attempts      int       `json:"attempts"`
@@ -225,6 +238,10 @@ type dnsCacheMonitor struct {
 	zones     []string
 	delay     time.Duration
 	print     func(string, ...any)
+	// 「修复 DNS 缓存」: the repairer is the ensurer with its own record file; repairing while a run is active.
+	repairer  *dnsCacheEnsurer
+	repair    *dnsCacheEnsure
+	repairing bool
 }
 
 func newDNSCacheMonitor(cfg config) *dnsCacheMonitor {
@@ -234,6 +251,17 @@ func newDNSCacheMonitor(cfg config) *dnsCacheMonitor {
 	}
 	if marker, err := readDNSCacheMarker(monitor.ensurer.markerPath); err == nil {
 		monitor.ensure = &marker
+	}
+	repairer := *monitor.ensurer
+	repairer.markerPath = dnsCacheRepairPath
+	monitor.repairer = &repairer
+	if record, err := readDNSCacheMarker(repairer.markerPath); err == nil && !record.StartedAt.IsZero() {
+		monitor.repair = &record
+		if record.FinishedAt.IsZero() {
+			// The previous process was restarted during a repair: record how it ended (never relaunched).
+			monitor.repairing = true
+			go monitor.resumeRepair()
+		}
 	}
 	return monitor
 }
@@ -252,6 +280,10 @@ func (m *dnsCacheMonitor) snapshot() *dnsCacheStatus {
 	if m.ensure != nil {
 		ensure := *m.ensure
 		status.Ensure = &ensure
+	}
+	if m.repair != nil {
+		repair := *m.repair
+		status.Repair = &repair
 	}
 	return &status
 }
@@ -295,6 +327,82 @@ func (m *dnsCacheMonitor) runEnsure() {
 	case ran:
 		m.print("[mmwxc-helper] DNS cache ensure (%s): %s", helperVersion, marker.Summary)
 	}
+}
+
+var errDNSCacheRepairBusy = errors.New("这台服务器正在执行 DNS 缓存检查，请稍候")
+
+// startRepair is the dns.cache.ensure command (「修复 DNS 缓存」): it claims the run and returns at once; the
+// run goes on in the background and its record + a fresh check go out with the following reports. Busy,
+// inside the cooldown or switched off → an error and nothing runs.
+func (m *dnsCacheMonitor) startRepair(ctx context.Context, commandID string) (*dnsCacheEnsure, error) {
+	if m == nil || m.repairer == nil {
+		return nil, errors.New("DNS 缓存修复不可用")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.enabled {
+		return nil, errors.New("这台服务器在 /etc/mmwxc-helper.env 里关掉了 DNS 缓存（MMWXC_HELPER_DNS_CACHE=0）")
+	}
+	if m.repairing {
+		return nil, errDNSCacheRepairBusy
+	}
+	now := m.now()
+	if m.repair != nil {
+		if wait := dnsCacheRepairCooldown - now.Sub(m.repair.StartedAt); wait > 0 {
+			return nil, fmt.Errorf("刚刚执行过，请 %d 秒后再试", int(wait.Seconds())+1)
+		}
+	}
+	unlock, err := m.repairer.beginRepair(ctx)
+	if err != nil {
+		return nil, err
+	}
+	record := dnsCacheEnsure{CommandID: commandID, HelperVersion: m.repairer.version, ScriptSHA256: m.repairer.sha256, Attempts: 1, StartedAt: now.UTC()}
+	m.repair, m.repairing = &record, true
+	go func() {
+		defer unlock()
+		m.runRepair(record)
+	}()
+	started := record
+	return &started, nil
+}
+
+func (m *dnsCacheMonitor) runRepair(record dnsCacheEnsure) {
+	ctx, cancel := context.WithTimeout(context.Background(), dnsCacheEnsureTimeout+time.Minute)
+	defer cancel()
+	record, err := m.repairer.repairLocked(ctx, record, m.zones)
+	m.endRepair(record, err, "repair")
+}
+
+// resumeRepair: the previous process was restarted during a repair. Wait for the unit if it still runs,
+// then record its outcome; nothing is launched again.
+func (m *dnsCacheMonitor) resumeRepair() {
+	ctx, cancel := context.WithTimeout(context.Background(), dnsCacheEnsureTimeout+time.Minute)
+	defer cancel()
+	record, err := m.repairer.resumeRepair(ctx)
+	m.endRepair(record, err, "repair (resumed)")
+}
+
+// endRepair stores the outcome, re-checks the cache at once and logs one line.
+func (m *dnsCacheMonitor) endRepair(record dnsCacheEnsure, err error, what string) {
+	if record.FinishedAt.IsZero() {
+		// Timed out waiting for the unit, or the record could not be written: this run is over for us.
+		record.FinishedAt, record.ExitCode = m.now().UTC(), -1
+		if errors.Is(err, errDNSCacheBusy) {
+			record.Summary = fmt.Sprintf("超过 %d 秒没有结束，没有自动重试", int((dnsCacheEnsureTimeout + time.Minute).Seconds()))
+		} else if err != nil {
+			record.Summary = truncateDNSCacheText(err.Error(), 300)
+		}
+		_ = writeDNSCacheMarker(m.repairer.markerPath, record)
+	}
+	m.mu.Lock()
+	m.repair, m.repairing = &record, false
+	m.refreshLocked()
+	m.mu.Unlock()
+	if record.ExitCode != 0 {
+		m.print("[mmwxc-helper] DNS cache %s did not complete (exit %d, the Helper is not affected): %s", what, record.ExitCode, record.Summary)
+		return
+	}
+	m.print("[mmwxc-helper] DNS cache %s: %s", what, record.Summary)
 }
 
 var dnsCacheZoneRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
@@ -373,6 +481,55 @@ func (e *dnsCacheEnsurer) run(ctx context.Context, zones []string) (marker dnsCa
 	}
 	marker.Attempts++
 	marker.StartedAt, marker.FinishedAt, marker.ExitCode, marker.Changed, marker.Summary = e.now().UTC(), time.Time{}, 0, false, ""
+	return e.launchRecorded(ctx, marker, zones)
+}
+
+// beginRepair takes the run lock for a 「修复 DNS 缓存」 without waiting: another run (the once-per-version
+// ensure, or a unit still going) → errDNSCacheRepairBusy.
+func (e *dnsCacheEnsurer) beginRepair(ctx context.Context) (func(), error) {
+	unlock, err := tryLockDNSCacheFile(e.lockPath)
+	if err != nil {
+		return nil, err
+	}
+	if e.active(ctx) {
+		unlock()
+		return nil, errDNSCacheRepairBusy
+	}
+	return unlock, nil
+}
+
+// repairLocked runs `ensure` now, whatever the once-per-version marker says (lock held by beginRepair).
+func (e *dnsCacheEnsurer) repairLocked(ctx context.Context, record dnsCacheEnsure, zones []string) (dnsCacheEnsure, error) {
+	record, _, err := e.launchRecorded(ctx, record, zones)
+	return record, err
+}
+
+// resumeRepair records a repair the previous process left unfinished: waits for the unit if it still
+// runs, else takes the output it left (or marks the run as cut off). Never launches anything.
+func (e *dnsCacheEnsurer) resumeRepair(ctx context.Context) (dnsCacheEnsure, error) {
+	unlock, err := lockDNSCacheFile(e.lockPath)
+	if err != nil {
+		return dnsCacheEnsure{}, err
+	}
+	defer unlock()
+	record, err := readDNSCacheMarker(e.markerPath)
+	if err != nil || !record.FinishedAt.IsZero() {
+		return record, err
+	}
+	if e.active(ctx) {
+		record, _, err = e.finish(ctx, record, -1, true)
+		return record, err
+	}
+	if info, statErr := os.Stat(e.outputPath); statErr == nil && !info.ModTime().Before(record.StartedAt) {
+		record, _, err = e.finish(ctx, record, -1, false)
+		return record, err
+	}
+	record.FinishedAt, record.ExitCode, record.Summary = e.now().UTC(), -1, "执行被 Helper 重启打断，没有自动重试"
+	return record, writeDNSCacheMarker(e.markerPath, record)
+}
+
+// launchRecorded claims the run in the record file, launches the script and records the outcome (lock held).
+func (e *dnsCacheEnsurer) launchRecorded(ctx context.Context, marker dnsCacheEnsure, zones []string) (dnsCacheEnsure, bool, error) {
 	if err := writeDNSCacheMarker(e.markerPath, marker); err != nil {
 		return marker, false, err
 	}
@@ -508,6 +665,19 @@ func writeDNSCacheMarker(path string, marker dnsCacheEnsure) error {
 }
 
 func lockDNSCacheFile(path string) (func(), error) {
+	return flockDNSCacheFile(path, syscall.LOCK_EX)
+}
+
+// tryLockDNSCacheFile is lockDNSCacheFile without waiting: held elsewhere → errDNSCacheRepairBusy.
+func tryLockDNSCacheFile(path string) (func(), error) {
+	unlock, err := flockDNSCacheFile(path, syscall.LOCK_EX|syscall.LOCK_NB)
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return nil, errDNSCacheRepairBusy
+	}
+	return unlock, err
+}
+
+func flockDNSCacheFile(path string, how int) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, err
 	}
@@ -515,7 +685,7 @@ func lockDNSCacheFile(path string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+	if err := syscall.Flock(int(file.Fd()), how); err != nil {
 		_ = file.Close()
 		return nil, err
 	}

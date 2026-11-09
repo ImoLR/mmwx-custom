@@ -333,6 +333,10 @@ func copyDNSCacheStatus(status *dnsCacheStatus) *dnsCacheStatus {
 		ensure := *status.Ensure
 		copied.Ensure = &ensure
 	}
+	if status.Repair != nil {
+		repair := *status.Repair
+		copied.Repair = &repair
+	}
 	return &copied
 }
 

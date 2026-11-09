@@ -99,6 +99,7 @@ var helperCapabilities = []string{
 	"connection.status", "connection.settings",
 	"flvx.share", "flvx.egress.v1", flvxProtocolsCapability, flvxGuardCapability, flvx.UserLimitsCapability, flvx.ScanGuardCapability, flvx.NodeTotalCapability, flvx.CoreUnlimitedCapability, flvx.RealityPinCapability, flvx.RealityPinMarginCapability, flvx.RealityProbeCapability,
 	"machine.protection.v2",
+	dnsCacheRepairCapability,
 }
 
 func helperTokenHash(token string) string {
@@ -357,6 +358,13 @@ func (executor *commandExecutor) execute(ctx context.Context, command management
 		}
 	case "connection.settings":
 		err = executor.core.apply(ctx, executor.state.Settings)
+	case dnsCacheRepairCapability:
+		// 「修复 DNS 缓存」: returns once the run is claimed; its outcome follows in dns_cache.repair.
+		var started *dnsCacheEnsure
+		started, err = executor.dnsCache.startRepair(ctx, command.ID)
+		if err == nil {
+			data = map[string]any{"repair": started}
+		}
 	default:
 		err = errors.New("unsupported management action")
 	}

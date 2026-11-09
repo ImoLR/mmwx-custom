@@ -55,6 +55,8 @@ type helperState struct {
 	flushFailedAt time.Time
 	writes        uint64
 	flushErrors   map[string]bool
+	// Last 「修复 DNS 缓存」 click per server (the one-a-minute guard; memory only).
+	dnsCacheRepairAt map[string]time.Time
 }
 
 type helperStateData struct {

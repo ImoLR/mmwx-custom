@@ -275,6 +275,8 @@ export type DNSCacheStatus = {
   reason?: string;
   checked_at?: string;
   ensure?: { helper_version: string; started_at?: string; finished_at?: string; exit_code: number; changed?: boolean; summary?: string };
+  /** The last 「修复 DNS 缓存」 run (Helper v0.7.26+); running while finished_at is unset. */
+  repair?: { command_id?: string; helper_version?: string; started_at?: string; finished_at?: string; exit_code: number; changed?: boolean; summary?: string };
 };
 
 export type CoreModeSummary = {
@@ -633,11 +635,12 @@ export type CustomAgentStatusResponse = {
     machine_id?: string;
     architecture?: string;
     reported_at?: string;
+    capabilities?: string[];
     dns_cache?: DNSCacheStatus;
     update?: { component: "helper" | "core"; phase: "dispatching" | "downloading" | "verifying" | "installing" | "restarting" | "reconnecting" | "success" | "failed" | "rolled_back"; target_version?: string; message?: string; updated_at: string; started_at?: string; percent?: number; bytes_done?: number; bytes_total?: number; log?: Array<{ at: string; phase: string; text: string }> };
   };
   pending?: Array<{ id: string; action: string; created_at: string }>;
-  results?: Array<{ action: string; success: boolean; message?: string; completed_at: string }>;
+  results?: Array<{ command_id?: string; action: string; success: boolean; message?: string; completed_at: string }>;
 };
 
 export type CoreModeResponse = {

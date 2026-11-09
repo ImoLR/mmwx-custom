@@ -24,6 +24,15 @@ const (
 	managementHistoryMax = 20
 	managementQueueMax   = 16
 	managementPayloadMax = 3 << 20
+
+	// 「修复 DNS 缓存」 (Helper v0.7.26+): dns.cache.ensure runs flvx-dns-cache ensure once on the server.
+	dnsCacheRepairAction = "dns.cache.ensure"
+	// One click a minute per server; the Helper checks the same.
+	dnsCacheRepairCooldown = time.Minute
+	// A Helper that has not picked the command up within 2 minutes never runs it (no late surprise run).
+	dnsCacheRepairTTL = 2 * time.Minute
+	// The Helper bounds one run at 260 s; a run still reported as running after this no longer blocks.
+	dnsCacheRepairRunMax = 5 * time.Minute
 )
 
 var managementActions = map[string]struct{}{
@@ -36,6 +45,7 @@ var managementActions = map[string]struct{}{
 	"external.takeover": {},
 	"core.mode.apply":   {},
 	"connection.status": {}, "connection.settings": {},
+	dnsCacheRepairAction: {},
 }
 
 type managementArtifact struct {
@@ -104,9 +114,12 @@ type dnsCacheStatus struct {
 	Reason    string          `json:"reason,omitempty"`
 	CheckedAt time.Time       `json:"checked_at"`
 	Ensure    *dnsCacheEnsure `json:"ensure,omitempty"`
+	// Repair is the last 「修复 DNS 缓存」 run (Helper v0.7.26+); running while FinishedAt is zero.
+	Repair *dnsCacheEnsure `json:"repair,omitempty"`
 }
 
 type dnsCacheEnsure struct {
+	CommandID     string    `json:"command_id,omitempty"`
 	HelperVersion string    `json:"helper_version"`
 	ScriptSHA256  string    `json:"script_sha256,omitempty"`
 	Attempts      int       `json:"attempts,omitempty"`
@@ -226,8 +239,14 @@ func (s *helperState) enqueueManagementCommand(serverID, action string, payload 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	if action == dnsCacheRepairAction {
+		if err := s.dnsCacheRepairBlockedLocked(serverID, now); err != nil {
+			return managementCommand{}, err
+		}
+	}
 	previousCommands, previousStatus := s.data.ManagementCommands[serverID], s.data.AgentStatuses[serverID]
-	command, err := s.enqueueManagementCommandLocked(serverID, action, payload, time.Now().UTC(), false)
+	command, err := s.enqueueManagementCommandLocked(serverID, action, payload, now, false)
 	if err != nil {
 		return managementCommand{}, err
 	}
@@ -235,10 +254,54 @@ func (s *helperState) enqueueManagementCommand(serverID, action string, payload 
 		s.data.ManagementCommands[serverID], s.data.AgentStatuses[serverID] = previousCommands, previousStatus
 		return managementCommand{}, err
 	}
+	if action == dnsCacheRepairAction {
+		if s.dnsCacheRepairAt == nil {
+			s.dnsCacheRepairAt = map[string]time.Time{}
+		}
+		s.dnsCacheRepairAt[serverID] = now
+	}
 	return command, nil
 }
 
 var errUpgradeInProgress = errors.New("升级进行中，请等待当前任务完成")
+
+// conflictError: the request is valid but the server is busy right now (HTTP 409).
+type conflictError string
+
+func (e conflictError) Error() string { return string(e) }
+
+const errDNSCacheRepairBusy = conflictError("这台服务器正在修复 DNS 缓存，请稍候")
+
+// dnsCacheRepairBlockedLocked: 「修复 DNS 缓存」 needs a reporting Helper that has the command, no upgrade in
+// flight, no other repair queued or running, and a minute since the last click.
+func (s *helperState) dnsCacheRepairBlockedLocked(serverID string, now time.Time) error {
+	status := s.data.AgentStatuses[serverID]
+	if status.ReportedAt.IsZero() || now.Sub(status.ReportedAt) > helperStaleTimeout {
+		return errors.New("Helper 离线，上线后再试")
+	}
+	if !hasCapability(status, dnsCacheRepairAction) {
+		return errors.New("需要先升级 Helper（v0.7.26 起支持修复 DNS 缓存）")
+	}
+	if s.upgradeInProgressLocked(serverID, now) || s.batchServerBusyLocked(serverID) {
+		return errUpgradeInProgress
+	}
+	for _, command := range s.data.ManagementCommands[serverID] {
+		if command.Action == dnsCacheRepairAction && now.Before(command.ExpiresAt) {
+			return errDNSCacheRepairBusy
+		}
+	}
+	if status.DNSCache != nil && status.DNSCache.Repair != nil {
+		if repair := status.DNSCache.Repair; repair.FinishedAt.IsZero() && now.Sub(repair.StartedAt) < dnsCacheRepairRunMax {
+			return errDNSCacheRepairBusy
+		}
+	}
+	if last, ok := s.dnsCacheRepairAt[serverID]; ok {
+		if wait := dnsCacheRepairCooldown - now.Sub(last); wait > 0 {
+			return conflictError(fmt.Sprintf("刚刚执行过，请 %d 秒后再试", int(wait.Seconds())+1))
+		}
+	}
+	return nil
+}
 
 func updateAction(action string) bool {
 	return action == "helper.update" || action == "core.update" || action == "core.install"
@@ -281,6 +344,8 @@ func (s *helperState) enqueueManagementCommandLocked(serverID, action string, pa
 	command := managementCommand{ID: id, Action: action, Payload: append(json.RawMessage(nil), payload...), CreatedAt: now, ExpiresAt: now.Add(managementCommandTTL)}
 	if batch {
 		command.ExpiresAt = now.Add(helperBatchTimeout)
+	} else if action == dnsCacheRepairAction {
+		command.ExpiresAt = now.Add(dnsCacheRepairTTL)
 	}
 	command.Signature, err = signManagementCommand(command, identity.HelperTokenHash)
 	if err != nil {
@@ -518,7 +583,7 @@ func validateManagementPayload(action string, payload json.RawMessage) error {
 		return errors.New("management payload too large")
 	}
 	switch action {
-	case "helper.uninstall", "helper.status", "helper.version", "core.status", "core.version", "core.restart", "core.stop", "core.rollback", "official.xray.stop", "official.xray.start", "official.xray.attach-custom", "official.xray.detach-custom", "external.ownership.status", "external.ownership.prepare", "external.ownership.arm", "external.ownership.activate", "external.ownership.rollback", "external.takeover", "connection.status", "connection.settings":
+	case "helper.uninstall", "helper.status", "helper.version", "core.status", "core.version", "core.restart", "core.stop", "core.rollback", "official.xray.stop", "official.xray.start", "official.xray.attach-custom", "official.xray.detach-custom", "external.ownership.status", "external.ownership.prepare", "external.ownership.arm", "external.ownership.activate", "external.ownership.rollback", "external.takeover", "connection.status", "connection.settings", dnsCacheRepairAction:
 		if len(strings.TrimSpace(string(payload))) > 0 && string(payload) != "{}" && string(payload) != "null" {
 			return errors.New("action does not accept payload")
 		}
@@ -583,7 +648,8 @@ func (a *app) agentManagementHandler(w http.ResponseWriter, r *http.Request, ser
 		command, err := a.helperState.enqueueManagementCommand(serverID, strings.TrimSpace(request.Action), request.Payload)
 		if err != nil {
 			statusCode := http.StatusBadRequest
-			if errors.Is(err, errUpgradeInProgress) {
+			var conflict conflictError
+			if errors.Is(err, errUpgradeInProgress) || errors.As(err, &conflict) {
 				statusCode = http.StatusConflict
 			}
 			writeJSON(w, statusCode, map[string]any{"success": false, "message": err.Error()})
