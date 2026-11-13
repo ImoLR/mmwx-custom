@@ -78,7 +78,14 @@ func flvxShareProtocols(s flvxShare, helper flvxHelper) map[string]flvx.Protocol
 	if !helper.Ready || !helper.Protocols {
 		return nil
 	}
-	return flvx.SanitizeProtocols(s.Status.Protocols)
+	protocols := flvx.SanitizeProtocols(s.Status.Protocols)
+	if _, ok := protocols[flvx.ProtocolVLESSEnc]; ok && !helper.VLESSEnc {
+		delete(protocols, flvx.ProtocolVLESSEnc)
+		if len(protocols) == 0 {
+			return nil
+		}
+	}
+	return protocols
 }
 
 // flvxOwnPorts are the ports of the share's current nodes; they are FLVX's
@@ -244,6 +251,8 @@ type flvxHelper struct {
 	RealityProbe bool `json:"flvx_reality_probe"`
 	// Helper takes Desired.reality_pin_margin_ms ("flvx.reality_pin.v2").
 	RealityPinMargin bool `json:"flvx_reality_pin_margin"`
+	// Helper renders VLESS Encryption nodes ("flvx.vless_enc.v1").
+	VLESSEnc bool `json:"flvx_vless_enc"`
 }
 
 func (a *app) flvxHelpers() map[int64]flvxHelper {
@@ -260,7 +269,7 @@ func (a *app) flvxHelpers() map[int64]flvxHelper {
 			continue
 		}
 		installed := status.Helper.Installed && s.data.Servers[id].HelperTokenHash != ""
-		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1"), RealityGuard: installed && hasCapability(status, "flvx.reality_guard.v1"), UserLimits: installed && hasCapability(status, flvx.UserLimitsCapability), UserRate: installed && hasCapability(status, flvx.UserRateCapability), ScanGuard: installed && hasCapability(status, flvx.ScanGuardCapability), NodeTotal: installed && hasCapability(status, flvx.NodeTotalCapability), CoreUnlimited: installed && hasCapability(status, flvx.CoreUnlimitedCapability), RealityPin: installed && hasCapability(status, flvx.RealityPinCapability), RealityProbe: installed && hasCapability(status, flvx.RealityProbeCapability), RealityPinMargin: installed && hasCapability(status, flvx.RealityPinMarginCapability)}
+		result[n] = flvxHelper{Installed: installed, Version: status.Helper.Version, Architecture: status.Architecture, Ready: installed && hasCapability(status, "flvx.share"), Upgrading: s.upgradeInProgressLocked(id, now) || s.batchServerBusyLocked(id), Protocols: installed && hasCapability(status, "flvx.protocols.v1"), RealityGuard: installed && hasCapability(status, "flvx.reality_guard.v1"), UserLimits: installed && hasCapability(status, flvx.UserLimitsCapability), UserRate: installed && hasCapability(status, flvx.UserRateCapability), ScanGuard: installed && hasCapability(status, flvx.ScanGuardCapability), NodeTotal: installed && hasCapability(status, flvx.NodeTotalCapability), CoreUnlimited: installed && hasCapability(status, flvx.CoreUnlimitedCapability), RealityPin: installed && hasCapability(status, flvx.RealityPinCapability), RealityProbe: installed && hasCapability(status, flvx.RealityProbeCapability), RealityPinMargin: installed && hasCapability(status, flvx.RealityPinMarginCapability), VLESSEnc: installed && hasCapability(status, flvx.VLESSEncCapability)}
 	}
 	return result
 }

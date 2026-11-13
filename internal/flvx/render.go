@@ -60,6 +60,18 @@ func Inbound(n Node) map[string]any {
 		// choose the underlay, so there is no transport key.
 		result["protocol"] = "mieru"
 		result["settings"] = map[string]any{"users": []any{map[string]any{"username": n.Mieru.Username, "password": n.Mieru.Password, "email": n.Tag()}}}
+	} else if n.Protocol == ProtocolVLESSEnc && n.VLESSEnc != nil {
+		// VLESS Encryption: the decryption string is per inbound and excludes
+		// fallbacks; raw TCP without TLS / Reality. UDP rides the stream
+		// (XUDP with Vision), so the port listens on TCP only.
+		v := n.VLESSEnc
+		client := map[string]any{"id": v.UUID, "email": n.Tag()}
+		if v.Flow != "" {
+			client["flow"] = v.Flow
+		}
+		result["protocol"] = "vless"
+		result["settings"] = map[string]any{"decryption": v.Decryption, "clients": []any{client}}
+		result["streamSettings"] = map[string]any{"network": "tcp", "security": "none"}
 	}
 	return result
 }

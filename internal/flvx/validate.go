@@ -179,7 +179,7 @@ func ValidateDesiredWith(d Desired, c Config, official []int, o DesiredOptions) 
 				}
 				seen[id] = true
 			}
-		case ProtocolAnyTLS, ProtocolSnell, ProtocolMieru:
+		case ProtocolAnyTLS, ProtocolSnell, ProtocolMieru, ProtocolVLESSEnc:
 			capability, ok := o.Protocols[n.Protocol]
 			if !ok {
 				add(n.ID, "protocol", "protocol is not supported on this share")

@@ -29,7 +29,7 @@ func TestFLVXCoreUnlimitedPostgres(t *testing.T) {
 	}
 	helperConfig := func(unlimited bool) flvx.Config {
 		t.Helper()
-		e, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, true, unlimited, false, nil)
+		e, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, true, unlimited, false, false, nil)
 		if err != nil || e == nil || !e.Verify("helper", "7", time.Now()) {
 			t.Fatalf("helper payload: %v %+v", err, e)
 		}

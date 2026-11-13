@@ -42,6 +42,9 @@ test("扩展协议 line: advertised, TCP-only, or what to upgrade", () => {
   const capable = { ...ready, flvx_protocols: true };
   const all = { versions: [1], protocols: { anytls: { udp: true }, snell: { udp: true }, mieru: { udp: true } } };
   assert.deepEqual(flvxExtraProtocols(all, capable, "running"), { ready: true, text: "AnyTLS · Snell · Mieru 可由 FLVX 创建" });
+  const withVLESSEnc = { versions: [1], protocols: { ...all.protocols, vless_enc: { udp: true, versions: [1] } } };
+  assert.deepEqual(flvxExtraProtocols(withVLESSEnc, capable, "running"), { ready: true, text: "AnyTLS · Snell · Mieru · VLESS Encryption 可由 FLVX 创建" });
+  assert.equal(flvxProtocolName("vless_enc"), "VLESS Encryption");
   assert.deepEqual(flvxExtraProtocols({ versions: [1], protocols: { snell: { udp: false }, mieru: { udp: true } } }, capable, "running"), { ready: true, text: "Snell · Mieru 可由 FLVX 创建 · Snell 仅 TCP" });
   assert.equal(flvxExtraProtocols(undefined, ready, "running").text, "升级 Helper 后可用（AnyTLS / Snell / Mieru）");
   assert.equal(flvxExtraProtocols(undefined, capable, "stopped").text, "等待 FLVX Core 运行后核对");

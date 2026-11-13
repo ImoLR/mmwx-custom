@@ -156,7 +156,7 @@ func TestFLVXRealityPickPostgres(t *testing.T) {
 		{Host: "www.lovelive-anime.jp:443", PinnedIP: "127.0.0.1", PinnedMS: 1, BestMS: 1, Nodes: []string{"x"}},
 		{Host: "bad host", PinnedIP: "203.0.113.1", Nodes: []string{"y"}},
 	}
-	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, true, true, false, r); err != nil {
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, true, true, false, false, r); err != nil {
 		t.Fatal(err)
 	}
 	_, status := call("GET", "/api/custom/flvx/v1/shares/7/status", nil)
@@ -270,7 +270,7 @@ func TestFLVXRealityPinMarginPostgres(t *testing.T) {
 	}
 	helperPayload := func(v2 bool) ([]byte, *flvx.Envelope) {
 		t.Helper()
-		e, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, true, true, v2, nil)
+		e, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, true, true, v2, false, nil)
 		if err != nil || e == nil || !e.Verify("helper", "7", time.Now()) {
 			t.Fatalf("payload: %v %+v", err, e)
 		}
@@ -330,7 +330,7 @@ func TestFLVXRealityPinMarginPostgres(t *testing.T) {
 		{Host: "a.example:443", PinnedIP: "203.0.113.1", PinnedMS: 4, BestIP: "203.0.113.1", BestMS: 4, CheckedAt: 1, Nodes: []string{"11"}, MoveReason: flvx.RealityPinMoveFaster},
 		{Host: "b.example:443", PinnedIP: "203.0.113.2", PinnedMS: 5, BestIP: "203.0.113.2", BestMS: 5, CheckedAt: 1, Nodes: []string{"12"}, MoveReason: "sideways"},
 	}
-	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, true, true, true, r); err != nil {
+	if _, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, true, true, true, false, r); err != nil {
 		t.Fatal(err)
 	}
 	w := flvxTestRequest(a, "GET", "/api/custom/flvx/v1/shares/7/status", "flvx_fixture", nil)

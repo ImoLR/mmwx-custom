@@ -102,7 +102,7 @@ func TestFLVXNodeTotalPostgres(t *testing.T) {
 	}
 	helperPayload := func(nodeTotal bool, r *flvx.Report) *flvx.Envelope {
 		t.Helper()
-		e, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, nodeTotal, false, false, r)
+		e, err := a.flvxHelperDesired(ctx, 7, "7", "helper", "amd64", true, true, true, true, true, nodeTotal, false, false, false, r)
 		if err != nil || e == nil || !e.Verify("helper", "7", time.Now()) {
 			t.Fatalf("helper payload: %v %+v", err, e)
 		}

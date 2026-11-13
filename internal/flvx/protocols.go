@@ -3,6 +3,7 @@ package flvx
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"net"
 	"regexp"
@@ -14,6 +15,9 @@ import (
 var (
 	extraSecret   = regexp.MustCompile(`^[A-Za-z0-9]{16,64}$`)
 	mieruUsername = regexp.MustCompile(`^[A-Za-z0-9]{4,32}$`)
+	// Server ticket lifetime of a VLESS Encryption decryption string, e.g.
+	// 600s, 0s (no ticket) or 300-600s.
+	vlessEncTicket = regexp.MustCompile(`^[0-9]{1,6}(-[0-9]{1,6})?s$`)
 )
 
 const (
@@ -37,16 +41,17 @@ type DesiredOptions struct {
 // AllProtocols allows every extra protocol with the contract defaults, for
 // structural checks where the share's capability is enforced elsewhere.
 func AllProtocols() map[string]ProtocolCap {
-	return map[string]ProtocolCap{ProtocolAnyTLS: {UDP: true}, ProtocolSnell: {UDP: true}, ProtocolMieru: {UDP: true}}
+	return map[string]ProtocolCap{ProtocolAnyTLS: {UDP: true}, ProtocolSnell: {UDP: true}, ProtocolMieru: {UDP: true}, ProtocolVLESSEnc: {UDP: true}}
 }
 
 // UDPProtocol reports whether a node of protocol p also listens on UDP of
-// its port: SS2022 and Mieru (one inbound serves both underlays).
+// its port: SS2022 and Mieru (one inbound serves both underlays). VLESS
+// Encryption carries UDP inside its TCP stream.
 func UDPProtocol(p string) bool { return p == "ss2022" || p == ProtocolMieru }
 
 func (n Node) objects() int {
 	count := 0
-	for _, present := range []bool{n.SS2022 != nil, n.VLESS != nil, n.AnyTLS != nil, n.Snell != nil, n.Mieru != nil} {
+	for _, present := range []bool{n.SS2022 != nil, n.VLESS != nil, n.AnyTLS != nil, n.Snell != nil, n.Mieru != nil, n.VLESSEnc != nil} {
 		if present {
 			count++
 		}
@@ -55,7 +60,7 @@ func (n Node) objects() int {
 }
 
 func validateExtra(n Node, capability ProtocolCap, now time.Time, add func(field, message string)) {
-	object := map[string]bool{ProtocolAnyTLS: n.AnyTLS != nil, ProtocolSnell: n.Snell != nil, ProtocolMieru: n.Mieru != nil}
+	object := map[string]bool{ProtocolAnyTLS: n.AnyTLS != nil, ProtocolSnell: n.Snell != nil, ProtocolMieru: n.Mieru != nil, ProtocolVLESSEnc: n.VLESSEnc != nil}
 	if !object[n.Protocol] || n.objects() != 1 {
 		add(n.Protocol, "fields of the node protocol are required exclusively")
 		return
@@ -106,7 +111,45 @@ func validateExtra(n Node, capability ProtocolCap, now time.Time, add func(field
 		if !extraSecret.MatchString(m.Password) {
 			add("mieru.password", "password must be 16–64 characters A–Z, a–z, 0–9")
 		}
+	case ProtocolVLESSEnc:
+		v := n.VLESSEnc
+		if !uuid.MatchString(v.UUID) {
+			add("vless_enc.uuid", "invalid UUID")
+		}
+		if v.Flow != "" && v.Flow != "xtls-rprx-vision" {
+			add("vless_enc.flow", "flow must be empty or xtls-rprx-vision")
+		}
+		if !ValidVLESSDecryption(v.Decryption) {
+			add("vless_enc.decryption", "decryption must be mlkem768x25519plus.<native|xorpub|random>.<ticket>.<server key>")
+		}
+		if versions := capability.Versions; len(versions) > 0 && !containsInt(versions, VLESSEncVersion) {
+			add("vless_enc", "VLESS Encryption version is not supported on this share")
+		}
 	}
+}
+
+// VLESSEncVersion is the only vless_enc node shape (contract version 1).
+const VLESSEncVersion = 1
+
+// ValidVLESSDecryption accepts the server string Xray's vlessenc emits:
+// mlkem768x25519plus.<mode>.<ticket>.<key>, one key (canonical unpadded
+// base64url of an X25519 private key or an ML-KEM-768 seed), no padding
+// segments. The string is a secret: callers never log or echo it.
+func ValidVLESSDecryption(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(s) > 256 || len(parts) != 4 || parts[0] != "mlkem768x25519plus" {
+		return false
+	}
+	switch parts[1] {
+	case "native", "xorpub", "random":
+	default:
+		return false
+	}
+	if !vlessEncTicket.MatchString(parts[2]) {
+		return false
+	}
+	key, err := base64.RawURLEncoding.Strict().DecodeString(parts[3])
+	return err == nil && (len(key) == 32 || len(key) == 64) && base64.RawURLEncoding.EncodeToString(key) == parts[3]
 }
 
 // singlePEM returns the only PEM block of data, nil when there is none, more
@@ -171,6 +214,15 @@ func SanitizeProtocols(in map[string]ProtocolCap) map[string]ProtocolCap {
 				}
 			}
 			if len(c.Transports) > 0 && len(clean.Transports) == 0 {
+				continue
+			}
+		case ProtocolVLESSEnc:
+			for _, v := range c.Versions {
+				if v == VLESSEncVersion && !containsInt(clean.Versions, v) {
+					clean.Versions = append(clean.Versions, v)
+				}
+			}
+			if len(c.Versions) > 0 && len(clean.Versions) == 0 {
 				continue
 			}
 		}

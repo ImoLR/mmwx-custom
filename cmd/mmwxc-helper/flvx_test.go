@@ -93,6 +93,8 @@ func fakeFLVXManager(t *testing.T) (*flvxManager, *fakeFLVXCore) {
 	go server.Serve(l)
 	t.Cleanup(func() { server.Close() })
 	m := &flvxManager{dir: filepath.Join(dir, "state"), core: newCoreClient(socket), config: config{Token: "helper", ServerID: "7"}, logs: newPeriodicLogLimiter()}
+	// No Core binary here: the VLESS Encryption config test says "unsupported".
+	m.testVLESSEnc = func(context.Context) (bool, error) { return false, nil }
 	m.state = flvxLocalState{Payload: flvx.Payload{Version: 1, Status: "active", Config: flvx.Config{PortMin: 30000, PortMax: 31000, ResetDay: 1, MemoryMB: 256, CPUPercent: 50, MaxConnections: 6}, Desired: flvx.Desired{Revision: 1, Nodes: []flvx.Node{helperFLVXNode("one", 30001)}}}, APIPort: 49000, Counters: map[string]*flvx.Counter{}, Applied: map[string]string{}, Report: flvx.Report{Generation: "helper-a"}}
 	m.setup = func(context.Context) error { return nil }
 	m.writeState = func(path string, raw []byte, mode os.FileMode) error {

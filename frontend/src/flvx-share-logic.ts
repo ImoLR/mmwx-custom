@@ -31,7 +31,7 @@ export function flvxHelperUpgradable(helper?: FLVXHelper) {
   return Boolean(helper?.installed && !helper.flvx_ready && helper.version && !/^v?0\.1(?:\.|$)/.test(helper.version));
 }
 
-const protocolNames: Record<string, string> = { ss2022: "SS2022", vless_reality_vision: "VLESS Reality Vision", anytls: "AnyTLS", snell: "Snell", mieru: "Mieru" };
+const protocolNames: Record<string, string> = { ss2022: "SS2022", vless_reality_vision: "VLESS Reality Vision", anytls: "AnyTLS", snell: "Snell", mieru: "Mieru", vless_enc: "VLESS Encryption" };
 
 export function flvxProtocolName(protocol: string) {
   return protocolNames[protocol] || protocol;
@@ -40,7 +40,7 @@ export function flvxProtocolName(protocol: string) {
 // 扩展协议 (landing-protocols-v1): what FLVX may create on this share beyond
 // SS2022 / VLESS, or what is missing. ready = advertised to FLVX.
 export function flvxExtraProtocols(caps: FLVXProtocolCaps | undefined, helper: FLVXHelper | undefined, coreState: string) {
-  const names = ["anytls", "snell", "mieru"].filter((p) => caps?.protocols?.[p]);
+  const names = ["anytls", "snell", "mieru", "vless_enc"].filter((p) => caps?.protocols?.[p]);
   if (names.length) {
     const tcpOnly = names.filter((p) => !caps!.protocols[p].udp).map(flvxProtocolName);
     return { ready: true, text: `${names.map(flvxProtocolName).join(" · ")} 可由 FLVX 创建${tcpOnly.length ? ` · ${tcpOnly.join("、")} 仅 TCP` : ""}` };

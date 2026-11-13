@@ -331,9 +331,12 @@ func TestFLVXLandingProtocolsNetnsInner(t *testing.T) {
 	t.Logf("evidence:\n%s", raw)
 }
 
-func lpStartFixtures(t *testing.T) {
+func lpStartFixtures(t *testing.T) { lpStartFixturesAt(t, lpEchoTCP, lpEchoA, lpEchoB, 53) }
+
+// lpStartFixturesAt: TCP echo on tcp:80, UDP echoes on a:udpPort / b:udpPort.
+func lpStartFixturesAt(t *testing.T, tcp, a, b string, udpPort int) {
 	t.Helper()
-	l, err := net.Listen("tcp4", lpEchoTCP+":80")
+	l, err := net.Listen("tcp4", tcp+":80")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,8 +350,8 @@ func lpStartFixtures(t *testing.T) {
 			go func() { defer c.Close(); io.Copy(c, c) }()
 		}
 	}()
-	for address, prefix := range map[string]string{lpEchoA: "A:", lpEchoB: "B:"} {
-		u, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP(address), Port: 53})
+	for address, prefix := range map[string]string{a: "A:", b: "B:"} {
+		u, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP(address), Port: udpPort})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -486,8 +489,10 @@ func lpEcho(c net.Conn, size int) error {
 	return nil
 }
 
-func lpBulkEcho(listener, size int) error {
-	c, err := lpDial(listener)
+func lpBulkEcho(listener, size int) error { return lpBulkEchoTo(listener, size, lpEchoTCP) }
+
+func lpBulkEchoTo(listener, size int, ip string) error {
+	c, err := lpDialTo(listener, ip, 80)
 	if err != nil {
 		return err
 	}
@@ -513,6 +518,10 @@ func lpBulkEcho(listener, size int) error {
 // lpUDPTwoTargets sends through one SOCKS5 UDP association to both UDP
 // echoes, interleaved; each reply must come from the datagram's own target.
 func lpUDPTwoTargets(listener int, tag string) error {
+	return lpUDPTwoTargetsVia(listener, tag, lpEchoA, lpEchoB, 53)
+}
+
+func lpUDPTwoTargetsVia(listener int, tag, echoA, echoB string, port int) error {
 	ctrl, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(listener), 2*time.Second)
 	if err != nil {
 		return err
@@ -539,14 +548,14 @@ func lpUDPTwoTargets(listener int, tag string) error {
 	}
 	defer u.Close()
 	want := map[string]string{}
-	for i, target := range []string{lpEchoA, lpEchoB, lpEchoA, lpEchoB, lpEchoB, lpEchoA} {
+	for i, target := range []string{echoA, echoB, echoA, echoB, echoB, echoA} {
 		payload := fmt.Sprintf("%s-%d", tag, i)
 		prefix := "A:"
-		if target == lpEchoB {
+		if target == echoB {
 			prefix = "B:"
 		}
 		want[prefix+payload] = target
-		packet := append([]byte{0, 0, 0, 1}, append(net.ParseIP(target).To4(), 0, 53)...)
+		packet := append([]byte{0, 0, 0, 1}, append(net.ParseIP(target).To4(), byte(port>>8), byte(port))...)
 		if _, err = u.WriteToUDP(append(packet, payload...), relay); err != nil {
 			return err
 		}

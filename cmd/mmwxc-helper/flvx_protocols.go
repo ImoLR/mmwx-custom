@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"sort"
 	"time"
 
@@ -21,15 +26,22 @@ const (
 	flvxProtocolsCapability = "flvx.protocols.v1"
 	coreFeatureAnyTLS       = "anytls.downlink_stats"
 	coreFeatureSnellUDP     = "snell.udp_per_packet_target"
-	flvxListeningRefresh    = 30 * time.Second
+	// Not a /v1/features name: the Helper's own config test of the build
+	// (vlessEncSupported), so VLESS Encryption is advertised only where the
+	// Core accepts exactly the inbound Inbound renders.
+	coreFeatureVLESSEnc  = "mmwxc.vless_enc"
+	flvxListeningRefresh = 30 * time.Second
 )
 
 // flvxCoreFeatures are the features of the FLVX Core build SHA256 (the
 // installed artifact), kept across Helper restarts so the capability does
-// not flap while the Core is briefly unreachable.
+// not flap while the Core is briefly unreachable. VLESSEnc is the config
+// test result for that build; nil = not tested yet (or the test could not
+// run), retried on the next Core start or Helper start.
 type flvxCoreFeatures struct {
 	SHA256   string   `json:"sha256"`
 	Features []string `json:"features"`
+	VLESSEnc *bool    `json:"vless_enc,omitempty"`
 }
 
 // features reads /v1/features. A Core without the endpoint has none.
@@ -75,8 +87,61 @@ func (m *flvxManager) detectFeatures(ctx context.Context, epoch string) {
 	if err != nil {
 		return
 	}
+	sha := m.state.Payload.Artifact.SHA256
+	next := &flvxCoreFeatures{SHA256: sha, Features: features}
+	if previous := m.state.CoreFeatures; previous != nil && previous.SHA256 == sha {
+		next.VLESSEnc = previous.VLESSEnc
+	}
+	// Once per Core build: a Core without /v1/features gets no extra
+	// protocol anyway.
+	if next.VLESSEnc == nil && len(features) > 0 {
+		test := m.testVLESSEnc
+		if test == nil {
+			test = m.vlessEncSupported
+		}
+		supported, err := test(ctx)
+		m.logs.report("FLVX Core VLESS Encryption check", err)
+		if err == nil {
+			next.VLESSEnc = &supported
+		}
+	}
 	m.featuresEpoch = epoch
-	m.state.CoreFeatures = &flvxCoreFeatures{SHA256: m.state.Payload.Artifact.SHA256, Features: features}
+	m.state.CoreFeatures = next
+}
+
+// vlessEncSupported runs the installed Core once with -test on a config
+// holding one rendered VLESS Encryption inbound (throwaway key, never
+// started, nothing bound). false = the build rejects it; err = the test
+// itself could not run (timeout, signal, exec failure), so nothing is known.
+func (m *flvxManager) vlessEncSupported(ctx context.Context) (bool, error) {
+	key := make([]byte, 32)
+	id := make([]byte, 16)
+	if _, err := rand.Read(key); err != nil {
+		return false, err
+	}
+	if _, err := rand.Read(id); err != nil {
+		return false, err
+	}
+	id[6], id[8] = id[6]&0x0f|0x40, id[8]&0x3f|0x80
+	node := flvx.Node{ID: "vless-enc-check", Protocol: flvx.ProtocolVLESSEnc, Port: 1, VLESSEnc: &flvx.VLESSEnc{
+		UUID: fmt.Sprintf("%x-%x-%x-%x-%x", id[0:4], id[4:6], id[6:8], id[8:10], id[10:16]), Flow: "xtls-rprx-vision",
+		Decryption: "mlkem768x25519plus.random.600s." + base64.RawURLEncoding.EncodeToString(key)}}
+	config, _ := json.Marshal(map[string]any{"log": map[string]any{"loglevel": "none"}, "inbounds": []any{flvx.Inbound(node)}, "outbounds": []any{map[string]any{"protocol": "freedom"}}})
+	child, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	command := exec.CommandContext(child, m.binary, "run", "-test", "-config", "stdin:")
+	command.Dir = "/"
+	command.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
+	command.Stdin = bytes.NewReader(config)
+	err := command.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if child.Err() == nil && errors.As(err, &exit) && exit.ExitCode() > 0 {
+		return false, nil
+	}
+	return false, fmt.Errorf("FLVX Core config test did not run: %w", err)
 }
 
 // coreFeatures is the feature set of the installed FLVX Core build; nil when
@@ -89,6 +154,9 @@ func (m *flvxManager) coreFeatures() map[string]bool {
 	set := map[string]bool{}
 	for _, name := range f.Features {
 		set[name] = true
+	}
+	if f.VLESSEnc != nil && *f.VLESSEnc {
+		set[coreFeatureVLESSEnc] = true
 	}
 	return set
 }
@@ -105,6 +173,10 @@ func flvxProtocolCaps(features map[string]bool) map[string]flvx.ProtocolCap {
 	if features[coreFeatureAnyTLS] {
 		caps[flvx.ProtocolAnyTLS] = flvx.ProtocolCap{UDP: true}
 	}
+	// UDP rides the VLESS stream (XUDP), see Inbound.
+	if features[coreFeatureVLESSEnc] {
+		caps[flvx.ProtocolVLESSEnc] = flvx.ProtocolCap{UDP: true, Versions: []int{flvx.VLESSEncVersion}}
+	}
 	return caps
 }
 
@@ -115,6 +187,9 @@ func flvxProtocolProblem(p string, features map[string]bool) string {
 		return ""
 	}
 	if _, ok := flvxProtocolCaps(features)[p]; !ok {
+		if p == flvx.ProtocolVLESSEnc {
+			return "FLVX Core does not support VLESS Encryption; upgrade the FLVX Core"
+		}
 		return "FLVX Core lacks the fix this protocol needs; upgrade the FLVX Core"
 	}
 	return ""

@@ -561,7 +561,7 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 	settings = a.trafficBlocksForHelper(settings, officialID, request.HelperVersion)
 	response := map[string]any{"success": true, "settings": sortedConnectionSettings(settingsForHelperMachine(settings, request.HelperVersion, machineV2)), "command": command}
 	if request.Management != nil {
-		share, egress, protocols, guard, limits, scan, nodeTotal, coreUnlimited, probe, pinMargin := false, false, false, false, false, false, false, false, false, false
+		share, egress, protocols, guard, limits, scan, nodeTotal, coreUnlimited, probe, pinMargin, vlessEnc := false, false, false, false, false, false, false, false, false, false, false
 		for _, capability := range request.Management.Status.Capabilities {
 			share = share || capability == "flvx.share"
 			egress = egress || capability == "flvx.egress.v1"
@@ -573,11 +573,12 @@ func (a *app) helperDetailedConnectionsHandler(w http.ResponseWriter, r *http.Re
 			coreUnlimited = coreUnlimited || capability == flvx.CoreUnlimitedCapability
 			probe = probe || capability == flvx.RealityProbeCapability
 			pinMargin = pinMargin || capability == flvx.RealityPinMarginCapability
+			vlessEnc = vlessEnc || capability == flvx.VLESSEncCapability
 		}
 		if share {
 			id, _ := strconv.ParseInt(officialID, 10, 64)
 			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			desired, flvxErr := a.flvxHelperDesired(r.Context(), id, serverID, token, request.Management.Status.Architecture, egress, protocols, guard, limits, scan, nodeTotal, coreUnlimited, pinMargin, request.FLVX)
+			desired, flvxErr := a.flvxHelperDesired(r.Context(), id, serverID, token, request.Management.Status.Architecture, egress, protocols, guard, limits, scan, nodeTotal, coreUnlimited, pinMargin, vlessEnc, request.FLVX)
 			if flvxErr == nil && desired != nil {
 				response["flvx"] = desired
 				// landing-user-limits-v1: the share's budgets, only while the

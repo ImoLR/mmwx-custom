@@ -105,6 +105,7 @@ type flvxManager struct {
 	// landing-protocols-v1; see flvx_protocols.go.
 	featuresEpoch  string
 	readFeatures   func(context.Context) ([]string, error)
+	testVLESSEnc   func(context.Context) (bool, error)
 	readListening  func() (tcp, udp []uint32, err error)
 	listeningCache *flvx.ListeningPorts
 	listeningAt    time.Time

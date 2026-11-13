@@ -52,19 +52,33 @@ type VLESS struct {
 	Reality Reality `json:"reality"`
 }
 
-// Contract landing-protocols-v1: AnyTLS / Snell / Mieru nodes in the FLVX Core.
+// Contract landing-protocols-v1: AnyTLS / Snell / Mieru / VLESS Encryption
+// nodes in the FLVX Core.
 const (
 	ProtocolAnyTLS   = "anytls"
 	ProtocolSnell    = "snell"
 	ProtocolMieru    = "mieru"
+	ProtocolVLESSEnc = "vless_enc"
 	ProtocolsVersion = 1
+	// VLESSEncCapability: the Helper takes Node.vless_enc (FLVX plan 253);
+	// Custom withholds vless_enc nodes from Helpers without it.
+	VLESSEncCapability = "flvx.vless_enc.v1"
 )
 
 // ExtraProtocols lists the landing-protocols-v1 protocols in display order.
-var ExtraProtocols = []string{ProtocolAnyTLS, ProtocolSnell, ProtocolMieru}
+var ExtraProtocols = []string{ProtocolAnyTLS, ProtocolSnell, ProtocolMieru, ProtocolVLESSEnc}
 
 func IsExtraProtocol(p string) bool {
-	return p == ProtocolAnyTLS || p == ProtocolSnell || p == ProtocolMieru
+	return p == ProtocolAnyTLS || p == ProtocolSnell || p == ProtocolMieru || p == ProtocolVLESSEnc
+}
+
+// VLESSEnc is a VLESS Encryption node (Xray mlkem768x25519plus, raw TCP, no
+// TLS / Reality). Decryption is the full server string FLVX generated; it
+// holds the server key, so it is a secret: never logged, never echoed.
+type VLESSEnc struct {
+	UUID       string `json:"uuid"`
+	Flow       string `json:"flow"`
+	Decryption string `json:"decryption"`
 }
 
 // AnyTLS runs over TLS with an FLVX-generated certificate. KeyPEM is a secret
@@ -95,7 +109,8 @@ type Mieru struct {
 
 // ProtocolCap is one advertised extra protocol (contract §2). UDP = its UDP
 // relay works on the share's Core; empty lists mean the contract defaults
-// (Snell versions 4 and 5, obfs none/http/tls; Mieru TCP and UDP).
+// (Snell versions 4 and 5, obfs none/http/tls; Mieru TCP and UDP; VLESS
+// Encryption version 1).
 type ProtocolCap struct {
 	UDP        bool     `json:"udp"`
 	Versions   []int    `json:"versions,omitempty"`
@@ -141,6 +156,9 @@ type Node struct {
 	AnyTLS *AnyTLS `json:"anytls,omitempty"`
 	Snell  *Snell  `json:"snell,omitempty"`
 	Mieru  *Mieru  `json:"mieru,omitempty"`
+	// Likewise; Custom strips vless_enc nodes for Helpers without
+	// flvx.vless_enc.v1.
+	VLESSEnc *VLESSEnc `json:"vless_enc,omitempty"`
 }
 
 func (n Node) Tag() string { return "flvxl-" + n.ID }

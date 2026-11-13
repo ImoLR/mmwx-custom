@@ -11,11 +11,11 @@ import (
 )
 
 // egress / protocols / guard / limits / scan / nodeTotal / coreUnlimited /
-// pinMargin report whether this Helper advertises flvx.egress.v1 /
+// pinMargin / vlessEnc report whether this Helper advertises flvx.egress.v1 /
 // flvx.protocols.v1 / flvx.reality_guard.v1 / flvx.user_limits.v1 /
 // flvx.scan_guard.v1 / flvx.node_total.v1 / flvx.core_unlimited.v1 /
-// flvx.reality_pin.v2.
-func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, egress, protocols, guard, limits, scan, nodeTotal, coreUnlimited, pinMargin bool, report *flvx.Report) (*flvx.Envelope, error) {
+// flvx.reality_pin.v2 / flvx.vless_enc.v1.
+func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, arch string, egress, protocols, guard, limits, scan, nodeTotal, coreUnlimited, pinMargin, vlessEnc bool, report *flvx.Report) (*flvx.Envelope, error) {
 	if a.flvxDB() == nil {
 		return nil, nil
 	}
@@ -69,7 +69,7 @@ func (a *app) flvxHelperDesired(ctx context.Context, id int64, serverID, token, 
 		if !coreUnlimited {
 			config = flvx.LegacyCoreLimits(config)
 		}
-		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: config, Desired: flvxHelperPinMargin(flvxHelperScanGuard(flvxHelperNodeTotal(flvxHelperConnMode(flvxHelperGuard(flvxHelperProtocols(flvxHelperEgress(s, egress), protocols), guard), limits), nodeTotal), scan), pinMargin), OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
+		envelope = &flvx.Envelope{Payload: flvx.Payload{ServerID: serverID, Version: s.Version, Status: state, Config: config, Desired: flvxHelperPinMargin(flvxHelperScanGuard(flvxHelperNodeTotal(flvxHelperConnMode(flvxHelperGuard(flvxHelperProtocols(flvxHelperEgress(s, egress), protocols, vlessEnc), guard), limits), nodeTotal), scan), pinMargin), OfficialPorts: server.OfficialPorts, Artifact: artifact, Period: s.Period, TrafficUsedBytes: s.Status.TrafficUsedBytes, AckGeneration: s.Generation, AckSequence: s.Sequence}, ExpiresAt: time.Now().Add(10 * time.Minute).UnixMilli()}
 		envelope.Sign(token)
 		return nil
 	})
@@ -107,14 +107,17 @@ func flvxHelperEgress(s flvxShare, supported bool) flvx.Desired {
 // flvxHelperProtocols withholds landing-protocols-v1 nodes from a Helper that
 // cannot render them (fail closed): it would reject the whole signed payload
 // on the unknown fields. FLVX keeps the nodes and resends them once the
-// share advertises the protocol again.
-func flvxHelperProtocols(d flvx.Desired, supported bool) flvx.Desired {
-	if supported {
+// share advertises the protocol again. VLESS Encryption nodes need
+// flvx.vless_enc.v1 on top (Helpers before it render the other three only).
+func flvxHelperProtocols(d flvx.Desired, supported, vlessEnc bool) flvx.Desired {
+	if supported && vlessEnc {
 		return d
 	}
 	nodes := make([]flvx.Node, 0, len(d.Nodes))
 	for _, n := range d.Nodes {
-		if !flvx.IsExtraProtocol(n.Protocol) && n.AnyTLS == nil && n.Snell == nil && n.Mieru == nil {
+		extra := flvx.IsExtraProtocol(n.Protocol) || n.AnyTLS != nil || n.Snell != nil || n.Mieru != nil || n.VLESSEnc != nil
+		vlessEncNode := n.Protocol == flvx.ProtocolVLESSEnc || n.VLESSEnc != nil
+		if !extra || supported && !vlessEncNode {
 			nodes = append(nodes, n)
 		}
 	}
