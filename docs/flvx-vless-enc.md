@@ -68,3 +68,12 @@ targets in one association, traffic billed both ways, online-IP cap 2,
 connection cap 6, disable cuts the live stream and re-enable restores, no Core
 restart. Xray clients without Vision send UDP to ports 53 / 443 as one plain
 VLESS UDP flow (Xray behaviour), so the lab uses 5353.
+
+## Silent connections (FLVX 预热池, `TestFLVXWarmIdleNetnsE2E`)
+
+The policy handshake (120 s since Helper v0.7.28) does not bound a silent
+VLESS Encryption connection: the Core runs the ML-KEM handshake before it sets
+the handshake read deadline, so a connection that never sends stays open
+until the client closes it (lab: still open after 250 s; SS2022 / AnyTLS
+close at 120 s). Pooled connections work; a client that opens connections
+and never sends holds them (Core behaviour, not changed here).
