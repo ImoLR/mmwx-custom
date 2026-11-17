@@ -37,7 +37,7 @@ func TestGuardRenderContract(t *testing.T) {
 		Reality: Reality{Dest: "203.0.113.80:443", ServerNames: []string{"www.example.com"}, PrivateKey: "k", ShortIDs: []string{"", "a1"}}}}
 	plain := Inbound(n)
 	guarded, _ := json.Marshal(WithGuardDest(plain, 41001))
-	if string(guarded) != `{"listen":"0.0.0.0","port":30010,"protocol":"vless","settings":{"clients":[{"email":"flvxl-7","flow":"xtls-rprx-vision","id":"12345678-1234-4234-8234-123456789abc"}],"decryption":"none"},"sniffing":{"destOverride":["http","tls"],"domainsExcluded":["regexp:.*"],"enabled":true,"routeOnly":true},"streamSettings":{"network":"tcp","realitySettings":{"dest":"127.0.0.1:41001","privateKey":"k","serverNames":["www.example.com"],"shortIds":["","a1"]},"security":"reality","sockopt":{"customSockopt":[{"level":"6","network":"tcp","opt":"9","system":"linux","type":"int","value":"5"}]}},"tag":"flvxl-7"}` {
+	if string(guarded) != `{"listen":"0.0.0.0","port":30010,"protocol":"vless","settings":{"clients":[{"email":"flvxl-7","flow":"xtls-rprx-vision","id":"12345678-1234-4234-8234-123456789abc"}],"decryption":"none"},"sniffing":{"destOverride":["http","tls"],"domainsExcluded":["regexp:.*"],"enabled":true,"routeOnly":true},"streamSettings":{"network":"tcp","realitySettings":{"dest":"127.0.0.1:41001","privateKey":"k","serverNames":["www.example.com"],"shortIds":["","a1"]},"security":"reality","sockopt":{"customSockopt":[{"level":"6","network":"tcp","opt":"9","system":"linux","type":"int","value":"130"}]}},"tag":"flvxl-7"}` {
 		t.Fatalf("guarded inbound %s", guarded)
 	}
 	// The rendered node itself is not modified.

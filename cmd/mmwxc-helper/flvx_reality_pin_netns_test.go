@@ -22,7 +22,7 @@ import (
 // reality-pick-v1 §3 with the real FLVX Core and the Helper's own reconcile,
 // in three private namespaces (the host network is never touched):
 //
-//	client 203.0.113.50 ── 203.0.113.1 landing 198.51.100.1 ── 198.51.100.2 / .3 dest
+//	client 11.0.1.50 ── 11.0.1.1 landing 11.0.2.1 ── 11.0.2.2 / .3 dest
 //
 // The dest name resolves to both dest addresses; the connect times the
 // Helper measures are injected (.2 fast, then .3 fast). One guarded Reality
@@ -57,11 +57,11 @@ func TestFLVXRealityPinNetnsE2E(t *testing.T) {
 	ns.sh("ip", "link", "add", "rpl1"+suffix, "type", "veth", "peer", "name", "rpd0"+suffix)
 	ns.sh("ip", "link", "set", "rpl1"+suffix, "netns", l)
 	ns.sh("ip", "link", "set", "rpd0"+suffix, "netns", d)
-	ns.sh("ip", "-n", c, "addr", "add", "203.0.113.50/24", "dev", "rpc0"+suffix)
+	ns.sh("ip", "-n", c, "addr", "add", "11.0.1.50/24", "dev", "rpc0"+suffix)
 	ns.sh("ip", "-n", l, "addr", "add", rgLanding+"/24", "dev", "rpl0"+suffix)
-	ns.sh("ip", "-n", l, "addr", "add", "198.51.100.1/24", "dev", "rpl1"+suffix)
-	ns.sh("ip", "-n", d, "addr", "add", "198.51.100.2/24", "dev", "rpd0"+suffix)
-	ns.sh("ip", "-n", d, "addr", "add", "198.51.100.3/24", "dev", "rpd0"+suffix)
+	ns.sh("ip", "-n", l, "addr", "add", "11.0.2.1/24", "dev", "rpl1"+suffix)
+	ns.sh("ip", "-n", d, "addr", "add", "11.0.2.2/24", "dev", "rpd0"+suffix)
+	ns.sh("ip", "-n", d, "addr", "add", "11.0.2.3/24", "dev", "rpd0"+suffix)
 	for _, link := range [][2]string{{c, "rpc0"}, {l, "rpl0"}, {l, "rpl1"}, {d, "rpd0"}} {
 		ns.sh("ip", "-n", link[0], "link", "set", link[1]+suffix, "up")
 	}
@@ -155,10 +155,10 @@ func TestFLVXRealityPinNetnsInner(t *testing.T) {
 		if host != "www.flvx.test" {
 			return nil, fmt.Errorf("unknown host %s", host)
 		}
-		return []string{"198.51.100.2", "198.51.100.3"}, nil
+		return []string{"11.0.2.2", "11.0.2.3"}, nil
 	}
 	var mu sync.Mutex
-	measured := map[string]time.Duration{"198.51.100.2": 10 * time.Millisecond, "198.51.100.3": 60 * time.Millisecond}
+	measured := map[string]time.Duration{"11.0.2.2": 10 * time.Millisecond, "11.0.2.3": 60 * time.Millisecond}
 	m.connectTime = func(ctx context.Context, address string) (time.Duration, error) {
 		// The real connect proves the address answers; the time is injected.
 		var dialer net.Dialer
@@ -201,14 +201,14 @@ func TestFLVXRealityPinNetnsInner(t *testing.T) {
 		t.Fatalf("node not active: %+v", s)
 	}
 	nodeConfig := m.state.Applied[node.Tag()]
-	if flvx.GuardPortOf(nodeConfig) == 0 || !strings.HasSuffix(guardAddress(), "=198.51.100.2") {
+	if flvx.GuardPortOf(nodeConfig) == 0 || !strings.HasSuffix(guardAddress(), "=11.0.2.2") {
 		t.Fatalf("not guarded on the fast address: %s %s", guardAddress(), nodeConfig)
 	}
 	evidence["pin_before"], evidence["guard_before"], evidence["status_before"] = m.state.RealityPins[node.Tag()].Dest, guardAddress(), m.state.Report.RealityPins
 
-	// Client: dokodemo 127.0.0.1:20001 -> VLESS Reality -> dest 198.51.100.2:9100 (a stream).
+	// Client: dokodemo 127.0.0.1:20001 -> VLESS Reality -> dest 11.0.2.2:9100 (a stream).
 	clientCfg, _ := json.Marshal(map[string]any{"log": map[string]any{"loglevel": "warning"},
-		"inbounds": []any{map[string]any{"tag": "in", "listen": "127.0.0.1", "port": 20001, "protocol": "dokodemo-door", "settings": map[string]any{"address": "198.51.100.2", "port": 9100, "network": "tcp"}}},
+		"inbounds": []any{map[string]any{"tag": "in", "listen": "127.0.0.1", "port": 20001, "protocol": "dokodemo-door", "settings": map[string]any{"address": "11.0.2.2", "port": 9100, "network": "tcp"}}},
 		"outbounds": []any{map[string]any{"tag": "out", "protocol": "vless", "settings": map[string]any{"vnext": []any{map[string]any{"address": rgLanding, "port": 31002, "users": []any{map[string]any{"id": uuid, "flow": "xtls-rprx-vision", "encryption": "none"}}}}},
 			"streamSettings": map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"serverName": "www.flvx.test", "publicKey": public, "shortId": "a1b2c3d4", "fingerprint": "chrome"}}}}})
 	if err := os.WriteFile(filepath.Join(base, "client.json"), clientCfg, 0644); err != nil {
@@ -266,7 +266,7 @@ func TestFLVXRealityPinNetnsInner(t *testing.T) {
 	// The fast address turns slow (>= 20 ms behind): the 6 h re-check moves
 	// the pin while the stream is running.
 	mu.Lock()
-	measured = map[string]time.Duration{"198.51.100.2": 70 * time.Millisecond, "198.51.100.3": 5 * time.Millisecond}
+	measured = map[string]time.Duration{"11.0.2.2": 70 * time.Millisecond, "11.0.2.3": 5 * time.Millisecond}
 	now = now.Add(flvxPinRecheck)
 	mu.Unlock()
 	calls := []string{}
@@ -283,7 +283,7 @@ func TestFLVXRealityPinNetnsInner(t *testing.T) {
 	m.apiCall = m.api
 	stream := <-streamOut
 	evidence["stream"] = stream
-	if !strings.HasSuffix(guardAddress(), "=198.51.100.3") || m.state.Applied[node.Tag()] != nodeConfig {
+	if !strings.HasSuffix(guardAddress(), "=11.0.2.3") || m.state.Applied[node.Tag()] != nodeConfig {
 		t.Fatalf("pin did not move the guard only: %s node changed=%v", guardAddress(), m.state.Applied[node.Tag()] != nodeConfig)
 	}
 	for _, call := range calls {
@@ -308,7 +308,7 @@ func TestFLVXRealityPinNetnsInner(t *testing.T) {
 	evidence["stream_after"] = runStream("0.5")
 	time.Sleep(300 * time.Millisecond)
 	after := handshakes(mark)
-	if firstHandshake["198.51.100.2"] == 0 || after["198.51.100.3"] == 0 || after["198.51.100.2"] != 0 {
+	if firstHandshake["11.0.2.2"] == 0 || after["11.0.2.3"] == 0 || after["11.0.2.2"] != 0 {
 		t.Fatalf("handshake addresses before %v after %v", firstHandshake, after)
 	}
 	evidence["calls"], evidence["pin_after"], evidence["guard_after"], evidence["status_after"] = calls, m.state.RealityPins[node.Tag()].Dest, guardAddress(), m.state.Report.RealityPins

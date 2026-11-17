@@ -8,15 +8,18 @@ import (
 // BaseConfig is read only when the Core starts. RoutingService enables hot
 // rule replacement for landing egress plans; IPOnDemand resolves a domain at
 // the first IP condition (the safety rule), so no later domain rule can route
-// a name that resolves to a private address. Policy timeouts are the Core
-// defaults, stated explicitly so half-open connections are reaped.
+// a name that resolves to a private address. Policy timeouts are explicit so
+// half-open connections are reaped; they are the Core defaults except
+// handshake, which is FLVX's native landing value (120 s): FLVX's 预热池
+// pre-dials connections to a landing and keeps them silent for up to 110 s
+// before a user stream uses them (the Core default of 4 s closed them).
 func BaseConfig(apiPort int) map[string]any {
 	return map[string]any{
 		"log":   map[string]any{"loglevel": "warning", "access": "none"},
 		"api":   map[string]any{"tag": "flvx-api", "listen": "127.0.0.1:" + strconv.Itoa(apiPort), "services": []string{"HandlerService", "StatsService", "RoutingService"}},
 		"stats": map[string]any{},
 		"policy": map[string]any{
-			"levels": map[string]any{"0": map[string]any{"handshake": 4, "connIdle": 300, "uplinkOnly": 2, "downlinkOnly": 5}},
+			"levels": map[string]any{"0": map[string]any{"handshake": 120, "connIdle": 300, "uplinkOnly": 2, "downlinkOnly": 5}},
 			"system": map[string]any{"statsInboundUplink": true, "statsInboundDownlink": true},
 		},
 		"inbounds":  []any{},

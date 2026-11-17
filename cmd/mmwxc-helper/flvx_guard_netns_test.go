@@ -23,8 +23,10 @@ import (
 // own reconcile, in three private namespaces (the host network is never
 // touched):
 //
-//	client 203.0.113.50 ── 203.0.113.1 landing 198.51.100.1 ── 198.51.100.2 dest
+//	client 11.0.1.50 ── 11.0.1.1 landing 11.0.2.1 ── 11.0.2.2 dest
 //
+// (public-looking addresses: since Core f6f5844 the freedom outbound drops
+// private and reserved targets such as 198.51.100.0/24 for VLESS / SS.)
 // The dest serves TLS for www.flvx.test on 8443 (logging every SNI) plus
 // banner / bulk / echo services. Landing nodes: SS2022 31001, Reality 31002
 // (serverName www.flvx.test) and 31004 (alt.flvx.test), same dest, so the
@@ -36,8 +38,8 @@ import (
 // burst. MMWXC_GUARD_E2E_OUT receives the evidence JSON;
 // MMWXC_GUARD_E2E_SKIP_PERF / _SKIP_LATE / _DECAY(_OFF) shorten diagnosis runs.
 const (
-	rgLanding = "203.0.113.1"
-	rgDest    = "198.51.100.2"
+	rgLanding = "11.0.1.1"
+	rgDest    = "11.0.2.2"
 )
 
 func TestFLVXRealityGuardNetnsE2E(t *testing.T) {
@@ -65,9 +67,9 @@ func TestFLVXRealityGuardNetnsE2E(t *testing.T) {
 	ns.sh("ip", "link", "add", "rgl1"+suffix, "type", "veth", "peer", "name", "rgd0"+suffix)
 	ns.sh("ip", "link", "set", "rgl1"+suffix, "netns", l)
 	ns.sh("ip", "link", "set", "rgd0"+suffix, "netns", d)
-	ns.sh("ip", "-n", c, "addr", "add", "203.0.113.50/24", "dev", "rgc0"+suffix)
+	ns.sh("ip", "-n", c, "addr", "add", "11.0.1.50/24", "dev", "rgc0"+suffix)
 	ns.sh("ip", "-n", l, "addr", "add", rgLanding+"/24", "dev", "rgl0"+suffix)
-	ns.sh("ip", "-n", l, "addr", "add", "198.51.100.1/24", "dev", "rgl1"+suffix)
+	ns.sh("ip", "-n", l, "addr", "add", "11.0.2.1/24", "dev", "rgl1"+suffix)
 	ns.sh("ip", "-n", d, "addr", "add", rgDest+"/24", "dev", "rgd0"+suffix)
 	for _, link := range [][2]string{{c, "rgc0"}, {l, "rgl0"}, {l, "rgl1"}, {d, "rgd0"}} {
 		ns.sh("ip", "-n", link[0], "link", "set", link[1]+suffix, "up")
@@ -422,7 +424,7 @@ func TestFLVXRealityGuardNetnsInner(t *testing.T) {
 	}
 	functional := jsonMap(py("fetch.py", "ss-443="+strconv.Itoa(portOf["ss-443"]), "g-443="+strconv.Itoa(portOf["g-443"]), "h-443="+strconv.Itoa(portOf["h-443"])))
 	for k, v := range functional {
-		if v != "peer=198.51.100.1 port=443" {
+		if v != "peer=11.0.2.1 port=443" {
 			t.Errorf("authenticated %s through the guarded Core: %v", k, v)
 		}
 	}
@@ -705,7 +707,7 @@ for item in sys.argv[1:]:
     name, port, sni = parts[:3]
     delay = float(parts[3]) if len(parts) > 3 else 0
     try:
-        c = socket.create_connection(("203.0.113.1", int(port)), timeout=5); c.settimeout(5)
+        c = socket.create_connection(("11.0.1.1", int(port)), timeout=5); c.settimeout(5)
         if delay:
             time.sleep(delay)
         if sni == "-":

@@ -232,7 +232,7 @@ func TestFLVXGuardGroupsOrderAndRender(t *testing.T) {
 			t.Fatalf("%s dest %v", tag, reality["dest"])
 		}
 		sockopt, _ := json.Marshal(stream["sockopt"])
-		if string(sockopt) != `{"customSockopt":[{"level":"6","network":"tcp","opt":"9","system":"linux","type":"int","value":"5"}]}` {
+		if string(sockopt) != `{"customSockopt":[{"level":"6","network":"tcp","opt":"9","system":"linux","type":"int","value":"130"}]}` {
 			t.Fatalf("sockopt %s", sockopt)
 		}
 		var old, now map[string]any

@@ -50,7 +50,7 @@ Release together with the FLVX side after the screenshots are approved.
 ## Helper behaviour
 
 - Base config: `RoutingService` added, safety rule tagged `flvx-safety`,
-  explicit policy level 0 (handshake 4, connIdle 300, uplinkOnly 2,
+  explicit policy level 0 (handshake 120 since v1.4.95 — FLVX 预热池, was 4 — connIdle 300, uplinkOnly 2,
   downlinkOnly 5). The file is rewritten on the next pass, but a running Core
   only reads it on start.
 - Default plan (no `egress` or inactive) with nothing applied: no Core API

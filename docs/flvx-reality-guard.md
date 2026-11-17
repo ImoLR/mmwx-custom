@@ -50,7 +50,7 @@ before (public `host:port` only) — the loopback dest is Helper-internal.
   outbound runs the copy with its own level. Added with `ado` before the
   rules, removed with the last guard.
 - Reality inbound: `realitySettings.dest = 127.0.0.1:<port>` plus
-  `sockopt.customSockopt` TCP_DEFER_ACCEPT (level 6, opt 9, value 5).
+  `sockopt.customSockopt` TCP_DEFER_ACCEPT (level 6, opt 9, value 130 since v1.4.95, was 5; the kernel holds a silent connection ~251 s, so FLVX 预热池 connections survive).
 - Order per pass: rules (with any egress plan, atomic `adrules`) → guard
   inbounds → re-pointed nodes → unused guards removed; their rules leave the
   rule set on the next pass. `GuardRulePorts` records which guards' rules the

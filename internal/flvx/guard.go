@@ -30,9 +30,13 @@ const GuardTagPrefix = "flvxg-"
 // arrived. REALITY dials dest — the guard — at accept, and the guard has the
 // Core's fixed 200 ms sniffing window to see the ClientHello; deferring the
 // accept keeps a late ClientHello (lost first segment, slow client) inside
-// that window. Clients that never send are accepted after the timeout as
-// before and then closed by REALITY's own handshake timeout.
-const guardDeferAccept = "5"
+// that window. Clients that never send are accepted after the timeout and
+// then closed by the guard (no ClientHello). The timeout also keeps FLVX's
+// 预热池 connections (silent for up to 110 s) waiting in the kernel: 130 s
+// (agreed with FLVX) becomes 8 SYN-ACK retransmits, so a silent connection
+// is accepted after about 251 s (measured on Linux 6.12; 5 s held 7.2 s,
+// 64–127 s 130.6 s: too close to 130).
+const guardDeferAccept = "130"
 
 // RealityGuardStatus is the Helper's report (contract §5). Error is shown to
 // the share operator only and never sent to FLVX.
